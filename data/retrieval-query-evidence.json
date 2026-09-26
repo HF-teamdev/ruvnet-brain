@@ -1,7 +1,11 @@
 {
   "schemaVersion": 2,
   "kind": "ruvnet-brain-retrieval-query-evidence",
-  "queryStoreSetSha256": "3ecfc499c418ba9d315856e9682e709235f332a35af578742890cbfa06593a12",
+  "queryStoreSetSha256": "15c9b34624d9689ce8f95bafae3d4769840af7c1047900ba05a0ff02df05313e",
+  "sourceCommit": "eed238632345b0a52e27d4ca18849c620467a4de",
+  "sourcePath": "data/retrieval-query-evidence.json",
+  "sourceBlobSha256": "9fe2259689eb5607e2174e100b1fc404ce0f4e35d268cdcd12c3960e27bdb56e",
+  "receiptSha256": "03a6da2e77a1de44a78fe3c86a7d468fa8a6eb8c5fe2b5f96691fde1b27da63c",
   "queries": {
     "2bottalk": {
       "query": "In the 2bottalk repository, what is 2 BoT Talk AI-powered Bot Duo, what problem does it solve, and how is it intended to be used?",
@@ -1464,106 +1468,6 @@
         ]
       },
       "recordSha256": "61ea87ff7a3b7276e8f443fdea91ce0dbf0cfe54c44b0dea2a69c17809ee107c"
-    },
-    "apx": {
-      "query": "In the apx repository, what is APx, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "070324d3df486a374375e9fdbf5881b1e1f74c89d1b6f5a47c38f36722c209b4"
-      },
-      "recordSha256": "3be6beda755ac07c7f7dc531d5c0094c4e23596b5fea8b584ee587075183edb2"
-    },
-    "batvu": {
-      "query": "In the batvu repository, what is BatVu, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "e70b0d65f9ca8c066ab036e5e6526c1ef11fc386c35519737d3724ec0bbab453"
-      },
-      "recordSha256": "b8ce0d13748cf1cd93ed2724acfda80205a0f8179e5ae9fa0edacbea70f0ad7a"
-    },
-    "event-horizon": {
-      "query": "In the event-horizon repository, what is Event Horizon Laboratory, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "ee53b85a2be6c5a618f5d76cd6f851771c9598ae03cafb2d5db5d2bf35b7ad79"
-      },
-      "recordSha256": "985a5c1e4d3e7de4e7655e63ad4e865ff8546637317ba648404b46c661dc3b41"
-    },
-    "group-field-theory": {
-      "query": "In the group-field-theory repository, what is Group Field Theory, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "aed4c7b55b5766ca7d154eada06aabbc804bf7442f03f212d430882931ebf337"
-      },
-      "recordSha256": "bd88a9e3db71f35f179f91b88f377dc55f61f06d291d287788a9a995151bcfc8"
-    },
-    "minitoo-control": {
-      "query": "In the minitoo-control repository, what is MiniToo Control, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "0bdb8ce6e598b2a65c4967c14ebb5ec04d478dc1b1d675c4b97ba49f2ddd79aa"
-      },
-      "recordSha256": "b79dc66174bcaca698a8394b1d01158959dc80c391035f711f917a2bba95d376"
-    },
-    "moe-foundry": {
-      "query": "In the moe-foundry repository, what is MoE Foundry, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "22cbf1291373dc71f6770b04c9b0acdcfff27f7bfa579bb122091d9c94ea6559"
-      },
-      "recordSha256": "dfdd400732fcd0cb18a09634b6192fc8f3a6a642f7c26719c621c1b84534badd"
-    },
-    "openavo": {
-      "query": "In the openavo repository, what is OpenAVO, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "e9e19e01db4ef5e4e3fdf4b0326a7424dc8ed34c3d62addbc0261a49102bbfe7"
-      },
-      "recordSha256": "456df51b28d73bb75c8fff6e44d485758482846920607201f1771c7fdc8291f4"
-    },
-    "rgi": {
-      "query": "In the rgi repository, what is rGi, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "0f57d837073d20040834977820590b80ac0ea7caa9afaa8d5fb8016501c37a50"
-      },
-      "recordSha256": "6b3e8dbbda3b83483e2db7b3b7af55c8944ac7228d8be4d71b8dd11fd4c3e594"
-    },
-    "ruclip": {
-      "query": "In the ruclip repository, what is ruClip, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "cf19034d1c55a6e8743b2108c7cee1d55f7f61aacc0123e4e4457b86149b172e"
-      },
-      "recordSha256": "a94e53a7124c25cf7792dc9a898deefb6842c5c64b80ea9549bddbe7e447a85d"
-    },
-    "ruforecast": {
-      "query": "In the ruforecast repository, what is RuForecast, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "3b1aac3f02b2550b3aafa7448e9b138949b5a26853a1e33d8262acce56f1e576"
-      },
-      "recordSha256": "cc6abc0b3a4edc76a366b85022aeb2f1f2ef0a5b3ffe5c71f67277980c8315e2"
-    },
-    "rultra": {
-      "query": "In the rultra repository, what is rultra, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "02226e2414a95346108fb08453c4edc45106dd5529da339771e8d6ce1c5d7ed1"
-      },
-      "recordSha256": "675893db7184045f77a416bcc8d2c8723984e6b2eb8d59d20ee5e18a3df7186e"
-    },
-    "ruos": {
-      "query": "In the ruos repository, what is ruOS, what problem does it solve, and how is it intended to be used?",
-      "expected": {
-        "path": "README.md",
-        "passageSha256": "eefffa40a5c00f1c158d2869935e348fa2051e581609e155f3566b59d34ec2b2"
-      },
-      "recordSha256": "04818332d55f7a6c3b0977e176700e7021b6e591b337dfc7a82d2c4d55f85946"
     }
-  },
-  "sourceCommit": "a761956b2f8b73e47b8455739e07fd725aa2e05a",
-  "sourcePath": "data/retrieval-query-evidence.json",
-  "sourceBlobSha256": "3d5c606e011f6eb7cc8818b48b2636a1f3e115fc2a7963da3dba936ffd03d2b9",
-  "receiptSha256": "5f485e94160a9cd7601196cfab3c008b0c10e4690b9bbda617fdec83ebc03251"
+  }
 }
