@@ -108,13 +108,18 @@ const TABLE = {
   // one is the sole writer of unprompted BYTES, this one is the sole author of a REFUSAL. The four
   // policies it consults are unchanged and still individually tested; the gate only composes them.
   'decision-gate':    { file: 'decision-gate.mjs',   interpreter: 'node', mode: 'blocking', offBehavior: 'run', stdinBytes: 65536 },
-  // H5: 'learn-capture' / 'learn-flush' TABLE entries removed (2026-09-26 dead-code audit) — neither
-  // id is ever dispatched by plugin/hooks/hooks.json, plugin/hooks/codex-hooks.json, or this repo's
-  // .claude/settings.json, and continuity-hook-policy.mjs's retirement note covers them the same as
-  // every other legacy interceptor. The FILES stay: learn-capture.sh and learn-flush.mjs are invoked
-  // directly by path in their own dedicated tests (learn-capture-redaction, learn-capture-project-
-  // root, learn-flush-partial-failure, and hook-hardening's budget cases) which never went through
-  // this dispatch table, so removing the id here does not touch their real, independent test coverage.
+  // H5 CORRECTION (2026-09-26): a first pass removed these two TABLE entries as "retired dead code",
+  // since neither id is dispatched by plugin/hooks/hooks.json, plugin/hooks/codex-hooks.json, or this
+  // repo's .claude/settings.json. That broke a REAL test:
+  // tests/integration/codex-dispatch-cwd-divergence.test.mjs fires the genuine
+  // codex-hook.mjs -> codex-hook-adapter.mjs -> hook-shim.mjs 'learn-capture' chain to prove a real,
+  // shipped cross-host CWD-divergence fix (learn-capture.sh's project-containment check, #85/#107) —
+  // it needs the id to actually resolve through this TABLE, exactly as continuity-hook-policy.mjs's
+  // own header already says: "remains reachable through hook-shim's dispatch table by explicit
+  // invocation". Restored. wired-check.mjs's H6 fix does not depend on these keys existing either
+  // way — it stopped trusting hook-shim.mjs as a blind generic spawner, not their presence here.
+  'learn-capture':    { file: 'learn-capture.sh',    interpreter: 'bash', mode: 'advisory', offBehavior: 'silence' },
+  'learn-flush':      { file: 'learn-flush.mjs',     interpreter: 'node', mode: 'advisory', offBehavior: 'silence' },
   'session-snapshot': { file: 'session-snapshot-hook.mjs', interpreter: 'node', mode: 'advisory', offBehavior: 'run', stdinBytes: 65536 },
   'md-stamp':         { file: 'md-stamp.mjs',        interpreter: 'node', mode: 'advisory', offBehavior: 'silence' },
   // THE EXTERNAL-SIGNAL WATCH PLANE, W1 OBSERVED (ADR-058 §D3; DDD-0013 Context 2). PostToolUse,
