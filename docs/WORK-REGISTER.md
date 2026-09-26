@@ -21,7 +21,7 @@ States: `LIVE` (in effect on the machine/users, verified) · `LIVE-PARTIAL` (in 
 | 18 | Corpus gist job credential | Secret present; token lists gists (HTTP 200) | LIVE | C4 |
 | 22 | 16 failing tests on main | Full `npx vitest run` green on the integration branch, no weakened assertions | IN-PROGRESS | |
 | 3 | Only the owner can publish | npm trusted publishing bound to protected-release.yml + env; no local publish-capable npm token; corpus-publish policy stated | NEEDS-OWNER | C3 |
-| 1 | One code line (laptop vs GitHub) | main == origin/main; every laptop-only commit has a keep/drop verdict with evidence | IN-PROGRESS | G1 |
+| 1 | One code line (laptop vs GitHub) | main == origin/main; every laptop-only commit has a keep/drop verdict with evidence; every KEEP merged with its tests | IN-PROGRESS (43/43 verdicts done: 19 KEEP + 3 partial on port/* branches, 13 DROP-retired, 4 DROP-done, 5 KEEP-REDESIGN fork-delta, 1 slice drop-recommended; KEEP not yet merged) | G1 |
 | 2 | One operating rulebook | Every statement in CONTRIBUTING.md verified by a fresh Opus audit; B-checks pass; checker runs in CI | REOPENED | B1, B2, B3, B4, B5, B6, B12 |
 | 4 | One definition of "qualified"; one receipt contract | release.mjs check mode = release-qualification (staged); single receipt contract per the GPT-reviewed decision | IN-PROGRESS | |
 | 5 | One machine updater | ak-sync green two consecutive nights; nothing the retired job did is lost (audited) | REOPENED | |
