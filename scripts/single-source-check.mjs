@@ -36,20 +36,18 @@ const none = (hits) => ({ ok: hits.length === 0, detail: hits.slice(0, 8).join('
 
 const pkg = json(read('package.json'));
 const workflows = tracked.filter((f) => /^\.github\/workflows\/.+\.ya?ml$/.test(f));
-const DEAD = ['kb/build-big-all.sh', 'scripts/agentdb-fleet-doctor.mjs', 'scripts/check-legibility.mjs', 'scripts/count-chunks.mjs',
-  'scripts/ingest-meeting.mjs', 'scripts/oracle/spike-run.mjs', 'scripts/proxy/proxy-up.sh', 'scripts/proxy/proxy-revert.sh',
-  'scripts/proxy/proxy-verify.mjs', 'scripts/proxy/claude-proxied.sh', 'scripts/stamp-existing-rvf-generations.mjs',
-  'scripts/verify-nightly-close-issue4.sh'];
 
 const checks = [
   // A — one copy of the code
-  { id: 'A1', area: 'code', scope: 'repo', title: 'No dead scripts from the 2026-09-26 reachability scan',
-    run: () => none(DEAD.filter((f) => tracked.includes(f))) },
+  { id: 'A1', area: 'code', scope: 'repo', title: 'Every module is wired or has a stated reason (the repo\'s own wired-check audit)',
+    run: () => { const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts/wired-check.mjs'), '--check'], { cwd: ROOT, encoding: 'utf8' });
+      return { ok: r.status === 0, detail: `${r.stdout}${r.stderr}`.split('\n').filter((l) => /UNWIRED|✗/.test(l)).slice(0, 6).join('\n') }; } },
   { id: 'A2', area: 'code', scope: 'repo', title: 'No byte-identical duplicate files (outside test fixtures)',
     run: () => {
       const seen = new Map(); const dup = [];
       for (const f of tracked) {
         if (!/\.(mjs|js|cjs|sh|md|yml|json)$/.test(f) || /^tests\/|fixtures?\//.test(f)) continue;
+        if (f.endsWith('RELEASE-NOTES-4.0.md')) continue; // intentional pair, equality enforced by tests/integration/whats-new-installed.test.mjs
         const t = read(f); if (t.length < 200) continue;
         if (seen.has(t)) dup.push(`${f} == ${seen.get(t)}`); else seen.set(t, f);
       }
