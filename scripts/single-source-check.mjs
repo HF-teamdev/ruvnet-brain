@@ -157,7 +157,12 @@ const checks = [
         .filter((f) => /\^com\\\.ruvnet\\\.brain-update|'com\.ruvnet\.brain-update'/.test(read(f)));
       // bin/nightly-refresh.mjs is copied to a standalone content-addressed path and executed outside the package, so it cannot import.
       const extra = copies.filter((f) => f !== 'bin/nightly-refresh.mjs');
-      const drift = copies.includes('bin/nightly-refresh.mjs') && !read('bin/nightly-refresh.mjs').includes(owner) ? ['bin/nightly-refresh.mjs does not match owner label ' + owner] : [];
+      // The runner MUST carry the owner's exact label (it validates its own registration against it);
+      // testing only files that already contain the label would miss exactly the drifted case.
+      const runner = read('bin/nightly-refresh.mjs');
+      const esc = owner.replace(/\./g, '\\.');
+      const drift = !owner ? ['owner label not found in plugin/scripts/nightly-scheduler.mjs']
+        : (!runner.includes(`'${owner}'`) || !runner.includes(`/^${esc}\\.proof-`)) ? [`bin/nightly-refresh.mjs does not carry owner label ${owner}`] : [];
       return none([...extra, ...drift]);
     } },
 
