@@ -50,6 +50,23 @@ fi
 TEXT=$(printf '%s' "$INPUT" | jq -r '.prompt // .user_prompt // .input // empty' 2>/dev/null)
 [ -z "$TEXT" ] && TEXT="$INPUT"
 
+# ── H2: HARNESS-GENERATED MESSAGES ARE NOT A USER'S PROMPT. ──────────────────────────────────────
+# Background task notifications, slash-command scaffolding, and other harness-authored bookkeeping
+# arrive on UserPromptSubmit exactly like real user text, wrapped in tags such as
+# <task-notification>, <local-command-caveat>, <command-name>, <local-command-stdout>, and
+# <system-reminder>. None of that is something a human typed, so none of Gates 1-4 below should ever
+# fire on it — injecting a grounding directive in response to the harness's own bookkeeping message
+# is noise on every background-task turn. This is a literal, byte-identical copy of
+# plugin/scripts/hook-input.mjs's HARNESS_GENERATED_SHELL_PATTERN (SOURCE OF TRUTH there), kept as a
+# copy here (not a `node hook-input.mjs` call) for the same reason Gate 1's own pattern below is a
+# copy: this is a hot, every-prompt hook (see the bounded-read comment above), and a process spawn
+# per prompt is exactly the kind of non-surgical cost this file's header warns against.
+# tests/unit/hook-input-harness.test.mjs proves this copy is byte-identical to
+# HARNESS_GENERATED_SHELL_PATTERN and that both agree with isHarnessGenerated() behaviorally.
+if printf '%s' "$TEXT" | grep -qiE '\[Your previous response|\[Request interrupted|</?system-reminder>|</?(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|task-notification|function_results|function_calls|budget)\b|^[[:space:]]*Caveat:|Base directory for this skill:|This session is being continued from a previous conversation|^[[:space:]]*#[[:space:]]*claudeMd\b|\[INTELLIGENCE\]'; then
+  exit 0
+fi
+
 # ── QUIET-PROMPT FAST PATH. ────────────────────────────────────────────────────────────────────
 # A hook whose output contract is silence must not pay the full stack-currency/project-state scan
 # before discovering that nothing can fire. This mattered on a packed Windows install: immediately

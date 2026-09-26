@@ -86,7 +86,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readStdinBounded } from './hook-input.mjs';
+import { readStdinBounded, isHarnessGenerated } from './hook-input.mjs';
 import { resolveBash } from './hook-shim-bash.mjs';
 
 // WHERE THIS FILE'S SIBLINGS LIVE. Resolved from THIS file's own location so it is correct under the
@@ -222,6 +222,17 @@ try {
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) event = parsed;
 } catch { /* not JSON → no occasion → silence, below */ }
 if (!event) silent();
+
+// H2: a background task notification, slash-command scaffold, or other harness-authored message
+// arrives on UserPromptSubmit exactly like real user text (wrapped in tags such as
+// <task-notification>, <local-command-caveat>, <system-reminder>, ...). None of that is something a
+// user typed, so no producer here should react to it — an advocacy nudge, a lesson prompt, or a
+// promotion offer fired at the harness's own bookkeeping is noise on every background-task turn.
+// PreToolUse payloads carry no `prompt`/`user_prompt`/`input` field, so this is a no-op for them.
+{
+  const promptText = event.prompt ?? event.user_prompt ?? event.input;
+  if (typeof promptText === 'string' && isHarnessGenerated(promptText)) silent();
+}
 
 const producers = resolveProducers(EVENT);
 if (!producers.length) silent();   // unknown event, or nothing wired for it — never speak on a guess
