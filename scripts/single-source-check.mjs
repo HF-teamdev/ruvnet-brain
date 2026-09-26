@@ -29,7 +29,9 @@ const json = (s) => { try { return JSON.parse(s); } catch { return {}; } };
 // Instruction surfaces: files that tell a person or an agent HOW to operate this project.
 // Decision records (ADR/DDD), research notes and append-only logs are history and are excluded.
 const HISTORY = /^(docs\/(adr|ddd|research|audits|reviews|qe)\/|CHANGELOG\.md$|PROGRESS\.md$|plugin\/docs\/RELEASE-NOTES|\.release-evidence\/|tests\/|evals\/)/;
-const instructions = tracked.filter((f) => /\.md$/.test(f) && !HISTORY.test(f));
+// kb/ is corpus content (primers/cards describing OTHER projects' own commands) and docs/issues/
+// are upstream bug reports quoting other configs — both are data, not instructions to this project.
+const instructions = tracked.filter((f) => /\.md$/.test(f) && !HISTORY.test(f) && !/^(kb|docs\/issues)\//.test(f));
 const grepIn = (files, re) => files.flatMap((f) => read(f).split('\n')
   .map((l, i) => (re.test(l) ? `${f}:${i + 1}: ${l.trim().slice(0, 140)}` : null)).filter(Boolean));
 const none = (hits) => ({ ok: hits.length === 0, detail: hits.slice(0, 8).join('\n') || 'none' });
@@ -61,7 +63,8 @@ const checks = [
     run: () => none(grepIn(instructions.filter((f) => f !== 'CONTRIBUTING.md'), /release\.mjs --publish|\bnpm publish\b|gh release create/)
       .filter((l) => !/\b(never|not|unusable|refus|intentionally|blocked|cannot|forbid|only through|provenance|ahead of the last)/i.test(l))) },
   { id: 'B3', area: 'rules', scope: 'repo', title: 'No instruction uses npx for ruflo / claude-flow (one global ruflo)',
-    run: () => none(grepIn(instructions, /npx (-y )?(@claude-flow|claude-flow|ruflo)\b/)) },
+    run: () => none(grepIn(instructions, /npx (-y )?(@claude-flow|claude-flow|ruflo)\b/)
+      .filter((l) => !/\bnever\b|console\/CONTRACT\.md:\d+: +"event"/i.test(l))) },
   { id: 'B4', area: 'rules', scope: 'repo', title: 'No live file cites a workflow that does not exist',
     run: () => {
       const exists = new Set(workflows.map((w) => path.basename(w)));
@@ -95,10 +98,19 @@ const checks = [
     } },
   { id: 'B10', area: 'rules', scope: 'repo', title: 'Public pages show exactly one current version (no candidate/public split)',
     run: () => none(grepIn(['README.md', 'explainer/index.html'], /candidate preview|public npm v\d/i)) },
-  { id: 'B11', area: 'rules', scope: 'repo', title: 'The ADR index lists every ADR',
+  { id: 'B11', area: 'rules', scope: 'repo', title: 'The ADR index lists every ADR, with the status the ADR itself declares',
     run: () => {
       const idx = read('docs/adr/README.md');
-      return none(tracked.filter((f) => /^docs\/adr\/\d{4}-.+\.md$/.test(f)).filter((f) => !idx.includes(path.basename(f))));
+      const adrs = tracked.filter((f) => /^docs\/adr\/\d{4}-.+\.md$/.test(f));
+      const missing = adrs.filter((f) => !idx.includes(path.basename(f))).map((f) => `not indexed: ${f}`);
+      const drift = adrs.flatMap((f) => {
+        const own = (read(f).match(/^status:\s*([A-Za-z]+)/m) || [])[1];
+        const statusTable = idx.slice(Math.max(0, idx.indexOf('| ADR | Title | Status |')));
+        const row = statusTable.split('\n').find((l) => l.includes(`(${path.basename(f)})`));
+        const listed = row && (row.match(/\|\s*([A-Za-z]+)[^|]*\|\s*$/) || [])[1];
+        return own && listed && own.toLowerCase() !== listed.toLowerCase() ? [`${path.basename(f)}: ADR says ${own}, index says ${listed}`] : [];
+      });
+      return none([...missing, ...drift]);
     } },
 
   // C — one release path

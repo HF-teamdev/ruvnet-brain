@@ -105,7 +105,7 @@ line), first clause only — see each ADR for the full, dated status history.
 | [0082](0082-north-star-unlock-path.md) | North Star 95/100+ Unlock Path — Four ADRs | Rejected |
 | [0083](0083-model-routing-north-star-95.md) | High-Assurance Model Routing for North Star 95/100 | Rejected |
 | [0084](0084-the-three-user-invariants.md) | The three user invariants | Proposed |
-| [0085](0085-nightly-corpus-release-channel.md) | The nightly corpus release channel | Proposed |
-| [0086](0086-corpus-seed-pipeline-consolidation.md) | The corpus-seed pipeline consolidation | Proposed |
+| [0085](0085-nightly-corpus-release-channel.md) | The nightly corpus release channel | Accepted |
+| [0086](0086-corpus-seed-pipeline-consolidation.md) | The corpus-seed pipeline consolidation | Accepted |
 | [0089](0089-installed-search-identity-health.md) | Installed search identity health | Accepted |
 | [0090](0090-source-backed-capability-discovery.md) | Additive source-verified capability discovery | Accepted |
