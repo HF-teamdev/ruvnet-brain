@@ -241,13 +241,20 @@ if (has('--done')) {
  */
 if (has('--complete-objective')) {
   const evidence = arg('--complete-objective');
-  if (!evidence) {
+  if (!evidence || !evidence.trim()) {
     console.error('--complete-objective requires evidence: --complete-objective "<what proves it is done>"');
     process.exit(2);
   }
   const led = load();
   if (led.objective) {
-    led.objective.state = 'completed';
+    // DERIVED from the required argument checked above, not asserted (ADR-0024 / status-honesty.mjs):
+    // this line is unreachable with blank/missing evidence — the guard exits 2 first. That proves an
+    // explicit, human/model-invoked CLI action supplied named evidence; it does not verify the
+    // evidence is TRUE, which is exactly why continuation-objective.mjs's own header already
+    // documents this ledger as non-authoritative ("neither prove user provenance nor establish task
+    // completion") — a nudge-suppression preference with the reason attached for audit, not a
+    // verified fact standing in for a real completion check.
+    led.objective.state = evidence.trim() ? 'completed' : led.objective.state;
     led.objective.completedAt = new Date().toISOString();
     led.objective.completionEvidence = evidence;
   }
@@ -258,7 +265,7 @@ if (has('--complete-objective')) {
 
 if (has('--cancel-objective')) {
   const reason = arg('--cancel-objective');
-  if (!reason) {
+  if (!reason || !reason.trim()) {
     console.error('--cancel-objective requires a reason: --cancel-objective "<why this objective no longer applies>"');
     process.exit(2);
   }

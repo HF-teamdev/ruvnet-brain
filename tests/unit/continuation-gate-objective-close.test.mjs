@@ -106,6 +106,18 @@ describe('--complete-objective closes an objective the real CLI opened', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('whitespace-only evidence is refused the same as empty (it is not real evidence)', () => {
+    const { dir, ledger } = freshDir();
+    const env = envFor(dir, ledger);
+    try {
+      runCli(dir, env, ['--commit-to', 'ship the retry policy']);
+      const r = runCli(dir, env, ['--complete-objective', '   ']);
+      expect(r.status).not.toBe(0);
+      const led = JSON.parse(fs.readFileSync(ledger, 'utf8'));
+      expect(led.objective.state).toBe('active');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('is a graceful no-op (not a crash) when there is no objective to complete', () => {
     const { dir, ledger } = freshDir();
     const env = envFor(dir, ledger);
