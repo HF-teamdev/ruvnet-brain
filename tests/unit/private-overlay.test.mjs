@@ -82,7 +82,9 @@ describe('private-overlay writer', () => {
     const after = readJson(path.join(root, 'SOURCE.json'));
     expect(after.stores[STORE]).toEqual({
       kbName: STORE, updateManaged: false, builtUtc: '2026-07-31T15:15:56.164Z',
-      sourceCommit: null, sourceRepo: 'private', canonicalManifestUrl: null,
+      // S4: sourceDescribe is now always projected alongside sourceCommit (schema v2's ledger
+      // adds both together) — null here since a private sidecar's own generation carries neither.
+      sourceCommit: null, sourceDescribe: null, sourceRepo: 'private', canonicalManifestUrl: null,
     });
     expect(after.canonicalManifestUrl).toBe(MANIFEST_URL);
     const { stores: afterStores, ...afterTop } = after;
@@ -100,7 +102,7 @@ describe('private-overlay writer', () => {
     const after = readJson(path.join(root, 'SOURCE.json'));
     expect(after.stores[STORE]).toEqual({
       kbName: STORE, updateManaged: false, builtUtc: '2026-07-31T15:15:56.164Z',
-      sourceCommit: null, sourceRepo: 'private', canonicalManifestUrl: null, origin: 'local-ingest',
+      sourceCommit: null, sourceDescribe: null, sourceRepo: 'private', canonicalManifestUrl: null, origin: 'local-ingest',
     });
   });
 

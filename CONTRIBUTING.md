@@ -104,13 +104,23 @@ Machines managed by agentic-kit are updated by `ak sync` instead, which disables
 scheduler on purpose; do not run both. `--host-sync-only` repairs host wiring and **never** updates
 knowledge — do not use it as an update command.
 
-**Provenance (in progress).** `kb/RVF-GENERATIONS.json` is meant to become the one per-store
-provenance record, with `kb/SOURCE.json` generated as a projection of it rather than written
-independently by four separate call sites (`kb/forge-build.mjs`, `kb/forge-refresh.mjs`,
-`scripts/corpus-reconcile.mjs`, `scripts/private-overlay.mjs`). The ledger schema has the
-`sourceRepo`/`sourceDescribe` fields that projection needs (`scripts/rvf-generation.mjs`'s
-`writeRvfGeneration`, opt-in); the projection itself, and moving the four writers onto it, is not
-done yet — `kb/SOURCE.json` is still independently authored at each site as of this note.
+**Provenance (one ledger, one projection).** `kb/RVF-GENERATIONS.json` is the one per-store
+provenance record; `kb/SOURCE.json` is generated as a projection of it, never written
+independently. Before this, two incompatible "schemaVersion 2" ledger shapes existed side by
+side: **Schema A** (`scripts/rvf-generation.mjs`'s own pre-existing shape — no `kind`, no
+`sourceSnapshot`) and **Schema B** (`scripts/build-bundle.mjs`'s release-time `projectStoreViews`
+shape — `kind` + `sourceSnapshot`, already required by `plugin/scripts/coverage-integrity.mjs`'s
+release validation). Schema B was picked as canonical (it was already load-bearing for release
+validation); `scripts/rvf-generation.mjs` now emits it directly
+(`RUNTIME_LEDGER_KIND = 'ruvnet-brain-runtime-generation-ledger'`, `sourceSnapshot` carried
+forward or `null` until a release stamps it for real). `scripts/rvf-generation.mjs`'s
+`projectSourceStore(name, generation, updater)` is the one place identity fields
+(`sourceRepo`/`sourceCommit`/`sourceDescribe`/`builtUtc`) are read FROM the ledger; all four
+SOURCE.json writers (`kb/forge-build.mjs`, `kb/forge-refresh.mjs`, `scripts/corpus-reconcile.mjs`,
+`scripts/private-overlay.mjs`) call it rather than restating those facts as their own object
+literals. `tests/unit/one-source-projection.test.mjs` enforces this by census (grep) and by an
+exact ledger-to-SOURCE.json equality proof. The old one-shot migration
+`scripts/stamp-existing-rvf-generations.mjs` went dead as a result and was deleted.
 
 ## Hooks (what runs automatically)
 

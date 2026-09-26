@@ -20,7 +20,7 @@
 // (:402-408). The apply path builds its candidate fresh from the extracted bundle
 // (`restorePrivateFilesIntoCandidate`, forge-update.mjs — the one apply path, S1), so every name the
 // bundle lacks is simply absent from that candidate. Nothing anywhere
-// WROTE that flag: forge-refresh's writeSourceManifest records public repos only, and
+// WROTE that flag: forge-refresh's writeSourceManifestFromLedger records public repos only, and
 // ingest-repo.mjs builds from a git checkout with a canonical URL. So private stores that arrive as
 // pre-built sidecars had no writer, sat in the root unflagged, and 0 of 8 survived the 2026-09-10
 // tree replacement. This is that writer. It ADDS entries and never rebuilds top-level identity:
@@ -30,7 +30,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { sha256File } from './rvf-generation.mjs';
+import { sha256File, projectSourceStore } from './rvf-generation.mjs';
 
 export const REQUIRED_SIDECARS = ['.big.rvf', '.big.rvf.embed.json', '.big.rvf.idmap.json', '.meta.json', '.passages.jsonl'];
 export const OPTIONAL_SIDECARS = ['.symbols.json', '-primer.md'];
@@ -131,17 +131,21 @@ function planStore({ root, from, name, force, aliases, cardFile, origin }) {
   }
   const rvf = path.join(from, `${name}.big.rvf`);
   const card = cardFor({ from, name, meta, cardFile });
+  const generation = { file: `${name}.big.rvf`, sha256: sha256File(rvf), bytes: fs.statSync(rvf).size, model: embed.model, dimensions: embed.dimensions, sourceCommit: null, builtUtc };
   return {
-    name, files, copies, card, aliases,
-    generation: { file: `${name}.big.rvf`, sha256: sha256File(rvf), bytes: fs.statSync(rvf).size, model: embed.model, dimensions: embed.dimensions, sourceCommit: null, builtUtc },
+    name, files, copies, card, aliases, generation,
+    // S4 (ONE PROVENANCE RECORD): source.sourceCommit/builtUtc are projected from `generation`
+    // above (projectSourceStore, scripts/rvf-generation.mjs) rather than a second, independent
+    // copy of the same facts. A private store has no selfUpdate/canonicalBundleUrl/builder —
+    // those are public-bundle-only fields, so they are simply never passed in the updater here.
     // `origin` is opt-in (omitted entirely when not supplied, never written as null/undefined) so a
     // caller that does not pass it gets the exact byte-identical stamp this writer has always
     // produced. S3 (explicit local ownership): scripts/ingest-repo.mjs passes origin:'local-ingest'
     // so a store this brain pulled in on demand is distinguishable, in SOURCE.json itself, from one
-    // that arrived as a genuinely private pre-built sidecar (sourceRepo:'private' alone conflated
+    // that arrived as a genuinely private pre-built sidecar (a bare "private" sourceRepo alone conflated
     // the two before this).
-    source: { kbName: name, updateManaged: false, builtUtc, sourceCommit: null, sourceRepo: 'private',
-      canonicalManifestUrl: null, ...(origin ? { origin } : {}) },
+    source: projectSourceStore(name, generation, { updateManaged: false, sourceRepo: 'private',
+      canonicalManifestUrl: null, ...(origin ? { origin } : {}) }),
   };
 }
 
