@@ -108,8 +108,13 @@ const TABLE = {
   // one is the sole writer of unprompted BYTES, this one is the sole author of a REFUSAL. The four
   // policies it consults are unchanged and still individually tested; the gate only composes them.
   'decision-gate':    { file: 'decision-gate.mjs',   interpreter: 'node', mode: 'blocking', offBehavior: 'run', stdinBytes: 65536 },
-  'learn-capture':    { file: 'learn-capture.sh',    interpreter: 'bash', mode: 'advisory', offBehavior: 'silence' },
-  'learn-flush':      { file: 'learn-flush.mjs',     interpreter: 'node', mode: 'advisory', offBehavior: 'silence' },
+  // H5: 'learn-capture' / 'learn-flush' TABLE entries removed (2026-09-26 dead-code audit) — neither
+  // id is ever dispatched by plugin/hooks/hooks.json, plugin/hooks/codex-hooks.json, or this repo's
+  // .claude/settings.json, and continuity-hook-policy.mjs's retirement note covers them the same as
+  // every other legacy interceptor. The FILES stay: learn-capture.sh and learn-flush.mjs are invoked
+  // directly by path in their own dedicated tests (learn-capture-redaction, learn-capture-project-
+  // root, learn-flush-partial-failure, and hook-hardening's budget cases) which never went through
+  // this dispatch table, so removing the id here does not touch their real, independent test coverage.
   'session-snapshot': { file: 'session-snapshot-hook.mjs', interpreter: 'node', mode: 'advisory', offBehavior: 'run', stdinBytes: 65536 },
   'md-stamp':         { file: 'md-stamp.mjs',        interpreter: 'node', mode: 'advisory', offBehavior: 'silence' },
   // THE EXTERNAL-SIGNAL WATCH PLANE, W1 OBSERVED (ADR-058 §D3; DDD-0013 Context 2). PostToolUse,
