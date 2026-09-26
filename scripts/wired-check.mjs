@@ -78,7 +78,6 @@ const STANDALONE = [
   ['dream-issue-gate', 'pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
   ['sync-census', 'explicit maintainer census writer; a destructive source-to-surface refresh is never scheduled'],
   ['sync-commands', 'explicit maintainer alias synchronizer; run deliberately before release, never from a lifecycle hook'],
-  ['version-bump-gate', 'retired automatic interceptor; explicit version checks own release validation'],
   ['project-progression-checkpoint', 'the body of the shipped `/ruvnet-brain:checkpoint` command '
     + '(plugin/commands/checkpoint.md:39; added a7167b6b 2026-09-11). The command host executes that '
     + 'instruction, and this check does not scan command markdown — the same shape as '
