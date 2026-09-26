@@ -10,10 +10,11 @@
 //   node scripts/single-source-check.mjs --machine  # repo + machine checks
 //   node scripts/single-source-check.mjs --json
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readCheckpoint, checkpointStaleness } from './loop-checkpoint.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = os.homedir();
@@ -186,10 +187,14 @@ const checks = [
 
   // E — one hook / context plane
   { id: 'E1', area: 'hooks', scope: 'machine', title: 'No stale autonomous-loop checkpoint is injected into sessions',
+    // H3: judged by the checkpoint's OWN `updatedAt` claim (loop-checkpoint.mjs's checkpointStaleness
+    // — the SAME rule ground-ruvnet.sh's `stale` verb uses), never by file mtime. A copy/rsync/restore
+    // resets mtime without the checkpoint's content changing, which is exactly the kind of second,
+    // drifting definition of "stale" this audit exists to catch — including, previously, in itself.
     run: () => {
       const f = path.join(ROOT, '.ruvnet-brain/checkpoint.json');
       const main = path.join(HOME, 'Code/ruvnet-brain/.ruvnet-brain/checkpoint.json');
-      const stale = [f, main].filter((p) => existsSync(p) && (Date.now() - statSync(p).mtimeMs) / 864e5 >= 1);
+      const stale = [f, main].filter((p) => existsSync(p) && checkpointStaleness(readCheckpoint(p)).stale);
       return none(stale);
     } },
   { id: 'E2', area: 'hooks', scope: 'machine', title: 'Only one hook writes session snapshots (no global + plugin double writer)',
