@@ -521,34 +521,49 @@ if [ "$AUTON" -eq 1 ]; then
 EOF
   if [ -f "$CP_FILE" ]; then
     # H3: a checkpoint from a loop that ended days or weeks ago used to be injected UNCONDITIONALLY —
-    # resumed as though it were this session's own live state, with no age check at all. The 24h
-    # staleness rule is owned once, in scripts/loop-checkpoint.mjs's checkpointStaleness() (also used
-    # by scripts/single-source-check.mjs's E1 audit — see that file), so ground-ruvnet.sh never
-    # re-derives the threshold itself. loop-checkpoint.mjs is resolved SELF-RELATIVE to this file, not
-    # cwd-relative: this hook runs with cwd set to the CALLING project, which for every consumer of
-    # this plugin except this repo's own dogfood checkout has no `scripts/` dir of its own at all.
-    STALE_SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
-    LOOP_CHECKPOINT=""
-    if [ -n "$STALE_SELF_DIR" ]; then
-      if [ -f "$STALE_SELF_DIR/loop-checkpoint.mjs" ]; then
-        LOOP_CHECKPOINT="$STALE_SELF_DIR/loop-checkpoint.mjs"
-      elif [ -f "$STALE_SELF_DIR/../../scripts/loop-checkpoint.mjs" ]; then
-        LOOP_CHECKPOINT="$STALE_SELF_DIR/../../scripts/loop-checkpoint.mjs"
-      fi
-    fi
+    # resumed as though it were this session's own live state, with no age check at all.
+    #
+    # NOT resolved via scripts/loop-checkpoint.mjs (a first version of this fix did, and shipped
+    # tests/unit/payload-self-contained.test.mjs RED: loop-checkpoint.mjs lives only at repo-root
+    # scripts/, never inside plugin/scripts/, and only `plugin/` reaches a real install — every
+    # shipped layout flattens it, so that reference resolved to nothing everywhere except this
+    # repo's own dogfood checkout, and the feature silently degraded to "always inject" for every
+    # real user). The 24h threshold is instead inlined here as `node -e`, no file reference at all —
+    # payload-self-contained by construction. scripts/loop-checkpoint.mjs's own exported
+    # CHECKPOINT_STALE_MS (used by scripts/single-source-check.mjs's E1 audit) is the SOURCE OF
+    # TRUTH for the number; tests/unit/ground-ruvnet-staleness-inline.test.mjs asserts this literal
+    # matches it, same drift-test idiom as Gate 1's own bash/JS pattern copy.
     STALE_RC=9
     STALE_AGE=""
-    if [ -n "$LOOP_CHECKPOINT" ] && command -v node >/dev/null 2>&1; then
-      STALE_AGE=$(node "$LOOP_CHECKPOINT" stale 2>/dev/null)
-      STALE_RC=$?
+    if command -v node >/dev/null 2>&1; then
+      UPDATED_AT=$(node -e '
+        let raw = ""; process.stdin.on("data", (c) => { raw += c; });
+        process.stdin.on("end", () => {
+          try { const cp = JSON.parse(raw); process.stdout.write(typeof cp.updatedAt === "string" ? cp.updatedAt : ""); }
+          catch { /* empty stdout: not a valid checkpoint */ }
+        });
+      ' < "$CP_FILE" 2>/dev/null)
+      if [ -n "$UPDATED_AT" ]; then
+        STALE_AGE=$(node -e '
+          const STALE_MS = 24 * 60 * 60 * 1000;
+          const ms = Date.parse(process.argv[1]);
+          if (!Number.isFinite(ms)) process.exit(2);
+          const ageMs = Date.now() - ms;
+          if (ageMs < STALE_MS) process.exit(0);
+          process.stdout.write(String(Math.floor(ageMs / 86_400_000)));
+          process.exit(1);
+        ' "$UPDATED_AT" 2>/dev/null)
+        STALE_RC=$?
+      else
+        STALE_RC=2
+      fi
     fi
     if [ "$STALE_RC" -eq 1 ]; then
       echo "[RuvNet Brain — a stale checkpoint (age ${STALE_AGE} days) was ignored; starting fresh rather than resuming a plan that old.]"
     else
-      # RC 0 (fresh) — inject as intended. RC 2 (no parseable `updatedAt`) or RC 9 (the staleness
-      # check itself could not run: no node, or this isn't a checkout that ships loop-checkpoint.mjs)
-      # both mean "unknown age", which must never be treated as PROVEN stale — fall back to the
-      # pre-fix behavior of injecting rather than silently dropping a checkpoint we cannot judge.
+      # RC 0 (fresh) — inject as intended. RC 2 (no parseable `updatedAt`) or RC 9 (no node on this
+      # host) both mean "unknown age", which must never be treated as PROVEN stale — fall back to
+      # the pre-fix behavior of injecting rather than silently dropping a checkpoint we cannot judge.
       echo "[RuvNet Brain — RESUME: your prior checkpoint. Continue from 'next'; do not repeat done work.]"
       cat "$CP_FILE" 2>/dev/null
       echo ""
