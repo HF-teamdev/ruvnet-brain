@@ -1,8 +1,46 @@
-# Work register — the owner's standing asks, 2026-07-27
+# Work register — the ONE status source
 
-Not a status report. A durable list that survives a session ending, an agent dying, or a context
-compaction. Every row: what he asked, where it is, what closes it. Updated in the commit that
-changes a row — never separately.
+Updated: 2026-09-26 (single-source consolidation)
+Created: 2026-07-27
+
+This is the only place status lives. A row's State may only be `LIVE` or `STAGED` if every check it
+names passes — `npm run single-source:check -- --machine` enforces that (check R1), so this file
+cannot claim more than the evidence shows. "Done" is written before the work starts and means the
+OUTCOME holds across the full scope, not that an edit exists.
+
+States: `LIVE` (in effect on the machine/users, verified) · `LIVE-PARTIAL` (in effect, known gap named)
+· `STAGED` (on branch consolidation/single-source, verified, not yet merged/released) · `IN-PROGRESS`
+· `REOPENED` (a change was reverted after an audit) · `NOT-STARTED` · `NEEDS-OWNER` (blocked on Stuart)
+
+## 2026-09-26 consolidation — critical path first
+
+| # | Family | Done means (outcome, full scope) | State | Checks |
+|---|---|---|---|---|
+| 21 | Release blocker: public verification fails since v4.3.21 (search quality / MCP timeout) | Root cause named with offending commit; fix merged; a release reaches `install-verified` on 3 OSes | IN-PROGRESS | |
+| 6 | Knowledge currency, apply and provenance (one apply path, one verdict, one provenance record, explicit local ownership) | This Mac converges to the published corpus generation; `--check`/`--apply`/banner agree; private + local stores survive; independent Opus audit passes | IN-PROGRESS | D2, D3 |
+| 18 | Corpus gist job credential | Secret present; token lists gists (HTTP 200) | LIVE | C4 |
+| 22 | 16 failing tests on main | Full `npx vitest run` green on the integration branch, no weakened assertions | IN-PROGRESS | |
+| 3 | Only the owner can publish | npm trusted publishing bound to protected-release.yml + env; no local publish-capable npm token; corpus-publish policy stated | NEEDS-OWNER | C3 |
+| 1 | One code line (laptop vs GitHub) | main == origin/main; every laptop-only commit has a keep/drop verdict with evidence | IN-PROGRESS | G1 |
+| 2 | One operating rulebook | Every statement in CONTRIBUTING.md verified by a fresh Opus audit; B-checks pass; checker runs in CI | REOPENED | B1, B2, B3, B4, B5, B6, B12 |
+| 4 | One definition of "qualified"; one receipt contract | release.mjs check mode = release-qualification (staged); single receipt contract per the GPT-reviewed decision | IN-PROGRESS | |
+| 5 | One machine updater | ak-sync green two consecutive nights; nothing the retired job did is lost (audited) | LIVE-PARTIAL | F2 |
+| 7 | One session-start continuity restorer | One restorer, measured restoring state in every project that has state | REOPENED | |
+| 8 | One session-snapshot writer | One writer that keeps summaries + WAL maintenance, measured landing rows in every `.swarm` project | REOPENED | |
+| 9 | One lesson store | All lessons in one store, zero lost (row-by-row mapping), one injector | IN-PROGRESS | E3 |
+| 10 | False "no search_ruvnet" Stop block (#316) | One vocabulary; regression test fails on old code, passes on new | IN-PROGRESS | |
+| 11 | Hooks firing on notifications / false "AUTONOMOUS MODE" / unclosable objective | Each root-caused with regression tests | IN-PROGRESS | E1 |
+| 12 | One rule for verifying memory (`ruflo memory retrieve`) | No instruction anywhere (incl. ~/.codex/AGENTS.md) says to use sqlite3 | LIVE-PARTIAL | |
+| 14 | Updater label defined once | One owner + one checked standalone copy | STAGED | D1 |
+| 15 | Dead hook code | Unregistered global hooks archived; dead plugin bash route removed | IN-PROGRESS | |
+| 16 | Plaintext API key (Kling) | Key only in the SOPS vault + derived copies; every consumer still gets it (audited) | LIVE | F1 |
+| 17 | One Node for scheduled jobs | All jobs on Node 24 and each job's entry point verified compatible (audited) | LIVE-PARTIAL | F3 |
+| 19 | Scheduled workflows page on failure | Every scheduled workflow in ntfy-alerts | STAGED | C2 |
+| 20 | One model-facts catalog | One catalog; others generated or deleted; one refresh owner | NOT-STARTED | |
+| 23 | Scoreboard strength | Every check has a sabotage test proving it can fail; checker runs in CI | NOT-STARTED | |
+| 24 | ADR status hygiene | Every ADR's header and body agree; index matches | IN-PROGRESS | B8, B11 |
+
+## Prior register (2026-07-27) — NOT re-verified since; each row must be re-checked before it is trusted
 
 | # | The ask (his words, compressed) | State | What closes it |
 |---|---|---|---|

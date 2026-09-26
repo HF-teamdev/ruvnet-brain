@@ -230,6 +230,29 @@ const checks = [
 
 const selected = checks.filter((c) => c.scope === 'repo' || MACHINE);
 const results = selected.map((c) => { let r; try { r = c.run(); } catch (e) { r = { ok: false, detail: `check crashed: ${e.message}` }; } return { ...c, ...r }; });
+
+// R1 — the register may not claim more than the evidence shows. A row in docs/WORK-REGISTER.md whose
+// State is LIVE or STAGED must have every check it names passing (machine checks only in --machine).
+{
+  const byId = new Map(results.map((r) => [r.id, r]));
+  const scopeOf = new Map(checks.map((c) => [c.id, c.scope]));
+  const bad = [];
+  for (const line of read('docs/WORK-REGISTER.md').split('\n')) {
+    const cells = line.split('|').map((x) => x.trim());
+    if (cells.length < 7 || !/^\d+$/.test(cells[1])) continue;
+    const [, num, family, , state, checkList] = cells;
+    if (!/^(LIVE|STAGED)$/.test(state)) continue;
+    const ids = checkList.split(/[ ,]+/).filter(Boolean);
+    if (!ids.length) bad.push(`#${num} ${family}: claims ${state} but names no check`);
+    for (const id of ids) {
+      if (!scopeOf.has(id)) { bad.push(`#${num}: unknown check ${id}`); continue; }
+      if (scopeOf.get(id) === 'machine' && !MACHINE) continue;
+      const r = byId.get(id);
+      if (!r?.ok) bad.push(`#${num} ${family}: claims ${state} but ${id} fails`);
+    }
+  }
+  results.push({ id: 'R1', area: 'register', scope: 'repo', title: 'The work register claims nothing its checks do not prove', ok: bad.length === 0, detail: bad.join('\n') || 'none' });
+}
 if (JSON_OUT) console.log(JSON.stringify(results.map(({ run, ...r }) => r), null, 1));
 else {
   for (const r of results) {
