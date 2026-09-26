@@ -113,6 +113,14 @@ const checks = [
       return none([...missing, ...drift]);
     } },
 
+  { id: 'B12', area: 'rules', scope: 'machine', title: 'The local (untracked) CLAUDE.md / AGENTS.md carry no contradicting instruction',
+    run: () => {
+      const main = path.join(HOME, 'Code/ruvnet-brain');
+      const bad = /npx (-y )?(@claude-flow|claude-flow|ruflo)\b|standing authori[sz]ation permits|no separate human reviewer click|npm run (build|dev|test:integration|test:coverage|test:security)\b|not direct Agent tool/i;
+      return none(['CLAUDE.md', 'AGENTS.md'].flatMap((f) => readAbs(path.join(main, f)).split('\n')
+        .map((l, i) => (bad.test(l) ? `${f}:${i + 1}: ${l.trim().slice(0, 120)}` : null)).filter(Boolean)));
+    } },
+
   // C — one release path
   { id: 'C1', area: 'release', scope: 'repo', title: 'Unattended corpus promotion stays disarmed until a code release is install-verified',
     run: () => ({ ok: !tracked.includes('data/approved-runtime.json'), detail: tracked.includes('data/approved-runtime.json') ? 'data/approved-runtime.json present (arms the 07:17 UTC nightly)' : 'absent' }) },
