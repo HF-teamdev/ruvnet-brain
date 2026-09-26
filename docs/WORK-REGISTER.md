@@ -40,6 +40,7 @@ States: `LIVE` (in effect on the machine/users, verified) · `LIVE-PARTIAL` (in 
 | 23 | Scoreboard strength | Every check has a sabotage test proving it can fail; checker runs in CI | NOT-STARTED | |
 | 24 | ADR status hygiene | Every ADR's header and body agree; index matches | IN-PROGRESS | B8, B11 |
 | 25 | wired-check over-counts hook routes | `scripts/wired-check.mjs` marks a hook script live when only the hook-shim dispatch table names it; 11 shim ids (hijack-ruvnet, route-dispatch, ground-before-write, verify-interface, design-wall, protect-state, learn-capture, learn-flush, md-stamp, signal-watch, routing-outcome, swarm-slot-recycler) have no hooks.json / codex-hooks.json / settings.json registration. Done when wired-check traces from registered ids (and decision-gate sub-routes it actually calls), with a sabotage test | NOT-STARTED | A1 |
+| 26 | CI never runs the full unit suite | Only curated file lists run in CI (`release-qualification.mjs` plans, `integration-linux.yml`, `ci.yml` qe configs); `developer-qa.yml` (full `vitest run`) is manual-only. Done when every PR to main runs the full `npx vitest run` and blocks on red, and a sabotage test (a deliberately failing unit test) is shown to block | NOT-STARTED | |
 
 ## Prior register (2026-07-27) — NOT re-verified since; each row must be re-checked before it is trusted
 

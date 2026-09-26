@@ -34,11 +34,11 @@ path	chunk	kind	bytes	lines	last_commit	wired_state	referenced_by	verdict	canoni
 .release-evidence/4.3.16/public-verification-aggregate.json	C19-bin-config-misc	data/config	1618742	30691	2026-09-11	-	3	READ		in a history folder but read by scripts/release-transaction-provider.mjs, .github/workflows/protected-release.yml — may be live rules	auto-rules-2026-09-26
 .release-evidence/4.3.16/windows.json	C19-bin-config-misc	data/config	518779	10217	2026-09-11	-	1	READ		in a history folder but read by .github/workflows/ci.yml — may be live rules	auto-rules-2026-09-26
 .release-evidence/W5-B-PERFORMANCE-BASELINE-REPORT.md	C19-bin-config-misc	doc	10649	436	2026-09-11	-	0	READ		in a history folder but contains live-status markers (policy / open checklist)	auto-rules-2026-09-26
-.release-evidence/live-metrics.jsonl	C19-bin-config-misc	data/config	1012	2	2026-09-11	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-.release-evidence/metrics-dashboard-proof.md	C19-bin-config-misc	doc	7622	250	2026-09-11	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-.release-evidence/metrics-snapshot.json	C19-bin-config-misc	data/config	994	60	2026-09-11	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-.release-evidence/performance-baseline.json	C19-bin-config-misc	data/config	1259	51	2026-09-11	-	4	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-.release-evidence/regression-gates.json	C19-bin-config-misc	data/config	725	26	2026-09-11	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+.release-evidence/live-metrics.jsonl	C19-bin-config-misc	data/config	1012	2	2026-09-11	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+.release-evidence/metrics-dashboard-proof.md	C19-bin-config-misc	doc	7622	250	2026-09-11	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+.release-evidence/metrics-snapshot.json	C19-bin-config-misc	data/config	994	60	2026-09-11	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+.release-evidence/performance-baseline.json	C19-bin-config-misc	data/config	1259	51	2026-09-11	-	4	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+.release-evidence/regression-gates.json	C19-bin-config-misc	data/config	725	26	2026-09-11	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 .vercelignore	C20-root	asset	273	10	2026-07-16	-	0	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
 CHANGELOG.md	C20-root	doc	5467	74	2026-09-20	-	11	READ		in a history folder but read by kb/identifier-lane.mjs, tests/unit/grounding-identifier-recall.test.mjs — may be live rules	auto-rules-2026-09-26
 CODE_OF_CONDUCT.md	C20-root	doc	1535	27	2026-07-27	-	1	READ		doc; no automatic rule decides it	auto-rules-2026-09-26
@@ -526,13 +526,13 @@ docs/adr/0089-installed-search-identity-health.md	C15-docs-adr-ddd	doc	4048	54	2
 docs/adr/0090-source-backed-capability-discovery.md	C15-docs-adr-ddd	doc	11756	121	2026-09-20	-	3	KEEP		ADR/DDD status Accepted; indexed by docs/adr/README.md and checked by scripts/doc-currency.mjs	auto-rules-2026-09-26
 docs/adr/README.md	C15-docs-adr-ddd	doc	13576	112	2026-09-26	-	123	KEEP		ADR/DDD status unstated; referenced by code; indexed by docs/adr/README.md and checked by scripts/doc-currency.mjs	auto-rules-2026-09-26
 docs/audits/2026-07-14-ALL-projects-hooks.md	C16-docs-other	doc	76633	1695	2026-07-27	-	0	READ		semantic near-duplicate of docs/audits/2026-07-14-projects-2026-hooks.md@0.9852	auto-rules-2026-09-26
-docs/audits/2026-07-14-hooks-2026-full.md	C16-docs-other	doc	58319	1622	2026-07-27	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/audits/2026-07-14-last30-project-hooks.md	C16-docs-other	doc	20437	587	2026-07-27	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/audits/2026-07-14-npx-census.md	C16-docs-other	doc	171961	1586	2026-07-27	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/audits/2026-07-14-hooks-2026-full.md	C16-docs-other	doc	58319	1622	2026-07-27	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/audits/2026-07-14-last30-project-hooks.md	C16-docs-other	doc	20437	587	2026-07-27	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/audits/2026-07-14-npx-census.md	C16-docs-other	doc	171961	1586	2026-07-27	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 docs/audits/2026-07-14-projects-2026-hooks.md	C16-docs-other	doc	58174	1392	2026-07-27	-	0	READ		semantic near-duplicate of docs/audits/2026-07-14-ALL-projects-hooks.md@0.9852	auto-rules-2026-09-26
 docs/case-studies/README.md	C16-docs-other	doc	4882	123	2026-09-11	-	123	READ		in a history folder but read by kb/capability-families.mjs, kb/forge-ask-all.mjs — may be live rules	auto-rules-2026-09-26
 docs/case-studies/RESEARCH-SUMMARY.md	C16-docs-other	doc	7092	182	2026-09-11	-	1	READ		in a history folder but contains live-status markers (policy / open checklist)	auto-rules-2026-09-26
-docs/case-studies/story-1-draft.md	C16-docs-other	doc	9667	209	2026-09-11	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/case-studies/story-1-draft.md	C16-docs-other	doc	9667	209	2026-09-11	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 docs/ddd/0001-bounded-contexts.md	C15-docs-adr-ddd	doc	7216	125	2026-07-27	-	0	READ		Proposed 61d, no governs:, no code reference — accept, reject or supersede	auto-rules-2026-09-26
 docs/ddd/0002-onboarding-console.md	C15-docs-adr-ddd	doc	10053	176	2026-08-02	-	1	KEEP		ADR/DDD status unstated; indexed by docs/adr/README.md and checked by scripts/doc-currency.mjs	auto-rules-2026-09-26
 docs/ddd/0003-update-context.md	C15-docs-adr-ddd	doc	5182	71	2026-07-29	-	2	KEEP		ADR/DDD status unstated; indexed by docs/adr/README.md and checked by scripts/doc-currency.mjs	auto-rules-2026-09-26
@@ -555,46 +555,46 @@ docs/ddd/0019-project-continuity-context.md	C15-docs-adr-ddd	doc	7555	198	2026-0
 docs/ddd/0020-capability-claim-integrity-context.md	C15-docs-adr-ddd	doc	4571	91	2026-08-22	-	3	KEEP		ADR/DDD status unstated; referenced by code; indexed by docs/adr/README.md and checked by scripts/doc-currency.mjs	auto-rules-2026-09-26
 docs/ddd/0021-corpus-supply-chain-context.md	C15-docs-adr-ddd	doc	11385	187	2026-09-12	-	1	KEEP		ADR/DDD status Proposed; indexed by docs/adr/README.md and checked by scripts/doc-currency.mjs	auto-rules-2026-09-26
 docs/diagrams/metaharness.md	C16-docs-other	doc	2978	52	2026-07-27	-	0	READ		doc; no automatic rule decides it	auto-rules-2026-09-26
-docs/dream-cycle/2026-08-26-brain-currency-report.md	C16-docs-other	doc	11163	81	2026-08-26	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/dream-cycle/2026-08-28-grounding-quality-report.md	C16-docs-other	doc	18804	245	2026-08-30	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/dream-cycle/2026-08-28-grounding-quality-routed-receipt-report.md	C16-docs-other	doc	13482	190	2026-08-30	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/dream-cycle/2026-08-29-memory-durability-report.md	C16-docs-other	doc	11853	150	2026-08-30	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/dream-cycle/2026-08-30-cross-host-conformance-adapter-events-report.md	C16-docs-other	doc	17446	218	2026-08-30	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/dream-cycle/2026-08-26-brain-currency-report.md	C16-docs-other	doc	11163	81	2026-08-26	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/dream-cycle/2026-08-28-grounding-quality-report.md	C16-docs-other	doc	18804	245	2026-08-30	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/dream-cycle/2026-08-28-grounding-quality-routed-receipt-report.md	C16-docs-other	doc	13482	190	2026-08-30	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/dream-cycle/2026-08-29-memory-durability-report.md	C16-docs-other	doc	11853	150	2026-08-30	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/dream-cycle/2026-08-30-cross-host-conformance-adapter-events-report.md	C16-docs-other	doc	17446	218	2026-08-30	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 docs/dream-cycle/2026-08-30-cross-host-conformance-report.md	C16-docs-other	doc	14630	204	2026-08-30	-	1	READ		in a history folder but read by tests/integration/codex-dispatch-cwd-divergence.test.mjs — may be live rules	auto-rules-2026-09-26
 docs/dream-cycle/LEDGER.md	C16-docs-other	doc	20977	42	2026-09-07	-	4	READ		in a history folder but read by tests/unit/self-retrieval-bench-hybrid-mode.test.mjs, dream.config.json — may be live rules	auto-rules-2026-09-26
-docs/dream-cycle/OPERATING-POLICY.md	C16-docs-other	doc	3518	61	2026-09-07	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/dream-cycle/evidence/2026-08-24-memory-durability.md	C16-docs-other	doc	17179	235	2026-08-30	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/dream-cycle/OPERATING-POLICY.md	C16-docs-other	doc	3518	61	2026-09-07	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/dream-cycle/evidence/2026-08-24-memory-durability.md	C16-docs-other	doc	17179	235	2026-08-30	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 docs/issues/ruflo-doctor-memory-liveness-not-health.md	C16-docs-other	doc	8567	178	2026-07-27	-	0	READ		doc; no automatic rule decides it	auto-rules-2026-09-26
 docs/qa-execution-contract.md	C16-docs-other	doc	8952	125	2026-09-07	-	1	READ		doc; no automatic rule decides it	auto-rules-2026-09-26
 docs/qe/AGENTIC-QE-4.0-MASTER-PLAN.md	C16-docs-other	doc	10539	182	2026-07-30	-	5	READ		in a history folder but read by tests/qe/gpt56/critical-risk-map.test.mjs — may be live rules	auto-rules-2026-09-26
-docs/qe/GRADING-RUBRIC.md	C16-docs-other	doc	5207	73	2026-07-27	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/qe/STEP14-ORACLE-SPIKE-2026-09-13.md	C16-docs-other	doc	22959	353	2026-09-14	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/qe/UX-EXPERIENCE-QE-SPEC.md	C16-docs-other	doc	6057	96	2026-07-28	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/qe/agentic-qe-security.json	C16-docs-other	data/config	66	5	2026-07-29	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/qe/GRADING-RUBRIC.md	C16-docs-other	doc	5207	73	2026-07-27	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/qe/STEP14-ORACLE-SPIKE-2026-09-13.md	C16-docs-other	doc	22959	353	2026-09-14	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/qe/UX-EXPERIENCE-QE-SPEC.md	C16-docs-other	doc	6057	96	2026-07-28	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/qe/agentic-qe-security.json	C16-docs-other	data/config	66	5	2026-07-29	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 docs/qe/release-verification.md	C16-docs-other	doc	2079	34	2026-07-29	-	1	READ		in a history folder but read by data/novice-50-report.json — may be live rules	auto-rules-2026-09-26
-docs/qe/security-findings.md	C16-docs-other	doc	1730	37	2026-07-29	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/qe/security-findings.md	C16-docs-other	doc	1730	37	2026-07-29	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 docs/qe/ux-first-run.md	C16-docs-other	doc	4280	65	2026-07-28	-	2	READ		in a history folder but read by scripts/qe/ux-suite.mjs — may be live rules	auto-rules-2026-09-26
 docs/research/metaharness/ruv-doctrine-2026-07-16.md	C16-docs-other	doc	9143	130	2026-07-27	-	3	READ		in a history folder but read by scripts/routing-flywheel.mjs, tests/unit/routing-flywheel.test.mjs — may be live rules	auto-rules-2026-09-26
 docs/research/metaharness/ruv-gist-meta-wrapper.md	C16-docs-other	doc	21073	240	2026-07-27	-	3	READ		in a history folder but read by scripts/issue-fix.mjs — may be live rules	auto-rules-2026-09-26
-docs/research/metaharness/ruvnet-brain-deltas.md	C16-docs-other	doc	28629	295	2026-07-27	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/research/npm-provenance-plan.md	C16-docs-other	doc	9899	162	2026-07-17	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0023-gpt56-redteam.md	C16-docs-other	doc	52006	406	2026-07-27	-	3	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0040-duel-unprompted-speech.md	C16-docs-other	doc	6504	93	2026-07-27	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0041-duel-fixture-machine.md	C16-docs-other	doc	3784	55	2026-07-27	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0042-gpt56-4.0-go-no-go.md	C16-docs-other	doc	4035	44	2026-07-27	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0043-duel-continuation-gate.md	C16-docs-other	doc	6671	84	2026-07-27	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0045-duel-state-based-advocacy.md	C16-docs-other	doc	7766	99	2026-07-27	-	2	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0047-duel-in-session-dormancy-voice.md	C16-docs-other	doc	7389	119	2026-07-27	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/0062-dual-model-release-transaction.md	C16-docs-other	doc	1760	34	2026-08-02	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/adr-072-s11-upstream-export-path.md	C16-docs-other	doc	1532	38	2026-08-22	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/adr-072-s11-upstream-pagination.md	C16-docs-other	doc	1169	22	2026-08-22	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/research/metaharness/ruvnet-brain-deltas.md	C16-docs-other	doc	28629	295	2026-07-27	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/research/npm-provenance-plan.md	C16-docs-other	doc	9899	162	2026-07-17	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0023-gpt56-redteam.md	C16-docs-other	doc	52006	406	2026-07-27	-	3	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0040-duel-unprompted-speech.md	C16-docs-other	doc	6504	93	2026-07-27	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0041-duel-fixture-machine.md	C16-docs-other	doc	3784	55	2026-07-27	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0042-gpt56-4.0-go-no-go.md	C16-docs-other	doc	4035	44	2026-07-27	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0043-duel-continuation-gate.md	C16-docs-other	doc	6671	84	2026-07-27	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0045-duel-state-based-advocacy.md	C16-docs-other	doc	7766	99	2026-07-27	-	2	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0047-duel-in-session-dormancy-voice.md	C16-docs-other	doc	7389	119	2026-07-27	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/0062-dual-model-release-transaction.md	C16-docs-other	doc	1760	34	2026-08-02	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/adr-072-s11-upstream-export-path.md	C16-docs-other	doc	1532	38	2026-08-22	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/adr-072-s11-upstream-pagination.md	C16-docs-other	doc	1169	22	2026-08-22	-	1	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 docs/reviews/adr-072-traceability.md	C16-docs-other	doc	6526	51	2026-08-22	-	1	READ		generated file (header says do not hand-edit) — check for drift against its generator	auto-rules-2026-09-26
-docs/reviews/issue-271-223-host-boundaries.md	C16-docs-other	doc	1960	35	2026-09-09	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/release-test-relevance-install-20260907.md	C16-docs-other	doc	10736	62	2026-09-07	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/release-test-relevance-proof-20260907.md	C16-docs-other	doc	14989	63	2026-09-07	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/release-test-relevance-qe-20260907.md	C16-docs-other	doc	6193	30	2026-09-07	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/retrieval-oracle-complete-20260907.md	C16-docs-other	doc	64029	202	2026-09-07	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-docs/reviews/ruview-oracle-relevance-20260907.md	C16-docs-other	doc	1406	24	2026-09-07	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
+docs/reviews/issue-271-223-host-boundaries.md	C16-docs-other	doc	1960	35	2026-09-09	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/release-test-relevance-install-20260907.md	C16-docs-other	doc	10736	62	2026-09-07	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/release-test-relevance-proof-20260907.md	C16-docs-other	doc	14989	63	2026-09-07	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/release-test-relevance-qe-20260907.md	C16-docs-other	doc	6193	30	2026-09-07	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/retrieval-oracle-complete-20260907.md	C16-docs-other	doc	64029	202	2026-09-07	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
+docs/reviews/ruview-oracle-relevance-20260907.md	C16-docs-other	doc	1406	24	2026-09-07	-	0	READ		history-folder doc: no automatic rule may call it HISTORY (audit #4: 5/15 wrong) — a reader decides	auto-rules-2026-09-26
 dream.config.json	C20-root	data/config	4417	94	2026-09-07	-	10	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 evals/baseline.json	C19-bin-config-misc	data/config	547	35	2026-09-09	-	16	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 evals/held-out.json	C19-bin-config-misc	data/config	25742	153	2026-07-30	-	13	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
