@@ -1,15 +1,16 @@
 ---
 id: ADR-086
 title: The corpus-seed pipeline consolidation — the written contract for the in-flight rewrite (twelve steps, amended to nineteen)
-status: Proposed  # 2026-09-15: C3 MEASURED AT 59.0% ON A REAL ARCHIVE AND REMOVED AS THE BLOCKING GATE -- see the 2026-09-15 amendment section. A frozen-fixture recall gate (194 human questions, 194/194 repositories answering, 176/194 exact-file Hit@5, ratcheted) now blocks instead. This is a DECLARED REDUCTION, not a C3 pass. Prior note, 2026-09-14 evening: 19 of 20 steps merged. main now also carries the seed bootstrap-deadlock and descriptor-schema fixes and an ENFORCED ADR-086:248 C3 gate (oracle schema 2: N = 2 x min(100,U), paired questions, repository-exact attribution). The committed 576-label oracle is schema 1 and is DIAGNOSTIC ONLY, so corpus sealing and publication fail closed until a compliant oracle (22,310 questions over 194 repositories) is produced. Steps 10, 11, 19 are owner-gated. The per-step table and currency log are the record.
+status: Accepted  # 2026-09-26: steps 16-18 are live on main and this ADR governs the running corpus pipeline; unattended promotion is disarmed until a code release is install-verified (see ADR-085 status). Prior note 2026-09-15: C3 MEASURED AT 59.0% ON A REAL ARCHIVE AND REMOVED AS THE BLOCKING GATE -- see the 2026-09-15 amendment section. A frozen-fixture recall gate (194 human questions, 194/194 repositories answering, 176/194 exact-file Hit@5, ratcheted) now blocks instead. This is a DECLARED REDUCTION, not a C3 pass. Prior note, 2026-09-14 evening: 19 of 20 steps merged. main now also carries the seed bootstrap-deadlock and descriptor-schema fixes and an ENFORCED ADR-086:248 C3 gate (oracle schema 2: N = 2 x min(100,U), paired questions, repository-exact attribution). The committed 576-label oracle is schema 1 and is DIAGNOSTIC ONLY, so corpus sealing and publication fail closed until a compliant oracle (22,310 questions over 194 repositories) is produced. Steps 10, 11, 19 are owner-gated. The per-step table and currency log are the record.
 date: 2026-09-13
-updated: 2026-09-19
+updated: 2026-09-26
 authors: [Stuart Kerr, Claude Fable 5.1]
 tags: [corpus, release, consolidation, provenance, gists, assembly, dual-review, living-plan, acceptance-criteria]
 supersedes: []
 amends: []
 relates: [ADR-085, ADR-069, ADR-070, ADR-072, ADR-058, ADR-064]
 governs:
+  - .github/workflows/corpus-nightly-dispatch.yml
   - scripts/oracle/repo-recall.mjs
   - data/repo-recall-floor.json
   - data/retrieval-query-evidence.json
