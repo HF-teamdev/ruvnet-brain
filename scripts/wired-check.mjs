@@ -112,9 +112,6 @@ const STANDALONE = [
   ['fix-metaharness-memretrieve', 'one-shot historical repair; kept for the record'],
   ['gen-console-images', 'build-time asset generation, run by hand'],
   ['adr-backfill', 'one-shot backfill by a human; its result is enforced by adr-format.test.mjs'],
-  ['stamp-existing-rvf-generations', 'one-shot maintainer migration that binds already-built canonical '
-    + 'RVFs to RVF-GENERATIONS.json and optionally prunes legacy sidecars; build-bundle.mjs consumes '
-    + 'and validates the resulting manifest, so scheduling this destructive migration would be wrong'],
   ['release', 'the ship path, run by a human'],
   ['execution-preflight', 'external orchestration boundary — invoked by the host before consequential Ruflo/Codex execution; no in-repo caller exists because the host supplies the live Brain and AgentDB receipts'],
   ['fix-workstream', 'session-supervised coordination CLI run explicitly by the integration owner or an '

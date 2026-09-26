@@ -73,18 +73,54 @@ down unless `data/approved-runtime.json` exists; create that pin only after a co
 
 **Local ingestion is for development.** `node scripts/ingest-repo.mjs --name <repo> [--org <org>]`
 makes a repo searchable on *this* machine immediately. It never reaches users; a repo reaches users
-by being in scope of the CI build above. Private stores must be named in `kb/PRIVATE-STORES.json`
-and installed with `npm run private-overlay -- --root <kbDir> --from <dir> --store <name>`; the
-updater preserves them. `scripts/self-update.mjs` / `scripts/nightly-wrapper.sh` are manual author
-diagnostics in a clean linked worktree; they never publish.
+by being in scope of the CI build above. `ingest-repo.mjs` itself now stamps
+`updateManaged:false` + `origin:'local-ingest'` into the store's own `SOURCE.json` entry, via
+`scripts/private-overlay.mjs`'s writer (`--from` pointed at the same root the bytes already landed
+in, which degenerates the writer to registry-stamping only) — so a repo pulled in this way survives
+the updater exactly like a genuinely private store, instead of reading as an ordinary public store
+that the next `--apply` silently deletes because it is absent from the incoming bundle. It also adds
+the store to `kb/PRIVATE-STORES.json`'s fence (required for that stamp — see below) and, in the same
+pass, retroactively re-stamps any OTHER name `kb/local-ingests.json`'s own recipe ledger already
+recorded but that predates this fix. Private stores that arrive as pre-built sidecars are still
+installed the same way: `npm run private-overlay -- --root <kbDir> --from <dir> --store <name>`.
+`scripts/self-update.mjs` / `scripts/nightly-wrapper.sh` are manual author diagnostics in a clean
+linked worktree; they never publish.
 
 **How a user's machine updates.** `npx ruvnet-brain --update` runs the signed updater
-(`kb/forge-update.mjs --apply`): it verifies the bundle signature, refuses a bundle whose stores are
-older than the installed ones, and preserves private stores. Schedule it with
+(`kb/forge-update.mjs --apply`): it verifies the bundle signature and preserves private/local-ingest
+stores through `restorePrivateFilesIntoCandidate` — the ONE place production code copies a private
+overlay onto a candidate tree, shared by the normal update path and the authenticated staged-recovery
+rail (`applyVerifiedStagedRelease`, `--staged-release`) a failed normal update falls back to for a
+private-overlay install rather than the unconditional fresh reinstall that used to refuse outright on
+one. Currency is ONE recorded verdict (`kb/forge-update.mjs`'s `currencyVerdict()`): CURRENT (nothing
+to do), UPDATE_AVAILABLE (a genuinely newer code or corpus release), UNKNOWN (no verifiable ordering
+key — apply is allowed, never blocked, never claimed current; today's pre-generation-stamp installs
+read this way), or REFUSED (rollback protection — the offered corpus generation is strictly OLDER
+than the one installed; no download, live untouched, clean exit). `--check`, `--apply`,
+`bin/install.mjs`'s update path, and the SessionStart banner's install-alarm all read this SAME
+recorded verdict rather than each re-deriving their own comparison. Schedule it with
 `npx ruvnet-brain --enable-nightly` (launchd, cron or Task Scheduler — the same command on every OS).
 Machines managed by agentic-kit are updated by `ak sync` instead, which disables the Brain's own
 scheduler on purpose; do not run both. `--host-sync-only` repairs host wiring and **never** updates
 knowledge — do not use it as an update command.
+
+**Provenance (one ledger, one projection).** `kb/RVF-GENERATIONS.json` is the one per-store
+provenance record; `kb/SOURCE.json` is generated as a projection of it, never written
+independently. Before this, two incompatible "schemaVersion 2" ledger shapes existed side by
+side: **Schema A** (`scripts/rvf-generation.mjs`'s own pre-existing shape — no `kind`, no
+`sourceSnapshot`) and **Schema B** (`scripts/build-bundle.mjs`'s release-time `projectStoreViews`
+shape — `kind` + `sourceSnapshot`, already required by `plugin/scripts/coverage-integrity.mjs`'s
+release validation). Schema B was picked as canonical (it was already load-bearing for release
+validation); `scripts/rvf-generation.mjs` now emits it directly
+(`RUNTIME_LEDGER_KIND = 'ruvnet-brain-runtime-generation-ledger'`, `sourceSnapshot` carried
+forward or `null` until a release stamps it for real). `scripts/rvf-generation.mjs`'s
+`projectSourceStore(name, generation, updater)` is the one place identity fields
+(`sourceRepo`/`sourceCommit`/`sourceDescribe`/`builtUtc`) are read FROM the ledger; all four
+SOURCE.json writers (`kb/forge-build.mjs`, `kb/forge-refresh.mjs`, `scripts/corpus-reconcile.mjs`,
+`scripts/private-overlay.mjs`) call it rather than restating those facts as their own object
+literals. `tests/unit/one-source-projection.test.mjs` enforces this by census (grep) and by an
+exact ledger-to-SOURCE.json equality proof. The old one-shot migration
+`scripts/stamp-existing-rvf-generations.mjs` went dead as a result and was deleted.
 
 ## Hooks (what runs automatically)
 

@@ -19,6 +19,7 @@ import { assertCapabilityOnlyStore, isCapabilityOnly, CAPABILITY_RETIRED_SUFFIXE
 import { fileIdentity } from '../plugin/scripts/coverage-integrity.mjs';
 import { storeRoot } from '../kb/store-root.mjs';
 import { captureGistSources } from './gist-receipts.mjs';
+import { projectSourceStore } from './rvf-generation.mjs';
 
 export { rebuildCorpusAggregates };
 
@@ -540,7 +541,13 @@ export async function executeReconciliation({
       promotedFiles.push(file.name);
     }
     mergedLedger.stores[result.store] = result.generation;
-    mergedSource.stores[result.store] = result.source;
+    // S4 (ONE PROVENANCE RECORD): re-project the merged SOURCE.json entry FROM the merged ledger
+    // row rather than trusting the worker's own already-written SOURCE.json fragment verbatim —
+    // the merge boundary is where multiple workers' results combine, so it is the right place to
+    // assert "the ledger is the source of truth" rather than assume every worker upheld it.
+    // `result.source` (validateWorkerOutput's read of the worker's own output, already checked
+    // there to bind the exact upstream SHA) supplies the non-identity updater fields unchanged.
+    mergedSource.stores[result.store] = projectSourceStore(result.store, result.generation, result.source);
   }
   mergedLedger.stores = Object.fromEntries(Object.entries(mergedLedger.stores).sort(([a], [b]) => a.localeCompare(b)));
   mergedSource.stores = Object.fromEntries(Object.entries(mergedSource.stores).sort(([a], [b]) => a.localeCompare(b)));
