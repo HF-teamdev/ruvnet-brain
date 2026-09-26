@@ -39,7 +39,6 @@ path	chunk	kind	bytes	lines	last_commit	wired_state	referenced_by	verdict	canoni
 .release-evidence/metrics-snapshot.json	C19-bin-config-misc	data/config	994	60	2026-09-11	-	0	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
 .release-evidence/performance-baseline.json	C19-bin-config-misc	data/config	1259	51	2026-09-11	-	4	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
 .release-evidence/regression-gates.json	C19-bin-config-misc	data/config	725	26	2026-09-11	-	1	HISTORY		point-in-time record; no code, test or config reads it	auto-rules-2026-09-26
-.release-monitor/release-4.3.22.json	C20-root	data/config	236	9	2026-09-11	-	0	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 .vercelignore	C20-root	asset	273	10	2026-07-16	-	0	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
 CHANGELOG.md	C20-root	doc	5467	74	2026-09-20	-	11	READ		in a history folder but read by kb/identifier-lane.mjs, tests/unit/grounding-identifier-recall.test.mjs — may be live rules	auto-rules-2026-09-26
 CODE_OF_CONDUCT.md	C20-root	doc	1535	27	2026-07-27	-	1	READ		doc; no automatic rule decides it	auto-rules-2026-09-26
@@ -82,7 +81,6 @@ console/assets/depth-2.webp	C17-web-assets	asset	27654	100	2026-07-17	-	1	KEEP		
 console/assets/depth-3.webp	C17-web-assets	asset	44712	156	2026-07-17	-	1	KEEP		asset path resolves from 1 file(s): console/tips.html	auto-rules-2026-09-26
 console/assets/harness-vs-plain.svg	C17-web-assets	asset	17125	260	2026-07-18	-	1	KEEP		asset path resolves from 1 file(s): console/tips.html	auto-rules-2026-09-26
 console/assets/hero.webp	C17-web-assets	asset	76878	310	2026-07-24	-	3	KEEP		asset path resolves from 1 file(s): console/index.html	auto-rules-2026-09-26
-console/assets/memory.webp	C17-web-assets	asset	22768	78	2026-07-15	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
 console/assets/metaharness.svg	C17-web-assets	asset	14950	248	2026-07-18	-	4	KEEP		asset path resolves from 2 file(s): console/app.js, console/tips.html	auto-rules-2026-09-26
 console/index.html	C17-web-assets	asset	52578	824	2026-09-16	-	45	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
 console/install-architecture.html	C17-web-assets	asset	11994	163	2026-07-24	-	0	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
@@ -403,7 +401,6 @@ data/learning-replay-transcripts/f5e8995dc78aeffadd5e66354b8cfc2544e0ea1f/e90419
 data/manifest.json	C13-data	data/config	23021	1098	2026-09-20	-	70	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 data/model-catalog.json	C13-data	data/config	6873	144	2026-09-19	-	12	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 data/nightly-exclude.json	C13-data	data/config	528	5	2026-07-14	-	1	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
-data/novice-50-report.before-bounded-mcp.json	C13-data	data/config	23219	766	2026-07-30	-	0	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 data/novice-50-report.json	C13-data	data/config	179927	916	2026-07-30	-	1	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 data/openrouter-catalog-snapshot.json	C13-data	data/config	33794	1798	2026-09-19	-	4	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
 data/org-repo-count.json	C13-data	data/config	76	6	2026-09-11	-	8	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
@@ -619,18 +616,10 @@ explainer/api/admin-stats.mjs	C17-web-assets	code	9378	185	2026-07-14	-	3	READ		
 explainer/api/metrics.mjs	C17-web-assets	code	7996	245	2026-09-11	-	5	READ		code; no automatic rule decides it	auto-rules-2026-09-26
 explainer/api/ping.mjs	C17-web-assets	code	5859	113	2026-07-22	-	12	READ		code; no automatic rule decides it	auto-rules-2026-09-26
 explainer/assets/console-v3.png	C17-web-assets	asset	634318	2092	2026-07-16	-	1	KEEP		asset path resolves from 1 file(s): explainer/index.html	auto-rules-2026-09-26
-explainer/assets/diagram-s01.svg	C17-web-assets	asset	6067	62	2026-06-30	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
-explainer/assets/diagram-s02.svg	C17-web-assets	asset	5508	56	2026-06-30	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
-explainer/assets/diagram-s03.svg	C17-web-assets	asset	7044	62	2026-06-30	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
-explainer/assets/diagram-s04.svg	C17-web-assets	asset	6450	66	2026-06-30	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
-explainer/assets/img/architecture.png	C17-web-assets	asset	1799654	15501	2026-06-29	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
 explainer/assets/img/hero.png	C17-web-assets	asset	2061424	10443	2026-06-30	-	3	KEEP		asset path resolves from 1 file(s): explainer/index.html	auto-rules-2026-09-26
 explainer/assets/img/hero.webp	C17-web-assets	asset	92696	379	2026-07-07	-	3	KEEP		asset path resolves from 1 file(s): explainer/index.html	auto-rules-2026-09-26
 explainer/assets/img/maya.webp	C17-web-assets	asset	28154	126	2026-07-16	-	1	KEEP		asset path resolves from 1 file(s): explainer/index.html	auto-rules-2026-09-26
 explainer/assets/img/og-hero-3.png	C17-web-assets	asset	1108332	4438	2026-07-16	-	2	KEEP		asset path resolves from 1 file(s): tests/unit/narrative-version.test.mjs	auto-rules-2026-09-26
-explainer/assets/img/point-deeper.png	C17-web-assets	asset	2568394	11025	2026-06-29	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
-explainer/assets/img/problem-skim.png	C17-web-assets	asset	2154480	16824	2026-06-29	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
-explainer/assets/img/proof.png	C17-web-assets	asset	2369383	13951	2026-06-29	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
 explainer/assets/tips-v3.png	C17-web-assets	asset	747730	2866	2026-07-17	-	1	KEEP		asset path resolves from 1 file(s): explainer/index.html	auto-rules-2026-09-26
 explainer/assets/video/explainer-poster.jpg	C17-web-assets	asset	111567	435	2026-07-13	-	1	KEEP		asset path resolves from 1 file(s): explainer/index.html	auto-rules-2026-09-26
 explainer/assets/video/ruvnet-brain-explainer.mp4	C17-web-assets	asset	4464050	17597	2026-07-13	-	1	KEEP		asset path resolves from 1 file(s): explainer/index.html	auto-rules-2026-09-26
@@ -646,7 +635,6 @@ explainer/modelmesh.html	C17-web-assets	asset	19170	60	2026-09-11	-	0	READ		asse
 explainer/robots.txt	C17-web-assets	asset	454	19	2026-07-16	-	6	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
 explainer/sitemap.xml	C17-web-assets	asset	276	10	2026-07-16	-	3	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
 explainer/social-card.png	C17-web-assets	asset	329228	1060	2026-09-11	-	1	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
-explainer/social-card.svg	C17-web-assets	asset	2226	9	2026-09-11	-	0	READ		no reference resolves to this exact path — delete candidate	auto-rules-2026-09-26
 explainer/theme.css	C17-web-assets	asset	3416	74	2026-07-10	-	4	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
 explainer/tri-smart-skill.zip	C17-web-assets	asset	28314	108	2026-09-11	-	1	READ		asset; no automatic rule decides it	auto-rules-2026-09-26
 explainer/vercel.json	C17-web-assets	data/config	420	23	2026-09-20	-	0	READ		data/config; no automatic rule decides it	auto-rules-2026-09-26
@@ -739,7 +727,6 @@ kb/no-corpus-repos.json	C14-kb	data/config	2401	63	2026-09-14	-	6	READ		writer c
 kb/package-lock.json	C14-kb	data/config	30633	926	2026-09-20	-	20	READ		writer candidates bin/install.mjs, kb/forge-update.mjs but 9 hand-authored commit(s) — confirm generated vs config	auto-rules-2026-09-26
 kb/package-owners.json	C14-kb	data/config	605	7	2026-09-11	-	8	READ		writer candidates scripts/approved-runtime.mjs, scripts/build-bundle.mjs but 2 hand-authored commit(s) — confirm generated vs config	auto-rules-2026-09-26
 kb/package.json	C14-kb	data/config	1125	32	2026-09-20	-	175	READ		writer candidates bin/install.mjs, kb/corpus-release-identity.mjs but 310 hand-authored commit(s) — confirm generated vs config	auto-rules-2026-09-26
-kb/primer-template.md	C14-kb	doc	3209	55	2026-06-29	-	0	READ		doc; no automatic rule decides it	auto-rules-2026-09-26
 kb/process-priority.mjs	C14-kb	code	331	14	2026-08-01	-	3	READ		code; no automatic rule decides it	auto-rules-2026-09-26
 kb/public-store-classes.json	C14-kb	data/config	125	10	2026-09-13	-	29	DATA		generated — written by scripts/build-bundle.mjs, scripts/ci/build-fixture-kb.mjs; all 1 commits automated	auto-rules-2026-09-26
 kb/qudag-primer.md	C14-kb	doc	12801	288	2026-06-29	-	0	DATA		generated corpus prose (header says so)	auto-rules-2026-09-26
