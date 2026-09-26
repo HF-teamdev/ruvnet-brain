@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   capturePrivateOverlayState,
@@ -8,6 +9,7 @@ import {
   restorePrivateOverlayState,
   selectUpdateManagedStores,
 } from '../../kb/forge-update.mjs';
+import { runStorageTransaction } from '../../kb/update-storage-transaction.mjs';
 
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
@@ -207,5 +209,67 @@ describe('forge-update private overlay boundary', () => {
     expect(() => restorePrivateFilesIntoCandidate({ candidateDir, sourceDir: kbDir, overlay }))
       .toThrow(/symlink destination is not allowed/);
     expect(fs.existsSync(target)).toBe(false);
+  });
+});
+
+// S5: regression coverage for "single apply path" — the deleted helper stays gone, and a failure
+// inside restorePrivateFilesIntoCandidate mid-transaction rolls the WHOLE live tree back, not just
+// the in-memory overlay call.
+describe('S1/S5 — single apply path regression guards', () => {
+  it('applyPublicBundlePreservingPrivate is gone: not exported, and not present in the source text', () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../kb/forge-update.mjs'), 'utf8');
+    // Historical explanatory comments are allowed to name the deleted function; a live declaration
+    // or export is not. Match the exact declaration/export forms, not the prose that discusses them.
+    expect(source).not.toMatch(/\bfunction applyPublicBundlePreservingPrivate\b/);
+    expect(source).not.toMatch(/\bexport\s+(?:async\s+)?function applyPublicBundlePreservingPrivate\b/);
+  });
+
+  it('rolls the WHOLE live tree back, byte for byte, when restorePrivateFilesIntoCandidate collides mid-transaction', () => {
+    const { kbDir, privateStore } = registryFixture();
+    const overlay = capturePrivateOverlayState({ kbDir, allStores: [privateStore] });
+    const before = Object.fromEntries(fs.readdirSync(kbDir).map((name) => [name, fs.readFileSync(path.join(kbDir, name))]));
+
+    const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-update-candidate-source-'));
+    // The "new public bundle" collides with the private store's own filename — restorePrivateFilesIntoCandidate
+    // must refuse, and runStorageTransaction must treat that refusal exactly like any other
+    // prepareCandidate failure: candidate discarded, live untouched, no stray transaction directories.
+    fs.writeFileSync(path.join(sourceDir, 'makerkit-source.rvf'), 'a-colliding-public-file');
+
+    expect(() => runStorageTransaction({
+      liveDir: kbDir, sourceDir, transactionId: `s5-rollback-${Date.now()}`,
+      prepareCandidate: ({ candidateDir, liveDir }) => restorePrivateFilesIntoCandidate({ candidateDir, sourceDir: liveDir, overlay }),
+    })).toThrow(/collides with private file makerkit-source\.rvf/);
+
+    const after = Object.fromEntries(fs.readdirSync(kbDir).map((name) => [name, fs.readFileSync(path.join(kbDir, name))]));
+    expect(after).toEqual(before);
+    // Scoped to THIS kbDir's own basename — os.tmpdir() is shared with every other test running
+    // concurrently, so a blanket scan for the transaction-directory pattern would be flaky.
+    const parent = path.dirname(kbDir);
+    const base = path.basename(kbDir);
+    const stray = fs.readdirSync(parent).filter((name) => name.startsWith(`${base}.next-`)
+      || name.startsWith(`${base}.rollback-`) || name.startsWith(`${base}.failed-`));
+    expect(stray).toEqual([]);
+  });
+
+  // S3/S5: a store this brain pulled in via scripts/ingest-repo.mjs (origin:'local-ingest') is, from
+  // forge-update.mjs's point of view, just another updateManaged:false store — the extra field flows
+  // through capturePrivateOverlayState/restorePrivateFilesIntoCandidate/restorePrivateOverlayState
+  // untouched, with no special-casing needed. Proven directly rather than assumed.
+  it('a local-ingest store (origin:local-ingest) survives the apply path exactly like any private overlay', () => {
+    const { kbDir } = registryFixture();
+    const localIngestStore = { kbName: 'makerkit-source', updateManaged: false, origin: 'local-ingest', sourceCommit: 'private-commit' };
+    fs.writeFileSync(path.join(kbDir, 'SOURCE.json'), `${JSON.stringify({ stores: { public: { kbName: 'public' }, 'makerkit-source': localIngestStore } }, null, 2)}\n`);
+    const overlay = capturePrivateOverlayState({ kbDir, allStores: [localIngestStore] });
+    expect(overlay.sourceStores['makerkit-source'].origin).toBe('local-ingest');
+
+    const candidateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-update-local-ingest-candidate-'));
+    fs.writeFileSync(path.join(candidateDir, 'SOURCE.json'), `${JSON.stringify({ stores: { public: { kbName: 'public', sourceCommit: 'new' } } }, null, 2)}\n`);
+    fs.writeFileSync(path.join(candidateDir, 'RVF-GENERATIONS.json'), `${JSON.stringify({ stores: { public: { file: 'public.rvf' } } }, null, 2)}\n`);
+    fs.writeFileSync(path.join(candidateDir, 'repo-aliases.json'), '{}');
+
+    expect(restorePrivateFilesIntoCandidate({ candidateDir, sourceDir: kbDir, overlay })).toEqual({ restored: 1 });
+    expect(fs.readFileSync(path.join(candidateDir, 'makerkit-source.rvf'), 'utf8')).toBe('private-rvf-bytes');
+    const landed = JSON.parse(fs.readFileSync(path.join(candidateDir, 'SOURCE.json'), 'utf8'));
+    expect(landed.stores['makerkit-source']).toEqual(localIngestStore);
   });
 });
