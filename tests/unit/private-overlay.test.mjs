@@ -92,6 +92,34 @@ describe('private-overlay writer', () => {
     expect(Object.keys(afterStores)).toEqual(['public-store', STORE]);
   });
 
+  // S3 (explicit local ownership): scripts/ingest-repo.mjs distinguishes a repo it pulled in on
+  // demand from a genuinely private pre-built sidecar via this opt-in field.
+  it('stamps an opt-in origin alongside updateManaged:false when passed, and omits it entirely when not', () => {
+    const root = liveShapedRoot(); const from = sidecarDir();
+    applyPrivateOverlay({ root, from, stores: [STORE], origin: 'local-ingest' });
+    const after = readJson(path.join(root, 'SOURCE.json'));
+    expect(after.stores[STORE]).toEqual({
+      kbName: STORE, updateManaged: false, builtUtc: '2026-07-31T15:15:56.164Z',
+      sourceCommit: null, sourceRepo: 'private', canonicalManifestUrl: null, origin: 'local-ingest',
+    });
+  });
+
+  // scripts/ingest-repo.mjs builds directly into the live root (forge-refresh.mjs --out <kbDir>) —
+  // it has no separate sidecar directory to point `--from` at. Pointing `--from` at the SAME root
+  // must degenerate to registry-stamping only: every required sidecar already compares byte-equal
+  // to itself, so nothing is (or needs to be) copied, and PRIVATE-STORES.json/SOURCE.json still get
+  // written correctly.
+  it('degenerates to registry-stamping only when --from equals --root (the ingest-repo.mjs shape)', () => {
+    const root = liveShapedRoot(); // fence already lists STORE by default
+    const from = sidecarDir();
+    applyPrivateOverlay({ root, from, stores: [STORE] }); // first land the sidecar files IN root
+    const beforeBytes = fs.readFileSync(path.join(root, `${STORE}.big.rvf`));
+    const receipt = applyPrivateOverlay({ root, from: root, stores: [STORE], origin: 'local-ingest' });
+    expect(receipt.stores[0].copied).toEqual([]);
+    expect(fs.readFileSync(path.join(root, `${STORE}.big.rvf`))).toEqual(beforeBytes);
+    expect(readJson(path.join(root, 'SOURCE.json')).stores[STORE].origin).toBe('local-ingest');
+  });
+
   it('records the RVF generation with the ledger identity untouched and the bytes copied exactly', () => {
     const root = liveShapedRoot(); const from = sidecarDir();
     const before = readJson(path.join(root, 'RVF-GENERATIONS.json'));

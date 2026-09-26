@@ -4,6 +4,14 @@
 //
 //   node scripts/private-overlay.mjs --root <kbDir> --from <sidecarDir> --store <name> [--store ...]
 //                                    [--dry-run] [--force] [--alias <name>=<nick,nick>] [--card <name>=<file>]
+//                                    [--origin <label>]
+//
+// `--origin` is stamped into SOURCE.json alongside updateManaged:false (omitted when not passed, so
+// every existing caller's output is byte-identical). scripts/ingest-repo.mjs passes `local-ingest`
+// (S3: explicit local ownership) so a repo pulled in on demand is distinguishable from a genuinely
+// private pre-built sidecar; `--from` may equal `--root` for that case (the bytes are already in
+// place — this writer degenerates to registry stamping only, since every file compares byte-equal
+// to itself).
 //
 // WHY THIS FILE EXISTS (measured 2026-09-11/12). kb/forge-update.mjs preserves exactly one thing
 // across a public bundle apply: SOURCE.json store entries flagged `updateManaged:false`
@@ -96,7 +104,7 @@ function cardFor({ from, name, meta, cardFile }) {
   throw new Error(`${name}: no card source — add ${name}-primer.md to ${from}, or pass --card ${name}=<file>`);
 }
 
-function planStore({ root, from, name, force, aliases, cardFile }) {
+function planStore({ root, from, name, force, aliases, cardFile, origin }) {
   if (!NAME_RE.test(name)) throw new Error(`invalid store name: ${name}`);
   const missing = REQUIRED_SIDECARS.filter((suffix) => !isRegular(path.join(from, name + suffix)));
   if (missing.length) throw new Error(`${name}: missing sidecar(s) in ${from}: ${missing.map((suffix) => name + suffix).join(', ')}`);
@@ -126,7 +134,14 @@ function planStore({ root, from, name, force, aliases, cardFile }) {
   return {
     name, files, copies, card, aliases,
     generation: { file: `${name}.big.rvf`, sha256: sha256File(rvf), bytes: fs.statSync(rvf).size, model: embed.model, dimensions: embed.dimensions, sourceCommit: null, builtUtc },
-    source: { kbName: name, updateManaged: false, builtUtc, sourceCommit: null, sourceRepo: 'private', canonicalManifestUrl: null },
+    // `origin` is opt-in (omitted entirely when not supplied, never written as null/undefined) so a
+    // caller that does not pass it gets the exact byte-identical stamp this writer has always
+    // produced. S3 (explicit local ownership): scripts/ingest-repo.mjs passes origin:'local-ingest'
+    // so a store this brain pulled in on demand is distinguishable, in SOURCE.json itself, from one
+    // that arrived as a genuinely private pre-built sidecar (sourceRepo:'private' alone conflated
+    // the two before this).
+    source: { kbName: name, updateManaged: false, builtUtc, sourceCommit: null, sourceRepo: 'private',
+      canonicalManifestUrl: null, ...(origin ? { origin } : {}) },
   };
 }
 
@@ -134,7 +149,7 @@ function planStore({ root, from, name, force, aliases, cardFile }) {
  * Add private stores to a live brain root. Idempotent; refuses before writing anything; snapshots
  * every registry it is about to change to `<file>.pre-overlay-<epoch>` first; temp+rename writes.
  */
-export function applyPrivateOverlay({ root, from, stores, dryRun = false, force = false, aliases = {}, cards = {}, now = Date.now }) {
+export function applyPrivateOverlay({ root, from, stores, dryRun = false, force = false, aliases = {}, cards = {}, now = Date.now, origin = null }) {
   root = path.resolve(String(root || ''));
   from = path.resolve(String(from || ''));
   if (!Array.isArray(stores) || !stores.length) throw new Error('at least one --store <name> is required');
@@ -160,7 +175,7 @@ export function applyPrivateOverlay({ root, from, stores, dryRun = false, force 
     schemaVersion: 1, kind: 'ruvnet-brain-private-overlay-receipt', at: new Date(now()).toISOString(),
     root, from, dryRun, force, stores: [],
   };
-  const plans = stores.map((name) => planStore({ root, from, name, force, aliases: aliases[name], cardFile: cards[name] }));
+  const plans = stores.map((name) => planStore({ root, from, name, force, aliases: aliases[name], cardFile: cards[name], origin }));
   for (const plan of plans) {
     const { name } = plan;
     if (!fence.has(name.toLowerCase())) {
@@ -228,6 +243,7 @@ function parseArgs(argv) {
     else if (flag === '--force') options.force = true;
     else if (flag === '--alias') { const [name, list] = pair(next(), flag); options.aliases[name] = list.split(',').map((s) => s.trim()).filter(Boolean); }
     else if (flag === '--card') { const [name, file] = pair(next(), flag); options.cards[name] = path.resolve(file); }
+    else if (flag === '--origin') options.origin = next();
     else throw new Error(`unknown argument: ${flag}`);
   }
   if (!options.root || !options.from || !options.stores.length) {
