@@ -230,6 +230,27 @@ const STANDALONE = [
     + 'ground-before-write. Per ADR-0014 ownership moved to the Kling skill (confirmed live: a copy '
     + 'ships at ~/.claude/skills/klingai/scripts/kling-preflight.sh); NOT currently wired into any '
     + 'settings.json there either — honestly dormant until a user opts in, not a silent gap'],
+
+  // H5 (2026-09-26 dead-code audit): decision-gate.mjs's REGISTRY['bash'] was the only production
+  // caller of these three — never registered in plugin/hooks/hooks.json or codex-hooks.json
+  // (continuity-hook-policy.mjs's own header: "remains reachable through hook-shim's dispatch table
+  // by explicit invocation" only). Removing that dead route makes each of these genuinely uncalled
+  // by any product path. Not deleted: each exports pure, independently-tested logic with its own
+  // passing suite — identifier-preflight.test.mjs / spend-guard.test.mjs import and exercise these
+  // functions directly, and tests/unit/lesson-gate.test.mjs imports degradation-watch.mjs's
+  // `dependentEvent` to cross-check lesson-hooks.sh's own pattern. A test importing an export is not
+  // a product caller (same distinction this file already draws for correction-detect-measure above),
+  // so these are honestly STANDALONE rather than silently left to read as still-wired.
+  ['identifier-preflight', 'H5: orphaned by decision-gate.mjs\'s dead bash route (REGISTRY[\'bash\'] '
+    + 'removed 2026-09-26). Pure `check`/`identifierIn` logic remains directly imported and exercised '
+    + 'by its own tests/unit/identifier-preflight.test.mjs; no product path calls it'],
+  ['spend-guard', 'H5: orphaned by decision-gate.mjs\'s dead bash route (REGISTRY[\'bash\'] removed '
+    + '2026-09-26). Its logic remains directly imported and exercised by its own '
+    + 'tests/unit/spend-guard.test.mjs; no product path calls it'],
+  ['degradation-watch', 'H5: orphaned by decision-gate.mjs\'s dead bash route (REGISTRY[\'bash\'] '
+    + 'removed 2026-09-26). Its `dependentEvent` export remains directly imported by '
+    + 'tests/unit/lesson-gate.test.mjs (cross-checked against lesson-hooks.sh\'s own pattern) and by '
+    + 'its own test file; no product path calls it'],
 ];
 // REMOVED 2026-07-22, each verified before removal:
 //   check-legibility / check-indexation / status-honesty — claimed "invoked from the workflow";
@@ -889,9 +910,24 @@ export function hookWiringAudit({
   const scriptsDir = path.join(repo, 'plugin/scripts');
   let all = [];
   try { all = fs.readdirSync(scriptsDir).filter((f) => /\.(mjs|sh)$/.test(f)); } catch { /* no dir */ }
+  // H6 (2026-09-26 dead-code audit): hook-shim.mjs is a DISPATCH TABLE, not a script that
+  // unconditionally executes everything it mentions. `scanConfig()` above already proves reachability
+  // for a TABLE entry CORRECTLY — only when its id is genuinely dispatched by a real command string in
+  // a manifest. Letting hook-shim.mjs ALSO participate as a "from" in the generic fixed-point pass
+  // below double-counts every OTHER entry in its TABLE as "spawned", because the pass's own predicate
+  // (callerPattern) matches any quoted filename — and every TABLE entry is, by construction, a quoted
+  // filename in hook-shim.mjs's source, dispatched or not. Measured: before this exclusion,
+  // design-wall.sh, route-dispatch.sh, verify-interface.sh, learn-capture.sh, learn-flush.mjs,
+  // md-stamp.mjs, signal-watch.mjs, routing-outcome-capture.mjs and swarm-slot-recycler.mjs all read
+  // "wired · via spawned by plugin/scripts/hook-shim.mjs" while zero manifest (hooks.json,
+  // codex-hooks.json, this repo's or the user's settings.json) ever dispatches most of their ids —
+  // exactly the false positive this check exists to catch. Excluding it here does not remove any
+  // GENUINE reachability: every id hook-shim.mjs's TABLE actually dispatches was already added by
+  // scanConfig() above, before this loop runs at all.
   for (let i = 0; i < 10; i++) {
     let changed = false;
     for (const from of [...reached.keys()]) {
+      if (from === 'hook-shim.mjs') continue;
       const src = sourceCache.commentFree(path.join(scriptsDir, from));
       if (src === null) continue;
       for (const cand of all) {
