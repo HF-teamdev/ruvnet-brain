@@ -111,6 +111,8 @@ const checks = [
         .map((w) => ((read(w).match(/^name:\s*(.+)$/m) || [])[1] || w).trim().replace(/['"]/g, ''))
         .filter((n) => !alerts.includes(n)));
     } },
+  { id: 'C4', area: 'release', scope: 'machine', title: 'The corpus gist job has its authenticated token (RUVNET_GISTS_TOKEN)',
+    run: () => { const r = spawnSync('gh', ['secret', 'list', '-R', 'stuinfla/ruvnet-brain'], { encoding: 'utf8' }); return { ok: /^RUVNET_GISTS_TOKEN\b/m.test(r.stdout), detail: r.stdout.split('\n').map((l) => l.split(/\s/)[0]).filter(Boolean).join(', ') }; } },
   { id: 'C3', area: 'release', scope: 'machine', title: 'Publishing requires the owner: Production environment has a required reviewer',
     run: () => {
       const r = spawnSync('gh', ['api', 'repos/stuinfla/ruvnet-brain/environments', '-q',
@@ -128,8 +130,17 @@ const checks = [
       const active = json(readAbs(path.join(HOME, '.cache/ruvnet-brain/active.json'))).version;
       return { ok: !!tag && tag === active, detail: `knowledge ${tag || 'unknown'} vs plugin ${active || 'unknown'}` };
     } },
-  { id: 'D3', area: 'corpus', scope: 'machine', title: 'The scheduled updater is loaded in launchd',
-    run: () => { const r = spawnSync('launchctl', ['print', `gui/${process.getuid()}/com.ruvnet.brain-update`], { encoding: 'utf8' }); return { ok: r.status === 0, detail: r.status === 0 ? 'loaded' : 'not loaded' }; } },
+  { id: 'D3', area: 'corpus', scope: 'machine', title: 'Exactly one update owner exists, and its last refresh run passed within 26h',
+    run: () => {
+      const brainJob = spawnSync('launchctl', ['print', `gui/${process.getuid()}/com.ruvnet.brain-update`], { encoding: 'utf8' }).status === 0;
+      const akJob = spawnSync('launchctl', ['print', `gui/${process.getuid()}/com.stuartkerr.ak-sync`], { encoding: 'utf8' }).status === 0;
+      const dir = path.join(HOME, '.cache/ruvnet-brain/refresh-runs');
+      const runs = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')).sort() : [];
+      const last = runs.length ? json(readAbs(path.join(dir, runs.at(-1)))) : {};
+      const fresh = last.startedAt && (Date.now() - Date.parse(last.startedAt)) < 26 * 3600e3;
+      const owners = [brainJob && 'brain-update', akJob && 'ak-sync'].filter(Boolean);
+      return { ok: owners.length === 1 && fresh && last.terminalVerdict !== 'failed', detail: `owners=[${owners.join(',') || 'none'}] last run ${last.startedAt || 'none'} verdict ${last.terminalVerdict || last.status || 'none'}` };
+    } },
 
   // E — one hook / context plane
   { id: 'E1', area: 'hooks', scope: 'machine', title: 'No stale autonomous-loop checkpoint is injected into sessions',
@@ -141,6 +152,12 @@ const checks = [
     } },
   { id: 'E2', area: 'hooks', scope: 'machine', title: 'Only one hook writes session snapshots (no global + plugin double writer)',
     run: () => { const s = readAbs(path.join(HOME, '.claude/settings.json')); return { ok: !/agentdb-autocapture/.test(s), detail: /agentdb-autocapture/.test(s) ? 'global agentdb-autocapture still registered alongside the plugin session-snapshot' : 'single writer' }; } },
+
+  { id: 'E3', area: 'hooks', scope: 'machine', title: 'Lessons live in one store (no .swarm lesson-* rows outside the plugin lesson store)',
+    run: () => { const r = spawnSync('ruflo', ['memory', 'list', '--path', path.join(HOME, 'Code/ruvnet-brain/.swarm/memory.db'), '--limit', '500'], { encoding: 'utf8', timeout: 60000 });
+      const n = (r.stdout.match(/lesson-/g) || []).length; return { ok: n === 0, detail: `${n} lesson-* rows in project .swarm (plugin store: ~/.config/ruvnet-brain/lessons.json)` }; } },
+  { id: 'E4', area: 'hooks', scope: 'machine', title: 'One session-start continuity restorer (global hook stands down when the plugin is enabled)',
+    run: () => { const s = readAbs(path.join(HOME, '.claude/hooks/agentdb-ensure.sh')); return { ok: s.includes('SINGLE CONTINUITY OWNER'), detail: 'agentdb-ensure.sh must stand down its project-state recall' }; } },
 
   // F — this Mac
   { id: 'F1', area: 'machine', scope: 'machine', title: 'No plaintext API keys in ~/.claude/settings.json',
