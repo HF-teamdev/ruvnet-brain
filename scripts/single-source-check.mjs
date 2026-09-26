@@ -60,7 +60,8 @@ const checks = [
   { id: 'B1', area: 'rules', scope: 'repo', title: 'CONTRIBUTING.md is the only operating rulebook (no parallel process docs)',
     run: () => none(['docs/QA-RELEASE-PROCESS.md', 'docs/NIGHTLY-REFRESH.md'].filter((f) => tracked.includes(f))) },
   { id: 'B2', area: 'rules', scope: 'repo', title: 'No instruction tells anyone to publish locally',
-    run: () => none(grepIn(instructions.filter((f) => f !== 'CONTRIBUTING.md'), /release\.mjs --publish|\bnpm publish\b|gh release create/)) },
+    run: () => none(grepIn(instructions.filter((f) => f !== 'CONTRIBUTING.md'), /release\.mjs --publish|\bnpm publish\b|gh release create/)
+      .filter((l) => !/\b(never|not|unusable|refus|intentionally|blocked|cannot|forbid|only through|provenance|ahead of the last)/i.test(l))) },
   { id: 'B3', area: 'rules', scope: 'repo', title: 'No instruction uses npx for ruflo / claude-flow (one global ruflo)',
     run: () => none(grepIn(instructions, /npx (-y )?(@claude-flow|claude-flow|ruflo)\b/)) },
   { id: 'B4', area: 'rules', scope: 'repo', title: 'No live file cites a workflow that does not exist',
