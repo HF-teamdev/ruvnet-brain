@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { applyPrivateOverlay } from '../../scripts/private-overlay.mjs';
-import { applyPublicBundlePreservingPrivate, capturePrivateOverlayState } from '../../kb/forge-update.mjs';
+import { capturePrivateOverlayState, restorePrivateFilesIntoCandidate } from '../../kb/forge-update.mjs';
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../scripts/private-overlay.mjs');
 const STORE = 'fixture-private';
@@ -132,25 +132,26 @@ describe('private-overlay writer', () => {
     ]);
     expect(overlay.cards[STORE]).toMatch(/^## fixture-private\n/);
 
-    const workspace = tmp('private-overlay-bundle-');
-    const backupPath = path.join(workspace, 'backup'); const extractDir = path.join(workspace, 'extract');
-    fs.cpSync(root, backupPath, { recursive: true });
-    fs.mkdirSync(extractDir);
-    writeJson(path.join(extractDir, 'SOURCE.json'), { canonicalManifestUrl: MANIFEST_URL, brainVersion: '0.0.0-fixture-next', releaseTag: 'v0.0.0-fixture-next', stores: { 'public-store': { kbName: 'public-store', sourceCommit: 'c'.repeat(40) } } });
-    writeJson(path.join(extractDir, 'RVF-GENERATIONS.json'), { schemaVersion: 2, brainVersion: '0.0.0-fixture-next', releaseTag: 'v0.0.0-fixture-next', stores: { 'public-store': { file: 'public-store.big.rvf', sha256: sha('public-v2'), bytes: 9 } } });
-    writeJson(path.join(extractDir, 'repo-aliases.json'), { 'public-store': ['pub2'] });
-    fs.writeFileSync(path.join(extractDir, 'capability-cards.md'), '# Capability Cards\n\n## public-store\nNew public card.\n');
-    fs.writeFileSync(path.join(extractDir, 'public-store.big.rvf'), 'public-v2');
-    writeJson(path.join(extractDir, 'PRIVATE-STORES.json'), { privateStores: [STORE] });
+    // candidateDir stands in for the sibling tree runStorageTransaction builds from the freshly
+    // extracted public bundle (S1: ONE APPLY PATH — restorePrivateFilesIntoCandidate is what
+    // forge-update.mjs's prepareCandidate actually calls; the deleted applyPublicBundlePreservingPrivate
+    // was a second, parallel implementation production code never called).
+    const candidateDir = tmp('private-overlay-candidate-');
+    writeJson(path.join(candidateDir, 'SOURCE.json'), { canonicalManifestUrl: MANIFEST_URL, brainVersion: '0.0.0-fixture-next', releaseTag: 'v0.0.0-fixture-next', stores: { 'public-store': { kbName: 'public-store', sourceCommit: 'c'.repeat(40) } } });
+    writeJson(path.join(candidateDir, 'RVF-GENERATIONS.json'), { schemaVersion: 2, brainVersion: '0.0.0-fixture-next', releaseTag: 'v0.0.0-fixture-next', stores: { 'public-store': { file: 'public-store.big.rvf', sha256: sha('public-v2'), bytes: 9 } } });
+    writeJson(path.join(candidateDir, 'repo-aliases.json'), { 'public-store': ['pub2'] });
+    fs.writeFileSync(path.join(candidateDir, 'capability-cards.md'), '# Capability Cards\n\n## public-store\nNew public card.\n');
+    fs.writeFileSync(path.join(candidateDir, 'public-store.big.rvf'), 'public-v2');
+    writeJson(path.join(candidateDir, 'PRIVATE-STORES.json'), { privateStores: [STORE] });
 
-    expect(applyPublicBundlePreservingPrivate({ extractDir, kbDir: root, backupPath, overlay })).toEqual({ restored: 1 });
-    expect(fs.readFileSync(path.join(root, `${STORE}.big.rvf`), 'utf8')).toBe('private-rvf-bytes');
-    expect(fs.readFileSync(path.join(root, 'public-store.big.rvf'), 'utf8')).toBe('public-v2');
-    const source = readJson(path.join(root, 'SOURCE.json'));
+    expect(restorePrivateFilesIntoCandidate({ candidateDir, sourceDir: root, overlay })).toEqual({ restored: 1 });
+    expect(fs.readFileSync(path.join(candidateDir, `${STORE}.big.rvf`), 'utf8')).toBe('private-rvf-bytes');
+    expect(fs.readFileSync(path.join(candidateDir, 'public-store.big.rvf'), 'utf8')).toBe('public-v2');
+    const source = readJson(path.join(candidateDir, 'SOURCE.json'));
     expect(source.brainVersion).toBe('0.0.0-fixture-next');
     expect(source.stores[STORE].updateManaged).toBe(false);
-    expect(readJson(path.join(root, 'RVF-GENERATIONS.json')).stores[STORE].sha256).toBe(sha('private-rvf-bytes'));
-    expect(fs.readFileSync(path.join(root, 'capability-cards.md'), 'utf8')).toMatch(/^## fixture-private\n/m);
+    expect(readJson(path.join(candidateDir, 'RVF-GENERATIONS.json')).stores[STORE].sha256).toBe(sha('private-rvf-bytes'));
+    expect(fs.readFileSync(path.join(candidateDir, 'capability-cards.md'), 'utf8')).toMatch(/^## fixture-private\n/m);
   });
 
   it('is idempotent: a second run changes nothing and adds no snapshot', () => {

@@ -502,6 +502,47 @@ export function restorePrivateOverlayState({ kbDir, overlay }) {
   return { restored: Object.keys(overlay.sourceStores).length };
 }
 
+/**
+ * ONE APPLY PATH (S1): copy the captured private overlay's artifact files from `sourceDir` (the
+ * live tree, still untouched at this point) onto `candidateDir` (the sibling tree
+ * `runStorageTransaction` builds from the freshly extracted public bundle), then restore the
+ * private registry entries with `restorePrivateOverlayState`.
+ *
+ * This is the ONLY place production code copies private files into a tree that is about to become
+ * live — `bin/install.mjs` and `kb/forge-update.mjs`'s `main()` both call this from inside
+ * `prepareCandidate`, before `runStorageTransaction` ever renames anything into place. There used to
+ * be a second, parallel implementation (`applyPublicBundlePreservingPrivate`) that operated on a
+ * full-tree copy-then-restore-from-backup model; it was never wired into `main()` — the real apply
+ * path already used `runStorageTransaction`'s rename-based candidate/rollback machinery — so it was
+ * exercised only by its own tests. Deleted rather than kept "for coverage": a second apply path that
+ * production code never calls is not a safety net, it is a second implementation to keep in sync
+ * (and the one place it silently diverged from the real path is the collision check below, which
+ * the real path had NOT been enforcing).
+ *
+ * Collision detection matters here specifically because it did not previously exist on the real
+ * path: `candidateDir` already holds the extracted public bundle's files (built by
+ * `fs.cpSync(sourceDir=extractDir, candidateDir, ...)` before `prepareCandidate` runs), so copying a
+ * private file over a same-named public one would silently discard the public bytes. Refusing BEFORE
+ * copying anything is the assertion `applyPublicBundlePreservingPrivate` had and the real path did
+ * not; it is preserved here rather than dropped.
+ */
+export function restorePrivateFilesIntoCandidate({ candidateDir, sourceDir, overlay }) {
+  if (!overlay) return { restored: 0 };
+  for (const relative of Object.keys(overlay.files || {})) {
+    const target = assertNoFollowPath(candidateDir, path.join(candidateDir, relative));
+    if (fs.existsSync(target)) {
+      throw new Error(`public bundle collides with private file ${relative}; refusing to copy`);
+    }
+    const source = assertNoFollowPath(sourceDir, path.join(sourceDir, relative));
+    if (!fs.existsSync(source) || !fs.lstatSync(source).isFile()) {
+      throw new Error(`private source file is missing or not regular: ${relative}`);
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+  }
+  return restorePrivateOverlayState({ kbDir: candidateDir, overlay });
+}
+
 const manifestUrl = source.canonicalManifestUrl || stores.find((s) => s.canonicalManifestUrl)?.canonicalManifestUrl;
 if (!manifestUrl) {
   die(`self-update not configured for this build — SOURCE.json has no canonicalManifestUrl ` +
@@ -609,59 +650,6 @@ function copyTree(srcDir, dstDir, root = dstDir, prefix = '') {
     const s = path.join(srcDir, ent.name), d = assertNoFollowPath(root, path.join(dstDir, ent.name));
     if (ent.isDirectory()) { if (!fs.existsSync(d)) fs.mkdirSync(d); copyTree(s, d, root, relative); }
     else { if (!fs.existsSync(path.dirname(d))) fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); }
-  }
-}
-
-function restoreTreeExact(srcDir, dstDir, root = dstDir, prefix = '') {
-  assertNoFollowPath(root, dstDir);
-  if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir);
-  const sourceNames = new Set(fs.readdirSync(srcDir));
-  for (const name of fs.readdirSync(dstDir)) {
-    const target = assertNoFollowPath(root, path.join(dstDir, name));
-    if (!sourceNames.has(name)) fs.rmSync(target, { recursive: true, force: true });
-  }
-  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) throw new Error(`backup contains a symbolic link: ${path.join(prefix, entry.name)}`);
-    const source = path.join(srcDir, entry.name);
-    const target = assertNoFollowPath(root, path.join(dstDir, entry.name));
-    if (entry.isDirectory()) {
-      if (fs.existsSync(target) && !fs.lstatSync(target).isDirectory()) fs.rmSync(target, { force: true });
-      if (!fs.existsSync(target)) fs.mkdirSync(target);
-      restoreTreeExact(source, target, root, path.join(prefix, entry.name));
-    } else {
-      if (fs.existsSync(target) && fs.lstatSync(target).isDirectory()) fs.rmSync(target, { recursive: true, force: true });
-      fs.copyFileSync(source, target);
-    }
-  }
-}
-
-/** Apply a public bundle while preserving private metadata; restore the full backup on failure. */
-export function applyPublicBundlePreservingPrivate({ extractDir, kbDir, backupPath, overlay }) {
-  const privateFiles = new Set(Object.keys(overlay?.files || {}));
-  const collision = relativeFiles(extractDir).find((relative) => privateFiles.has(relative));
-  if (collision) throw new Error(`public bundle collides with private file ${collision}; refusing to copy`);
-  try {
-    // The public bundle is an exact tree, not an overlay. Overlay copies kept retired scripts,
-    // stale policies, and removed RVFs alive indefinitely. Replace the governed tree exactly,
-    // then restore only the explicitly captured private overlay from the pre-update snapshot.
-    restoreTreeExact(extractDir, kbDir);
-    for (const relative of privateFiles) {
-      const source = assertNoFollowPath(backupPath, path.join(backupPath, relative));
-      const target = assertNoFollowPath(kbDir, path.join(kbDir, relative));
-      if (!fs.existsSync(source) || !fs.lstatSync(source).isFile()) {
-        throw new Error(`private backup file is missing or not regular: ${relative}`);
-      }
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(source, target);
-    }
-    return restorePrivateOverlayState({ kbDir, overlay });
-  } catch (error) {
-    try {
-      restoreTreeExact(backupPath, kbDir);
-    } catch (rollbackError) {
-      throw new Error(`${error.message}; automatic rollback also failed: ${rollbackError.message}`);
-    }
-    throw new Error(`${error.message}; restored pre-update bytes from ${backupPath}`);
   }
 }
 
@@ -1451,13 +1439,7 @@ async function main() {
           fs.copyFileSync(assertNoFollowPath(liveDir, liveRuntimeIdentity),
             assertNoFollowPath(candidateDir, path.join(candidateDir, 'RUNTIME-IDENTITY.json')));
         }
-        for (const relative of Object.keys(privateOverlay?.files || {})) {
-          const sourceFile = assertNoFollowPath(liveDir, path.join(liveDir, relative));
-          const targetFile = assertNoFollowPath(candidateDir, path.join(candidateDir, relative));
-          fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-          fs.copyFileSync(sourceFile, targetFile);
-        }
-        restorePrivateOverlayState({ kbDir: candidateDir, overlay: privateOverlay });
+        restorePrivateFilesIntoCandidate({ candidateDir, sourceDir: liveDir, overlay: privateOverlay });
         // ATOMIC WITH INSTALLATION, not after it. The transport identity is written INTO the
         // candidate, so the storage transaction's single rename either promotes the bytes AND the
         // record of where they came from, or promotes neither. A crash here cannot leave a tree

@@ -9,7 +9,9 @@
 // across a public bundle apply: SOURCE.json store entries flagged `updateManaged:false`
 // (capturePrivateOverlayState, kb/forge-update.mjs:356-358) — the capture then needs a matching
 // RVF-GENERATIONS.json row with a `file` (:369-372) and picks up `## <name>` cards and alias rows
-// (:402-408). restoreTreeExact (:570-591) deletes every name the bundle lacks. Nothing anywhere
+// (:402-408). The apply path builds its candidate fresh from the extracted bundle
+// (`restorePrivateFilesIntoCandidate`, forge-update.mjs — the one apply path, S1), so every name the
+// bundle lacks is simply absent from that candidate. Nothing anywhere
 // WROTE that flag: forge-refresh's writeSourceManifest records public repos only, and
 // ingest-repo.mjs builds from a git checkout with a canonical URL. So private stores that arrive as
 // pre-built sidecars had no writer, sat in the root unflagged, and 0 of 8 survived the 2026-09-10
