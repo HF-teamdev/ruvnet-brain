@@ -420,8 +420,19 @@ fi
 # The bug this kills: line "5. CLEARED TO GO" below ends every build response with "Want me to
 # build it now?" — a question asked to an EMPTY ROOM inside a /loop. That is what a real user's
 # "it wouldn't run autonomously" looked like from the outside.
+#
+# H3 (fixed): the ORIGINAL fix over-corrected into a NEW bug in the opposite direction. Matching
+# conversational phrases — "autonomous", "unattended", "don't stop", "keep going/working", "soak
+# run" — meant an ATTENDED human saying ordinary things ("please keep working on this", "don't stop
+# until the tests pass") got the full AUTONOMOUS MODE block injected: "no human is watching", "NEVER
+# halt to ask", ignore the CLEARED-TO-GO checkpoint question. A human who is plainly IN the
+# conversation is not an empty room; inferring "nobody is watching" from prose a watching human just
+# typed is exactly backwards. AUTON is now restricted to signals a HUMAN does not type by hand: the
+# `<<autonomous-loop` sentinel a real unattended harness wraps its own prompts in, a `/loop` slash
+# command LEADING the text (the actual mechanism that starts a loop — see the `loop` skill — not the
+# bare word "loop" appearing anywhere), or the explicit RUVNET_AUTONOMOUS=1 environment signal.
 AUTON=0
-if printf '%s' "$TEXT" | grep -qiE '/loop|\bautonomous(ly)?\b|\bunattended\b|do(n.t| not) stop|keep (working|going)( until| on)?|\bsoak run\b|<<autonomous-loop'; then
+if printf '%s' "$TEXT" | grep -qiE '<<autonomous-loop|^[[:space:]]*/loop\b'; then
   AUTON=1
 fi
 [ "${RUVNET_AUTONOMOUS:-0}" = "1" ] && AUTON=1
@@ -509,9 +520,39 @@ if [ "$AUTON" -eq 1 ]; then
    and a wait.
 EOF
   if [ -f "$CP_FILE" ]; then
-    echo "[RuvNet Brain — RESUME: your prior checkpoint. Continue from 'next'; do not repeat done work.]"
-    cat "$CP_FILE" 2>/dev/null
-    echo ""
+    # H3: a checkpoint from a loop that ended days or weeks ago used to be injected UNCONDITIONALLY —
+    # resumed as though it were this session's own live state, with no age check at all. The 24h
+    # staleness rule is owned once, in scripts/loop-checkpoint.mjs's checkpointStaleness() (also used
+    # by scripts/single-source-check.mjs's E1 audit — see that file), so ground-ruvnet.sh never
+    # re-derives the threshold itself. loop-checkpoint.mjs is resolved SELF-RELATIVE to this file, not
+    # cwd-relative: this hook runs with cwd set to the CALLING project, which for every consumer of
+    # this plugin except this repo's own dogfood checkout has no `scripts/` dir of its own at all.
+    STALE_SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+    LOOP_CHECKPOINT=""
+    if [ -n "$STALE_SELF_DIR" ]; then
+      if [ -f "$STALE_SELF_DIR/loop-checkpoint.mjs" ]; then
+        LOOP_CHECKPOINT="$STALE_SELF_DIR/loop-checkpoint.mjs"
+      elif [ -f "$STALE_SELF_DIR/../../scripts/loop-checkpoint.mjs" ]; then
+        LOOP_CHECKPOINT="$STALE_SELF_DIR/../../scripts/loop-checkpoint.mjs"
+      fi
+    fi
+    STALE_RC=9
+    STALE_AGE=""
+    if [ -n "$LOOP_CHECKPOINT" ] && command -v node >/dev/null 2>&1; then
+      STALE_AGE=$(node "$LOOP_CHECKPOINT" stale 2>/dev/null)
+      STALE_RC=$?
+    fi
+    if [ "$STALE_RC" -eq 1 ]; then
+      echo "[RuvNet Brain — a stale checkpoint (age ${STALE_AGE} days) was ignored; starting fresh rather than resuming a plan that old.]"
+    else
+      # RC 0 (fresh) — inject as intended. RC 2 (no parseable `updatedAt`) or RC 9 (the staleness
+      # check itself could not run: no node, or this isn't a checkout that ships loop-checkpoint.mjs)
+      # both mean "unknown age", which must never be treated as PROVEN stale — fall back to the
+      # pre-fix behavior of injecting rather than silently dropping a checkpoint we cannot judge.
+      echo "[RuvNet Brain — RESUME: your prior checkpoint. Continue from 'next'; do not repeat done work.]"
+      cat "$CP_FILE" 2>/dev/null
+      echo ""
+    fi
   fi
 fi
 
