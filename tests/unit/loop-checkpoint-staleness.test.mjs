@@ -75,6 +75,6 @@ describe('loop-checkpoint.mjs stale CLI verb — exit-code protocol', () => {
     fs.writeFileSync(file, JSON.stringify(cp));
     const r = runStale(dir);
     expect(r.status).toBe(1);
-    expect(r.stdout).toBe('5');
+    expect(r.stdout).toBe('5'); // sync-version-ignore: the fixture itself backdates by exactly 5 days (line above) — this is not a restated fact, it's the test's own controlled input
   });
 });
