@@ -27,7 +27,7 @@ States: `LIVE` (in effect on the machine/users, verified) · `LIVE-PARTIAL` (in 
 | 5 | One machine updater | ak-sync green two consecutive nights; nothing the retired job did is lost (audited) | REOPENED | |
 | 7 | One session-start continuity restorer | One restorer, measured restoring state in every project that has state | REOPENED | |
 | 8 | One session-snapshot writer | One writer that keeps summaries + WAL maintenance, measured landing rows in every `.swarm` project | REOPENED | |
-| 9 | One lesson store | All lessons in one store, zero lost (row-by-row mapping), one injector | IN-PROGRESS | E3 |
+| 9 | One lesson store | All lessons in one store, zero lost (row-by-row mapping), one injector | LIVE | E3 |
 | 10 | False "no search_ruvnet" Stop block (#316) | One vocabulary; regression test fails on old code, passes on new | IN-PROGRESS | |
 | 11 | Hooks firing on notifications / false "AUTONOMOUS MODE" / unclosable objective | Each root-caused with regression tests | IN-PROGRESS | E1 |
 | 12 | One rule for verifying memory (`ruflo memory retrieve`) | No instruction anywhere (incl. ~/.codex/AGENTS.md) says to use sqlite3 | LIVE-PARTIAL | |
