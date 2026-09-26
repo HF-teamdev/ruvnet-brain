@@ -36,7 +36,7 @@ import { readExplainerBadgeVersion, writeExplainerBadgeVersion } from '../../scr
 describe('sync-version.mjs explainer status label', () => {
   it('recognizes the product version when a public npm version follows it', () => {
     const label = '&middot; v4.3.27 &middot; public npm v4.3.26';
-    expect(readExplainerBadgeVersion(label)).toBe('4.3.27');
+    expect(readExplainerBadgeVersion(label)).toBe('4.3.27'); // sync-version-ignore: arbitrary fixture input for a regex parser, not the repo's actual shipped version
     expect(writeExplainerBadgeVersion(label, '4.3.28'))
       .toBe('&middot; v4.3.28 &middot; public npm v4.3.26');
   });
