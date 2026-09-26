@@ -24,7 +24,7 @@ States: `LIVE` (in effect on the machine/users, verified) · `LIVE-PARTIAL` (in 
 | 1 | One code line (laptop vs GitHub) | main == origin/main; every laptop-only commit has a keep/drop verdict with evidence | IN-PROGRESS | G1 |
 | 2 | One operating rulebook | Every statement in CONTRIBUTING.md verified by a fresh Opus audit; B-checks pass; checker runs in CI | REOPENED | B1, B2, B3, B4, B5, B6, B12 |
 | 4 | One definition of "qualified"; one receipt contract | release.mjs check mode = release-qualification (staged); single receipt contract per the GPT-reviewed decision | IN-PROGRESS | |
-| 5 | One machine updater | ak-sync green two consecutive nights; nothing the retired job did is lost (audited) | LIVE-PARTIAL | F2 |
+| 5 | One machine updater | ak-sync green two consecutive nights; nothing the retired job did is lost (audited) | REOPENED | |
 | 7 | One session-start continuity restorer | One restorer, measured restoring state in every project that has state | REOPENED | |
 | 8 | One session-snapshot writer | One writer that keeps summaries + WAL maintenance, measured landing rows in every `.swarm` project | REOPENED | |
 | 9 | One lesson store | All lessons in one store, zero lost (row-by-row mapping), one injector | IN-PROGRESS | E3 |
@@ -33,7 +33,7 @@ States: `LIVE` (in effect on the machine/users, verified) · `LIVE-PARTIAL` (in 
 | 12 | One rule for verifying memory (`ruflo memory retrieve`) | No instruction anywhere (incl. ~/.codex/AGENTS.md) says to use sqlite3 | LIVE-PARTIAL | |
 | 14 | Updater label defined once | One owner + one checked standalone copy | STAGED | D1 |
 | 15 | Dead hook code | Unregistered global hooks archived; dead plugin bash route removed | IN-PROGRESS | |
-| 16 | Plaintext API key (Kling) | Key only in the SOPS vault + derived copies; every consumer still gets it (audited) | LIVE | F1 |
+| 16 | Plaintext API key (Kling) | Key only in the SOPS vault + derived copies; every consumer still gets it (audited) | LIVE-PARTIAL | F1 |
 | 17 | One Node for scheduled jobs | All jobs on Node 24 and each job's entry point verified compatible (audited) | LIVE-PARTIAL | F3 |
 | 19 | Scheduled workflows page on failure | Every scheduled workflow in ntfy-alerts | STAGED | C2 |
 | 20 | One model-facts catalog | One catalog; others generated or deleted; one refresh owner | NOT-STARTED | |
