@@ -122,42 +122,6 @@ function alwaysOk(receipt) {
     expect(v[0].text).toContain("state: 'ok'");
   });
 
-  // 2026-09-26: the live sweep false-positived on continuation-gate.mjs's --complete-objective verb
-  // (H4's own fix, the sanctioned way to close a continuity objective) — the derivation there is a
-  // required CLI argument, not a runtime .ok check: `if (!evidence) { ...; process.exit(2); }` a few
-  // lines above the literal, refusing an empty/missing evidence string. Same two-sided proof as the
-  // guard-clause case above: recognizes this real shape, and still flags the literal with no guard.
-  it('PASSES a required-argument-gated CLI verb (the --complete-objective shape)', () => {
-    const requiredArgShape = `
-if (has('--complete-objective')) {
-  const evidence = arg('--complete-objective');
-  if (!evidence) {
-    console.error('--complete-objective requires evidence');
-    process.exit(2);
-  }
-  const led = load();
-  if (led.objective) {
-    led.objective.state = 'completed';
-    led.objective.completionEvidence = evidence;
-  }
-  save(led);
-}`;
-    expect(scanSource(requiredArgShape, 'required-arg.mjs')).toEqual([]);
-  });
-
-  it('STILL FLAGS a literal that merely sits near an unrelated required-argument check (no hard exit)', () => {
-    const softCheck = `
-if (has('--complete-objective')) {
-  const evidence = arg('--complete-objective') || 'default reason';
-  if (!evidence) {
-    console.log('no evidence given, using default');
-  }
-  led.objective.state = 'completed';
-}`;
-    const v = scanSource(softCheck, 'soft-check.mjs');
-    expect(v.length, 'a guard that never hard-exits must not excuse the literal').toBeGreaterThan(0);
-  });
-
   it('THE REPO IS CLEAN: no automation script asserts an underived terminal success (live sweep)', () => {
     const bad = scanRepo(ROOT);
     const detail = bad.flatMap((b) => b.violations.map((v) => `${b.file}:${v.line} ${v.text}`)).join('\n');

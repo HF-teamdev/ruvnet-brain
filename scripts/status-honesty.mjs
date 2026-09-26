@@ -73,31 +73,6 @@ function hasEnclosingOkGuard(lines, matchIndex) {
   return false;
 }
 
-// A required-argument guard: `if (!evidence) { ...; process.exit(N)|throw ...; }`. This is the
-// explicit-invocation counterpart to OK_GUARD_RE above: instead of deriving success from a
-// re-checked artifact at runtime, a human or model names the evidence in the CLI call itself
-// (`--complete-objective "<what proves it is done>"`), and a call with no evidence hard-exits
-// before the literal a few lines below is ever reached. continuation-gate.mjs's --complete-objective
-// / --cancel-objective verbs are the exact case this exists for (H4, 2026-09-26): they are the
-// sanctioned way to close a continuity objective, and refusing an empty evidence string is the
-// derivation — the literal cannot fire without it. Named explicitly, not a widened window, for the
-// same reason OK_GUARD_RE is (see the comment above it).
-const REQUIRED_ARG_GUARD_RE = /\bif\s*\(\s*!\s*[\w$]+\s*\)\s*\{?\s*$/;
-const HARD_EXIT_RE = /\b(process\.exit\(|throw\b)/;
-
-function hasEnclosingRequiredArgGuard(lines, matchIndex) {
-  let start = 0;
-  for (let j = matchIndex - 1; j >= 0; j--) {
-    if (FUNCTION_START_RE.test(lines[j])) { start = j; break; }
-  }
-  for (let j = start; j < matchIndex; j++) {
-    if (!REQUIRED_ARG_GUARD_RE.test(lines[j])) continue;
-    const block = lines.slice(j, Math.min(j + 4, lines.length)).join('\n');
-    if (HARD_EXIT_RE.test(block)) return true;
-  }
-  return false;
-}
-
 /** Scan one source text. Returns violations: [{line, text}] — success literal with no derivation. */
 export function scanSource(src, _name = '(inline)') {
   const violations = [];
@@ -111,7 +86,6 @@ export function scanSource(src, _name = '(inline)') {
     const windowText = lines.slice(Math.max(0, i - 2), i + 3).join('\n');
     if (DERIVATION_MARKERS.some((m) => windowText.includes(m))) continue;
     if (hasEnclosingOkGuard(lines, i)) continue;
-    if (hasEnclosingRequiredArgGuard(lines, i)) continue;
     violations.push({ line: i + 1, text: t.slice(0, 160) });
   }
   return violations;
