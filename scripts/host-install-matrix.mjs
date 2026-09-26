@@ -37,6 +37,9 @@ export const SELF_STORE_PROOF_K = 1;
 export const RELEASE_SEARCH_QUERY = 'repo:ruvnet-brain How does RuvNet Brain prove a public release artifact?';
 export const HOST_WARMUP_TIMEOUT_MS = 300_000;
 export const RELEASE_SEARCH_DEADLINE_MS = 30_000;
+// The shared model-cache prewarm's own candidate pool size, named so the test asserting on it
+// derives from this constant instead of restating the digit as a second, driftable literal.
+export const PREWARM_POOL_SIZE = 8;
 
 /** Which CLIs each mode is allowed to see. A codex-only box genuinely has no `claude`. */
 export const MODE_HOSTS = Object.freeze({
@@ -261,7 +264,7 @@ export async function runHostMatrixAsync({
   // Mac/Windows/Linux runner speed does not determine whether the later real host searches run.
   // The following MCP matrix remains the measured, source-grounded candidate acceptance.
   const prewarm = await runCommand(process.execPath, [prewarmReader, '--dir', prewarmContext.env.RUVNET_BRAIN_KB,
-    '--q', RELEASE_SEARCH_QUERY, '--k', '1', '--pool', '8',
+    '--q', RELEASE_SEARCH_QUERY, '--k', '1', '--pool', String(PREWARM_POOL_SIZE),
     '--repos', 'ruvnet-brain', '--bounded'], {
     cwd: prewarmContext.env.RUVNET_BRAIN_KB, env: prewarmContext.env, timeout: 300_000,
   });
