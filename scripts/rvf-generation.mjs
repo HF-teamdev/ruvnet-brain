@@ -56,6 +56,8 @@ export function writeRvfGeneration({
   model,
   dimensions,
   sourceCommit = null,
+  sourceRepo = null,
+  sourceDescribe = null,
   builtUtc = new Date().toISOString(),
   previousDir = dir,
 }) {
@@ -72,6 +74,13 @@ export function writeRvfGeneration({
     model,
     dimensions,
     sourceCommit,
+    // S4 (ONE PROVENANCE RECORD) schema addition: carrying the repo identity a SOURCE.json entry
+    // needs alongside the byte identity this ledger has always recorded, so a future SOURCE.json
+    // projection can be read entirely FROM this ledger rather than a caller's own second copy of
+    // the same facts. Optional and defaulted to null so every existing caller's written shape is
+    // unchanged unless it opts in.
+    ...(sourceRepo !== null ? { sourceRepo } : {}),
+    ...(sourceDescribe !== null ? { sourceDescribe } : {}),
     builtUtc,
   };
   fs.writeFileSync(path.join(dir, RVF_GENERATIONS_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
