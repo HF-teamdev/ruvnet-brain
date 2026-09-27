@@ -4,7 +4,8 @@ title: The nightly corpus release channel — wire the already-built publisher, 
 status: Accepted  # 2026-09-26: decision in force and wired (corpus-nightly-dispatch.yml -> protected-release.yml mode=corpus -> release.mjs --corpus-seed). Unattended promotion is DISARMED until a code release is install-verified (data/approved-runtime.json removed 2026-09-26); the corpus gist step now has RUVNET_GISTS_TOKEN. Operating rules: CONTRIBUTING.md § The knowledge corpus. Prior note 2026-09-19: scheduled dispatcher exists, but the only green scheduled run was disarmed and the latest real corpus candidate failed on a gist-detail HTTP 403. No successful end-to-end nightly refresh is proven. This ADR's 2026-09-13 history is retained as dated history; current state is recorded below. Same-day addendum: kb/forge-update.mjs and bin/install.mjs DID change on 2026-09-26 (branch fix/corpus-currency) — the "What NOT to change" finding below is about THIS ADR's own build/publish-reliability mandate, which those changes do not touch; the client-side currency-verdict/private-overlay-recovery work is recorded in ADR-086's 2026-09-26 currency-log row instead, since ADR-086 already governs kb/corpus-release-identity.mjs's Step 16.
 reviewed_digest: bf798f8cbbb8
 date: 2026-09-12
-updated: 2026-09-26
+updated: 2026-09-27
+updated_source: derived-from-git
 authors: [Stuart Kerr, Claude Sonnet 5]
 tags: [corpus, release, nightly, currency, completeness]
 supersedes: []

@@ -3,7 +3,8 @@ id: ADR-073
 title: AgentDB is the complete perennial project continuity record
 status: Accepted
 date: 2026-08-22
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: c05f9c6169e4
 authors: [Stuart Kerr, Codex]
 tags: [architecture, agentdb, continuity, hosts, recovery, durability]

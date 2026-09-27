@@ -3,7 +3,8 @@ id: ADR-060
 title: The two-stage cross-encoder cascade — reading every passage, cheaply, before reading a few properly
 status: Accepted
 date: 2026-07-27
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: df6c7c3df0f2
 authors: [Stuart Kerr, Claude Code]
 tags: [retrieval, latency, cross-encoder, cascade, measurement]

@@ -3,7 +3,8 @@ id: ADR-069
 title: Source coverage is artifact-bound, complete, and release-blocking
 status: Accepted
 date: 2026-08-21
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 version: 1.2.2
 reviewed_digest: 4499be3d5974
 authors: [Stuart Kerr]

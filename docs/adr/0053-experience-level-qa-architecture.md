@@ -3,7 +3,8 @@ id: ADR-053
 title: Experience-level QA — test the journey a user actually has, on every host, OS, and install path
 status: Accepted
 date: 2026-07-26
-updated: 2026-09-11
+updated: 2026-09-27
+updated_source: derived-from-git
 version: 1.1.1
 reviewed_digest: b49b737eabfc
 authors: [Stuart Kerr, Claude Code]

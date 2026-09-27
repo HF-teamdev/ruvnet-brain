@@ -3,7 +3,8 @@ id: ADR-051
 title: Codex host wiring — register MCP and adapt the full lifecycle without version-pinned commands
 status: Accepted
 date: 2026-07-24
-updated: 2026-09-20
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: b4b0d7de765c
 version: 1.1.6
 authors: [Stuart Kerr, Claude Code]

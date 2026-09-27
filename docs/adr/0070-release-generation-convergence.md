@@ -3,7 +3,8 @@ id: ADR-070
 title: One release generation across corpus, package, hosts, and retained state
 status: Accepted
 date: 2026-08-21
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: dca3b4ba9d47
 version: 1.1.5
 authors: [Stuart Kerr, Codex]

@@ -4,7 +4,8 @@ title: One decision, one reason — and a ledger that can report bad news
 status: Accepted
 reviewed_digest: ecd9518d306e
 date: 2026-08-10
-updated: 2026-09-12
+updated: 2026-09-27
+updated_source: derived-from-git
 authors: [Stuart Kerr, Claude Code]
 tags: [hooks, architecture, enforcement, measurement, simplification]
 supersedes: []

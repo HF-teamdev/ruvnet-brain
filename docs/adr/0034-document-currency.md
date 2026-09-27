@@ -3,7 +3,8 @@ id: ADR-034
 title: A document's status is a claim about code — derive it, stamp it with something you cannot type from memory
 status: Proposed
 date: 2026-07-22
-updated: 2026-09-11
+updated: 2026-09-27
+updated_source: derived-from-git
 version: 1.2.0
 reviewed_digest: 1ab15b7012c1
 impl: wired

@@ -3,7 +3,8 @@ id: ADR-054
 title: Brain on/off and per-part scope — a user-controlled brain that can never silently lie about being off
 status: Accepted
 date: 2026-07-26
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 1e0dac253cc3
 version: 1.1.6
 impl: verification-expired

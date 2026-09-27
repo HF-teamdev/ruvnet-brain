@@ -3,7 +3,8 @@ id: ADR-062
 title: Remote-durable staged release transaction
 status: Accepted
 date: 2026-08-02
-updated: 2026-09-20
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 889398db3c8d
 version: 1.1.6
 authors: [Stuart Kerr]

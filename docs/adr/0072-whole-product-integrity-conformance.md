@@ -3,7 +3,8 @@ id: ADR-072
 title: Whole-product integrity is one executable contract
 status: Accepted
 date: 2026-08-21
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 version: 1.2.1
 reviewed_digest: fd6d8098f221
 authors: [Stuart Kerr, Codex]

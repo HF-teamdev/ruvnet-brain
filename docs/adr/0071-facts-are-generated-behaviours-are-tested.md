@@ -3,8 +3,8 @@ id: ADR-071
 title: Facts are generated, behaviours are tested — retire the fact-gates
 status: Proposed
 date: 2026-08-10
-updated: 2026-09-11
-updated_source: authored-current
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 91427984f8d2
 authors: [Stuart Kerr, Claude Code]
 tags: [architecture, gates, drift, simplification]

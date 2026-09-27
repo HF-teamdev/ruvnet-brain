@@ -3,7 +3,8 @@ id: ADR-063
 title: The managed-memory boundary is enforceable, opt-in, and default-off
 status: Accepted
 date: 2026-08-06
-updated: 2026-09-11
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 1efa96a3fcb7
 authors: [Stuart Kerr, Claude Code]
 tags: [enforcement, memory, agentdb, hooks, consent, issue-103]

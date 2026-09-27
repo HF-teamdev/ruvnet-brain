@@ -3,7 +3,8 @@ id: ADR-075
 title: Knowledge-to-execution enforcement is a mandatory policy boundary
 status: Accepted
 date: 2026-08-30
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 61f7868f367e
 version: 1.1.3
 impl: built

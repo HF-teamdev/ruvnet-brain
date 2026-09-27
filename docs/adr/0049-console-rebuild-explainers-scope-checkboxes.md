@@ -3,7 +3,7 @@ id: ADR-049
 title: The console rebuild — explain every section, scope every suggestion, and make the safe ones checkable
 status: Accepted
 date: 2026-07-24
-updated: 2026-09-16
+updated: 2026-09-27
 updated_source: derived-from-git
 reviewed_digest: 9f5c0ce4d4a0
 authors: [Stuart Kerr, Claude Code]

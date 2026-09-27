@@ -3,7 +3,8 @@ id: ADR-055
 title: Proactivity that meshes — one decision law, four planes, substance-bound enforcement, learning bound to outcomes
 status: Accepted
 date: 2026-07-27
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 version: 1.0.3
 reviewed_digest: dc38f53f369a
 impl: built

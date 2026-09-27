@@ -3,7 +3,8 @@ id: ADR-061
 title: Subscription-only dual-host deliberation for hard problems
 status: Proposed
 date: 2026-07-28
-updated: 2026-09-11
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 962ea30fdbcf
 authors: [Stuart Kerr, GPT-5.6-Sol]
 tags: [claude-code, codex, subscriptions, adr, ddd, agentic-qe, deliberation]

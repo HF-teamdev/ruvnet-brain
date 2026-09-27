@@ -3,7 +3,8 @@ id: ADR-064
 title: The corpus-QA round trip proves the machinery, not the ranking
 status: Accepted
 date: 2026-08-06
-updated: 2026-09-12
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 75418dee4ddb
 authors: [Stuart Kerr, Claude Code]
 tags: [corpus-qa, nightly, retrieval, near-duplicates, diagnosability, escalation]

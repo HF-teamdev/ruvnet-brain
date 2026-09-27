@@ -4,7 +4,7 @@ title: Doctor verifies the installed search engine separately from the validator
 status: Accepted
 reviewed_digest: 521b3360b4a5
 date: 2026-09-19
-updated: 2026-09-26
+updated: 2026-09-27
 updated_source: derived-from-git
 version: 1.0.4
 governs:

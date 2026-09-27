@@ -3,7 +3,8 @@ id: ADR-088
 status: Accepted
 reviewed_digest: de06e4cc70c3
 date: 2026-09-19
-updated: 2026-09-19
+updated: 2026-09-27
+updated_source: derived-from-git
 version: 1.1.4
 authors: [Stuart Kerr, Codex]
 tags: [evaluation, benchmark, grounding, operations, abstention]

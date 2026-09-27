@@ -3,7 +3,8 @@ id: ADR-065
 title: The payload boundary is the shipping invariant, and it is now a gate
 status: Accepted
 date: 2026-08-06
-updated: 2026-09-11
+updated: 2026-09-27
+updated_source: derived-from-git
 reviewed_digest: 36cf3f49b895
 authors: [Stuart Kerr, Claude Code]
 tags: [packaging, payload, l4, anticipate, advocacy, hooks, guard, issue-114]
