@@ -1007,7 +1007,12 @@ export function serverDependencies(source, seen = new Set()) {
     seen.add(file);
     let src = '';
     try { src = fs.readFileSync(file, 'utf8'); } catch { return; }
-    for (const m of src.matchAll(/^\s*(?:import|export)[^'"\n]*from\s*['"](\.[^'"]+)['"]/gm)) {
+    // Lazy [^'"]* (no \n exclusion) so a multi-line named import — `import {\n  a,\n} from './x.mjs';`
+    // — is still seen: the exclusion used to stop at the first newline, so this walker silently
+    // missed any dependency imported that way. Caught live 2026-09-27: session-snapshot-hook.mjs's
+    // multi-line import of project-progression-hook.mjs never reached the Codex MCP server package,
+    // reproducing the exact packaging-boundary failure this function's own header warns about.
+    for (const m of src.matchAll(/^\s*(?:import|export)[^'"]*?from\s*['"](\.[^'"]+)['"]/gm)) {
       const spec = specPrefix ? path.join(specPrefix, m[1]) : m[1];
       const from = path.resolve(path.dirname(file), m[1]);
       if (out.some((d) => d.from === from)) continue;
