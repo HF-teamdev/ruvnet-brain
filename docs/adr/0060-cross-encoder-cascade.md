@@ -4,7 +4,7 @@ title: The two-stage cross-encoder cascade — reading every passage, cheaply, b
 status: Accepted
 date: 2026-07-27
 updated: 2026-09-19
-reviewed_digest: 2a8622cc4c91
+reviewed_digest: df6c7c3df0f2
 authors: [Stuart Kerr, Claude Code]
 tags: [retrieval, latency, cross-encoder, cascade, measurement]
 supersedes: [ADR-059]
@@ -232,6 +232,7 @@ opt in with `KB_CE_CASCADE_K=64`; this ADR does not accept that value as the def
   number in this ADR is therefore a **real** measurement, never a replay.
 
 ## Currency log
+| 2026-09-27 | Currency review: decision unchanged. Motion: an inline-reranker thread-bound perf fix and the same forge-ask-all.mjs retrieval-scoping fixes seen elsewhere. The cascade design itself is untouched. | Reviewed `kb/forge-rerank.mjs`, `kb/forge-ask-all.mjs`, `scripts/rerank-cap-warm-ab.mjs`, `scripts/rerank-cap-eval.mjs`, `kb/forge-mcp-all.mjs`, `plugin/mcp/server.mjs` against the commits listed above; reviewed_digest df6c7c3df0f2. |
 
 | 2026-09-19 | Reviewed current source and normative claims; the detailed September 19 findings below retain their stated runtime limitations. reviewed_digest 2a8622cc4c91. | `kb/forge-rerank.mjs`, `kb/forge-ask-all.mjs`, `scripts/rerank-cap-warm-ab.mjs`; source consistency review only, no new deployment or acceptance claim. |
 
