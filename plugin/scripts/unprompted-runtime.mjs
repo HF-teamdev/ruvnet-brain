@@ -112,9 +112,16 @@ const SCRIPTS_DIR = path.dirname(SELF);                     // the payload's scr
 // The CC event name the shim forwarded. No event → nothing to run; stay silent.
 const EVENT = process.argv[2] || '';
 
-// Bound the whole runtime well under the 5s hook budget: producers run sequentially and each has its
-// own internal watchdog, but a backstop timeout here means a wedged producer can never hang the turn.
-const PRODUCER_TIMEOUT_MS = Number(process.env.RUVNET_UNPROMPTED_TIMEOUT_MS) || 4000;
+// Bound the whole runtime well under this hook's DECLARED timeout (hooks.json / codex-hooks.json:
+// 'unprompted-speech' is 3s, not the 5s this comment used to assume) — producers run sequentially and
+// each has its own internal watchdog, but a backstop timeout here means a wedged producer can never
+// hang the turn. Found live 2026-09-27: the old 4000ms default left NO real margin under a 3000ms
+// declared timeout once Node startup + per-producer spawnSync overhead is counted, and slower
+// per-process-spawn hosts (Windows CI) pushed measured wall-clock to 83% of budget — selfcheck.mjs's
+// own 80%-margin rule exists exactly to catch a hook running this close to its declared contract.
+// 2000ms leaves real headroom (Node/import startup + the 80% margin check at 2400ms) on every host,
+// not just a Windows-specific patch.
+const PRODUCER_TIMEOUT_MS = Number(process.env.RUVNET_UNPROMPTED_TIMEOUT_MS) || 2000;
 const MAX_BUFFER = 1 << 20;
 
 const VALID_CHANNELS = new Set(['advocacy', 'promotion', 'lesson', 'alarm']);
