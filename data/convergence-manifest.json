@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "kind": "ruvnet-brain-convergence-manifest",
-  "version": "4.3.28",
+  "version": "4.3.29",
   "sourceIdentity": "4e8bbd4d92a5a40c9125bc9b089cefdaf16fb17188ee435d07531085175d25b3",
   "versionSurfaces": {
-    "package.json": "4.3.28",
+    "package.json": "4.3.29",
     "plugin/.claude-plugin/plugin.json": "4.3.29",
     "plugin/.codex-plugin/plugin.json": "4.3.29",
     "data/manifest.json": "4.3.29",
     "kb/RVF-GENERATIONS.json": "4.3.29",
-    "explainer/index.html": "4.3.28",
+    "explainer/index.html": "4.3.29",
     "primer/ruvnet-primer.md": "4.3.29"
   },
   "adrInventory": [
