@@ -20,7 +20,7 @@ import { fileIdentity } from '../plugin/scripts/coverage-integrity.mjs';
 import { readDiagnosticAccuracyReport } from './oracle/retrieval-accuracy.mjs';
 import { storeRoot } from '../kb/store-root.mjs';
 import { captureGistSources } from './gist-receipts.mjs';
-import { projectSourceStore } from './rvf-generation.mjs';
+import { projectSourceStore, RUNTIME_LEDGER_KIND } from './rvf-generation.mjs';
 
 export { rebuildCorpusAggregates };
 
@@ -119,6 +119,40 @@ function filesNamed(root, wanted) {
   return found;
 }
 
+// ADR-0091 D4 -- the ONE seed property that cannot be judged before download. corpus-next-seed.mjs
+// judges a published generation's embedding model and recall report from small files, but the
+// generation ledger lives only inside the archive, so its schema is checked here, right after
+// extraction and BEFORE anything is moved. A mismatch is not a corrupt seed: it is a seed this runtime
+// cannot consume (a ledger-schema change is a code-release event). It is thrown as a distinct error
+// and main() exits SEED_LEDGER_INCOMPATIBLE_EXIT with the assets directory untouched, so
+// corpus-seed.yml can re-run seed extraction ONCE from the committed bootstrap in the same job.
+export const SEED_LEDGER_SCHEMA_VERSION = 2;
+export const SEED_LEDGER_INCOMPATIBLE_EXIT = 3;
+
+export class SeedLedgerIncompatibleError extends Error {
+  constructor(reason) {
+    super(`[corpus-reconcile] seed ledger is incompatible with this runtime: ${reason}`);
+    this.name = 'SeedLedgerIncompatibleError';
+    this.reason = reason;
+  }
+}
+
+/** null when this runtime can consume the ledger, else the reason it cannot. */
+export function seedLedgerIncompatibility(ledger) {
+  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return 'RVF-GENERATIONS.json is not an object';
+  if (ledger.schemaVersion !== SEED_LEDGER_SCHEMA_VERSION || ledger.kind !== RUNTIME_LEDGER_KIND) {
+    return `RVF-GENERATIONS.json is schemaVersion ${JSON.stringify(ledger.schemaVersion ?? null)} kind ${JSON.stringify(ledger.kind ?? null)}; `
+      + `this runtime reads schemaVersion ${SEED_LEDGER_SCHEMA_VERSION} kind ${RUNTIME_LEDGER_KIND}`;
+  }
+  if (!ledger.stores || typeof ledger.stores !== 'object' || Array.isArray(ledger.stores)) return 'RVF-GENERATIONS.json has no stores object';
+  return null;
+}
+
+// Moves the corpus root's TOP-LEVEL entries only (directories such as keys/, primer/ and l2/ move
+// whole). Nothing is filtered out: a seed's own runtime files (.mjs, package.json) are harmless here,
+// because build-bundle.mjs copies only named store files and the sealed prose from --assets and takes
+// every runtime module from the checkout (ADR-0091 D4 withdrew the 0.1.0 "strip" step for that reason,
+// and because source-coverage.mjs hard-reads capability-cards.md from these assets).
 export function normalizeExtractedCorpus({ extractedDir, assetsDir }) {
   const extracted = path.resolve(extractedDir || '');
   const assets = path.resolve(assetsDir || '');
@@ -128,6 +162,11 @@ export function normalizeExtractedCorpus({ extractedDir, assetsDir }) {
   if (fs.existsSync(assets) && fs.readdirSync(assets).length) fail(`bootstrap assets directory is not empty (${assets})`);
   const ledgers = filesNamed(extracted, 'RVF-GENERATIONS.json');
   if (ledgers.length !== 1) fail(`seed archive must contain exactly one RVF-GENERATIONS.json; found ${ledgers.length}`);
+  let seedLedger;
+  try { seedLedger = JSON.parse(fs.readFileSync(ledgers[0], 'utf8')); }
+  catch (error) { throw new SeedLedgerIncompatibleError(`RVF-GENERATIONS.json is unreadable (${error.message})`); }
+  const incompatibility = seedLedgerIncompatibility(seedLedger);
+  if (incompatibility) throw new SeedLedgerIncompatibleError(incompatibility);
   const corpusRoot = path.dirname(ledgers[0]);
   // A published seed's own PRIVATE-STORES.json is AUTHENTICATED HISTORICAL EVIDENCE of what that
   // prior round excluded — never the current builder's live policy. Keep it under a distinct name
@@ -874,7 +913,7 @@ function arg(argv, name, fallback = null) {
 // The two injectable seams exist so a test can drive main() end to end (ADR-0091 D1): nothing
 // called main() before, which is how its last line stayed broken for weeks. Production passes neither.
 export async function main(argv = process.argv.slice(2), {
-  reconcileAndPrepare = reconcileAndPrepareCorpusCandidate, stdout = process.stdout } = {}) {
+  reconcileAndPrepare = reconcileAndPrepareCorpusCandidate, stdout = process.stdout, stderr = process.stderr } = {}) {
   const root = path.resolve(arg(argv, '--root', DEFAULT_ROOT));
   const archiveFile = path.resolve(arg(argv, '--seed-archive', ''));
   const seedTag = arg(argv, '--seed-tag');
@@ -902,7 +941,17 @@ export async function main(argv = process.argv.slice(2), {
   fs.mkdirSync(path.dirname(assetsDir), { recursive: true });
   const extractParent = fs.mkdtempSync(path.join(path.dirname(assetsDir), '.corpus-seed-extract-'));
   await extractZip(archiveFile, extractParent);
-  normalizeExtractedCorpus({ extractedDir: extractParent, assetsDir });
+  try {
+    normalizeExtractedCorpus({ extractedDir: extractParent, assetsDir });
+  } catch (error) {
+    if (!(error instanceof SeedLedgerIncompatibleError)) throw error;
+    // Nothing was moved; leave --assets exactly as absent/empty as it was so the one bootstrap retry
+    // in corpus-seed.yml can reuse the same path. A distinct exit code, never a generic failure.
+    fs.rmSync(extractParent, { recursive: true, force: true });
+    stderr.write(`${error.message}\n[corpus-reconcile] seed ${seedTag} cannot be consumed by this runtime; `
+      + `exiting ${SEED_LEDGER_INCOMPATIBLE_EXIT} so the caller can fall back to the committed bootstrap seed\n`);
+    return SEED_LEDGER_INCOMPATIBLE_EXIT;
+  }
   const privateFence = path.join(root, 'kb', 'PRIVATE-STORES.json');
   if (!fs.existsSync(privateFence)) fail(`canonical private-store fence missing (${privateFence})`);
   fs.copyFileSync(privateFence, path.join(assetsDir, 'PRIVATE-STORES.json'), fs.constants.COPYFILE_EXCL);

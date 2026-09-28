@@ -221,8 +221,13 @@ describe('missing owner prerequisites fail loudly rather than silently', () => {
     const guard = identity.split('if [[ "$approved_sha" != "$EXPECTED_SHA" ]]; then')[1].split(/\n\s*fi\n/)[0];
     expect(guard).toContain('is not the approved runtime');
     expect(guard).toContain('exit 1');
-    // The seed chain is judged against the SAME resolved pin, passed explicitly.
-    expect(identity).toContain('--pin "$RUNNER_TEMP/approved-runtime.json" --out "$RUNNER_TEMP/next-seed.json"');
+    // ADR-0091 D4: the seed chain no longer consults the pin. It is judged by the approved runtime's
+    // own readers (the source corpus-prepare builds at), materialized from EXPECTED_SHA.
+    const seedStep = identity.slice(identity.indexOf('node scripts/corpus-next-seed.mjs'));
+    expect(seedStep.split('\n').slice(0, 3).join('\n')).not.toMatch(/--pin/);
+    expect(identity).toContain('git worktree add --detach "$approved_source" "$EXPECTED_SHA"');
+    expect(identity).toContain('--runtime-root "$approved_source" --out "$RUNNER_TEMP/next-seed.json"');
+    expect(identity.indexOf('git worktree add --detach "$approved_source"')).toBeLessThan(identity.indexOf('corpus-next-seed.mjs'));
     expect(identity.indexOf('approved-runtime.mjs --resolve')).toBeLessThan(identity.indexOf('corpus-next-seed.mjs'));
     // Provenance binds the run AND the artifact to the one candidate identity.
     const authorize = blocks['corpus-authorize'];

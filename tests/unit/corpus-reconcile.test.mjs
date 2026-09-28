@@ -18,6 +18,9 @@ import {
   reconcileAndPrepareCorpusCandidate,
   seedPrivateFenceEvidence,
   summarizeReconciliation,
+  SEED_LEDGER_INCOMPATIBLE_EXIT,
+  SeedLedgerIncompatibleError,
+  seedLedgerIncompatibility,
 } from '../../scripts/corpus-reconcile.mjs';
 
 const temps = [];
@@ -33,6 +36,8 @@ afterEach(() => {
 });
 
 const sha = (char) => char.repeat(40);
+// The envelope every real seed ledger carries (build-bundle.mjs writes it; v4.3.26 ships it).
+const SEED_LEDGER = '{"schemaVersion":2,"kind":"ruvnet-brain-runtime-generation-ledger","stores":{}}';
 const coverage = (rows) => ({ schemaVersion: 1, coverageGeneration: 'generation-1', rows });
 const repo = ({ name, store = name.toLowerCase(), upstream = sha('a'), disposition = 'eligible' }) => ({
   key: `repo:${name}`,
@@ -63,7 +68,7 @@ describe('exact corpus bootstrap identity', () => {
     const extracted = path.join(root, 'extracted');
     const assets = path.join(root, 'assets');
     fs.mkdirSync(path.join(extracted, 'ruvnet-brain'), { recursive: true });
-    fs.writeFileSync(path.join(extracted, 'ruvnet-brain', 'RVF-GENERATIONS.json'), '{"stores":{}}');
+    fs.writeFileSync(path.join(extracted, 'ruvnet-brain', 'RVF-GENERATIONS.json'), SEED_LEDGER);
     fs.writeFileSync(path.join(extracted, 'ruvnet-brain', 'alpha.big.rvf'), 'rvf');
     expect(normalizeExtractedCorpus({ extractedDir: extracted, assetsDir: assets })).toBe(assets);
     expect(fs.existsSync(path.join(assets, 'alpha.big.rvf'))).toBe(true);
@@ -71,8 +76,8 @@ describe('exact corpus bootstrap identity', () => {
     const ambiguous = path.join(root, 'ambiguous');
     fs.mkdirSync(path.join(ambiguous, 'one'), { recursive: true });
     fs.mkdirSync(path.join(ambiguous, 'two'), { recursive: true });
-    fs.writeFileSync(path.join(ambiguous, 'one', 'RVF-GENERATIONS.json'), '{"stores":{}}');
-    fs.writeFileSync(path.join(ambiguous, 'two', 'RVF-GENERATIONS.json'), '{"stores":{}}');
+    fs.writeFileSync(path.join(ambiguous, 'one', 'RVF-GENERATIONS.json'), SEED_LEDGER);
+    fs.writeFileSync(path.join(ambiguous, 'two', 'RVF-GENERATIONS.json'), SEED_LEDGER);
     expect(() => normalizeExtractedCorpus({ extractedDir: ambiguous, assetsDir: path.join(root, 'bad-assets') }))
       .toThrow(/exactly one RVF-GENERATIONS/i);
 
@@ -82,7 +87,7 @@ describe('exact corpus bootstrap identity', () => {
     // canonical fence (copied in by main(), after normalizeExtractedCorpus returns).
     const fenced = path.join(root, 'fenced');
     fs.mkdirSync(fenced, { recursive: true });
-    fs.writeFileSync(path.join(fenced, 'RVF-GENERATIONS.json'), '{"stores":{}}');
+    fs.writeFileSync(path.join(fenced, 'RVF-GENERATIONS.json'), SEED_LEDGER);
     fs.writeFileSync(path.join(fenced, 'alpha.big.rvf'), 'rvf');
     fs.writeFileSync(path.join(fenced, 'PRIVATE-STORES.json'), '{"privateStores":["secret"]}');
     const fencedAssets = path.join(root, 'fenced-assets');
@@ -94,6 +99,55 @@ describe('exact corpus bootstrap identity', () => {
     });
     // No historical fence at all: evidence is simply absent, never fabricated.
     expect(seedPrivateFenceEvidence(assets)).toBeNull();
+  });
+});
+
+// ADR-0091 D4: the one seed property that cannot be judged before download is the generation ledger's
+// schema (it lives only inside the archive). It is checked right after extraction, before anything is
+// moved, and reported as a DISTINCT failure so corpus-seed.yml can retry once from the bootstrap.
+describe('seed ledger schema is checked after extraction (ADR-0091 D4)', () => {
+  const extractedWith = (ledgerText) => {
+    const root = temp();
+    const extracted = path.join(root, 'extracted');
+    fs.mkdirSync(path.join(extracted, 'ruvnet-brain'), { recursive: true });
+    fs.writeFileSync(path.join(extracted, 'ruvnet-brain', 'RVF-GENERATIONS.json'), ledgerText);
+    fs.writeFileSync(path.join(extracted, 'ruvnet-brain', 'alpha.big.rvf'), 'rvf');
+    return { extracted, assets: path.join(root, 'assets') };
+  };
+
+  it.each([
+    ['a schema-1 ledger', '{"schemaVersion":1,"stores":{}}', /schemaVersion 1 kind null; this runtime reads schemaVersion 2 kind ruvnet-brain-runtime-generation-ledger/],
+    ['a future schema-3 ledger', '{"schemaVersion":3,"kind":"ruvnet-brain-runtime-generation-ledger","stores":{}}', /schemaVersion 3/],
+    ['the public-ledger kind', '{"schemaVersion":2,"kind":"ruvnet-brain-public-generation-ledger","stores":{}}', /kind "ruvnet-brain-public-generation-ledger"/],
+    ['a ledger with no stores object', '{"schemaVersion":2,"kind":"ruvnet-brain-runtime-generation-ledger","stores":[]}', /no stores object/],
+    ['an unreadable ledger', '{not json', /unreadable/],
+  ])('%s is refused as SeedLedgerIncompatibleError and NOTHING is moved', (_name, ledgerText, message) => {
+    const { extracted, assets } = extractedWith(ledgerText);
+    let caught;
+    try { normalizeExtractedCorpus({ extractedDir: extracted, assetsDir: assets }); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(SeedLedgerIncompatibleError);
+    expect(caught.message).toMatch(message);
+    expect(fs.existsSync(assets)).toBe(false);
+    expect(fs.existsSync(path.join(extracted, 'ruvnet-brain', 'alpha.big.rvf'))).toBe(true);
+  });
+
+  it('accepts exactly the envelope build-bundle writes', () => {
+    expect(seedLedgerIncompatibility(JSON.parse(SEED_LEDGER))).toBeNull();
+  });
+
+  it('moves every top-level entry whole, runtime files and directories included -- no strip step (0.1.0 withdrawn)', () => {
+    const { extracted, assets } = extractedWith(SEED_LEDGER);
+    const rootDir = path.join(extracted, 'ruvnet-brain');
+    for (const dir of ['keys', 'primer', 'l2']) {
+      fs.mkdirSync(path.join(rootDir, dir), { recursive: true });
+      fs.writeFileSync(path.join(rootDir, dir, 'x.txt'), dir);
+    }
+    fs.writeFileSync(path.join(rootDir, 'capability-cards.md'), '# cards');
+    fs.writeFileSync(path.join(rootDir, 'forge-ask.mjs'), 'export {};');
+    normalizeExtractedCorpus({ extractedDir: extracted, assetsDir: assets });
+    expect(fs.readdirSync(assets).sort()).toEqual(
+      ['RVF-GENERATIONS.json', 'alpha.big.rvf', 'capability-cards.md', 'forge-ask.mjs', 'keys', 'l2', 'primer']);
+    expect(fs.readFileSync(path.join(assets, 'l2', 'x.txt'), 'utf8')).toBe('l2');
   });
 });
 
@@ -855,7 +909,7 @@ describe('standalone workflow boundary', () => {
 // REAL acquireSealedGeneration -- so the history main() summarizes is shaped by its actual producer,
 // not by a hand-written fixture. Only network observation, cloning/embedding and assembly are stubbed.
 describe('main() end to end (ADR-0091 D1)', () => {
-  const seedFixture = () => {
+  const seedFixture = ({ ledgerText = SEED_LEDGER } = {}) => {
     const dir = temp();
     const root = path.join(dir, 'checkout');
     fs.mkdirSync(path.join(root, 'kb'), { recursive: true });
@@ -864,7 +918,7 @@ describe('main() end to end (ADR-0091 D1)', () => {
     fs.writeFileSync(path.join(root, 'kb', 'no-corpus-repos.json'), '{"repos":[]}');
     const stage = path.join(dir, 'stage');
     fs.mkdirSync(path.join(stage, 'ruvnet-brain'), { recursive: true });
-    fs.writeFileSync(path.join(stage, 'ruvnet-brain', 'RVF-GENERATIONS.json'), '{"stores":{}}');
+    fs.writeFileSync(path.join(stage, 'ruvnet-brain', 'RVF-GENERATIONS.json'), ledgerText);
     fs.writeFileSync(path.join(stage, 'ruvnet-brain', 'alpha.big.rvf'), 'seed rvf bytes');
     const archive = path.join(dir, 'seed.zip');
     execFileSync('zip', ['-q', '-r', archive, 'ruvnet-brain'], { cwd: stage });
@@ -934,5 +988,31 @@ describe('main() end to end (ADR-0091 D1)', () => {
     // The pre-cd0f032f shape must fail by name, never as a bare TypeError at the end of a generation.
     expect(() => summarizeReconciliation({ observation: {}, rounds: [] }))
       .toThrow(/no attempts array \(keys: observation, rounds\)/);
+  });
+
+  it(`exits ${SEED_LEDGER_INCOMPATIBLE_EXIT} on an incompatible seed ledger, before reconciling, with --assets left untouched (ADR-0091 D4)`, async () => {
+    const fixture = seedFixture({ ledgerText: '{"schemaVersion":1,"stores":{}}' });
+    let reconciled = false;
+    let err = '';
+    const code = await main(fixture.argv, {
+      reconcileAndPrepare: () => { reconciled = true; throw new Error('must not reconcile an unconsumable seed'); },
+      stdout: { write: () => {} }, stderr: { write: (text) => { err += text; } },
+    });
+    expect(SEED_LEDGER_INCOMPATIBLE_EXIT).toBe(3);
+    expect(code).toBe(3);
+    expect(reconciled).toBe(false);
+    expect(err).toMatch(/seed ledger is incompatible with this runtime: RVF-GENERATIONS\.json is schemaVersion 1/);
+    expect(err).toMatch(/exiting 3 so the caller can fall back to the committed bootstrap seed/);
+    // The same --assets path is immediately reusable by the bootstrap retry, and no extraction debris is left.
+    expect(fs.existsSync(fixture.assets)).toBe(false);
+    expect(fs.readdirSync(fixture.dir).filter((name) => name.startsWith('.corpus-seed-extract-'))).toEqual([]);
+
+    // ...and the retry: the same main(), same --assets, now a compatible seed, runs to completion.
+    const retry = seedFixture();
+    const { reconcileAndPrepare } = drive();
+    const argv = [...retry.argv];
+    argv[argv.indexOf('--assets') + 1] = fixture.assets;
+    expect(await main(argv, { reconcileAndPrepare, stdout: { write: () => {} } })).toBe(0);
+    expect(fs.readFileSync(path.join(fixture.assets, 'alpha.big.rvf'), 'utf8')).toBe('seed rvf bytes');
   });
 });
