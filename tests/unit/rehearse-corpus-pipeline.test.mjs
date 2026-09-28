@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  acquireSeed, boundObservation, createDisposableCheckout, inventoryTree, installCommandRecorder,
+  acquireSeed, boundObservation, frozenSeedCommits, scopeRecallFixture, createDisposableCheckout, inventoryTree, installCommandRecorder,
   recordReconciliation, verifyExtractedBytesWithoutOriginals,
 } from '../../scripts/rehearse-corpus-pipeline.mjs';
 import { acquireSealedGeneration, summarizeReconciliation } from '../../scripts/corpus-reconcile.mjs';
@@ -183,6 +183,40 @@ describe('bounded observation', () => {
     expect(bounded.gists.rows).toHaveLength(2);
     expect(bounded.observationSha256).toBe(sourceObservationDigest(bounded));
     expect(bounded.observationSha256).not.toBe(observation.observationSha256);
+  });
+
+  it('keeps every other SEED store in scope frozen at its seed sourceCommit, so the production prune leaves it alone', () => {
+    // ADR-0091 V1: without this, only `beta` is observed, pruneIneligibleStores deletes alpha, and the
+    // repo-recall gate (one question per fixture repository) fails `rvf not found` for alpha.
+    const seedSha = 'a'.repeat(40);
+    const bounded = boundObservation({ observation, api: { canonicalSourceObservation }, repoStores: ['beta'],
+      gistCount: 2, frozenSourceCommits: { alpha: seedSha } });
+    const byName = Object.fromEntries(bounded.repositories.rows.map((row) => [row.name, row]));
+    expect(Object.keys(byName).sort()).toEqual(['alpha', 'beta']); // gamma is not in the seed: dropped
+    expect(byName.beta.defaultBranchRef.target.oid).toBe('b'.repeat(40)); // sampled: live head, rebuilt
+    expect(byName.alpha.defaultBranchRef.target.oid).toBe(seedSha); // frozen: CURRENT against the seed
+    expect(bounded.repositories.expected).toBe(2);
+    expect(bounded.observationSha256).toBe(sourceObservationDigest(bounded));
+  });
+
+  it('frozenSeedCommits reads the seed ledger, skipping aggregates and the sampled stores', () => {
+    const dir = tmp('rehearsal-ledger-');
+    fs.writeFileSync(path.join(dir, 'RVF-GENERATIONS.json'), JSON.stringify({ stores: {
+      Alpha: { sourceCommit: 'A'.repeat(40) }, beta: { sourceCommit: 'b'.repeat(40) },
+      'ruv-gists': { sourceCommit: 'c'.repeat(40) }, concepts: {}, broken: { sourceCommit: 'nope' },
+    } }));
+    expect(frozenSeedCommits(dir, ['beta'])).toEqual({ alpha: 'a'.repeat(40) });
+  });
+
+  it('scopeRecallFixture keeps in-scope questions byte for byte and names every excluded repository', () => {
+    const row = (n) => ({ query: `q${n}`, expected: { path: `src/${n}.mjs`, passageSha256: 'a'.repeat(64) } });
+    const fixture = { schemaVersion: 2, kind: 'ruvnet-brain-retrieval-query-evidence', sourceCommit: 'c'.repeat(40),
+      queries: { alpha: row(1), Beta: row(2), gamma: row(3) } };
+    const scoped = scopeRecallFixture({ fixture, inScopeStores: ['ALPHA', 'beta'] });
+    expect(scoped.fixture.queries).toEqual({ alpha: row(1), Beta: row(2) });
+    expect(scoped.fixture.kind).toBe(fixture.kind);
+    expect(scoped).toMatchObject({ kept: 2, excluded: ['gamma'] });
+    expect(() => scopeRecallFixture({ fixture, inScopeStores: ['delta'] })).toThrow(/left no questions/);
   });
 
   it('is deterministic — two bindings of the same universe seal the same identity', () => {

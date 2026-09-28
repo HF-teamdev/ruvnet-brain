@@ -22,7 +22,12 @@
 // (`--accuracy-sample`, default C3_DIAGNOSTIC_SAMPLE_QUESTIONS; `--accuracy-sample full` for the
 // whole oracle, which is ~1,164 queries against the full seed and runs well over an hour). A
 // rehearsal receipt ALWAYS carries `bounds` and the banner below so nobody can mistake a 2-store
-// rehearsal for a 194-store corpus build. Everything else is the production code path.
+// rehearsal for a 194-store corpus build. Two further declared bounds keep the unsampled seed stores
+// from being pruned (which would fail the repo-recall gate for every one of them, ADR-0091 V1): seed
+// stores with a ledger sourceCommit stay in the observation FROZEN at that commit (not rebuilt, not
+// pruned), and the repo-recall fixture in the disposable checkout is scoped to the repositories the
+// candidate carries (seed stores with no sourceCommit cannot be frozen and are out of scope). Both are
+// counted in the receipt. Everything else is the production code path.
 //
 // SAFETY — publication mutations are RECORDED, NEVER EXECUTED, and the interception is PROVEN:
 //   1. The explicit seam the code offers (`RUVNET_GH_COMMAND` / `RUVNET_GH_SCRIPT`, read by
@@ -410,10 +415,33 @@ export function acquireSeed({ descriptor, repo, downloadDir, env, localCandidate
  * downstream — planning, cloning, embedding, indexing, pruning, aggregation, assembly, sealing —
  * is the production code path over that smaller universe.
  */
-export function boundObservation({ observation, api, repoStores, gistCount }) {
-  const chosen = repoStores.length
-    ? observation.repositories.rows.filter((row) => repoStores.includes(String(row.storeName || row.name).toLowerCase()))
+export function boundObservation({ observation, api, repoStores, gistCount, frozenSourceCommits = null }) {
+  const storeOf = (row) => String(row.storeName || row.name).toLowerCase();
+  const sampled = repoStores.length
+    ? observation.repositories.rows.filter((row) => repoStores.includes(storeOf(row)))
     : [];
+  // FROZEN AT SEED (2026-09-28, ADR-0091 V1). Observing ONLY the sampled repositories makes every
+  // other seed store "not observed this round", and the production prune (correctly, for a real
+  // nightly that always observes everything) deletes it -- after which the repo-recall gate, which
+  // asks one frozen question of every fixture repository, fails 180/182 with `rvf not found`. So the
+  // rehearsal keeps every OTHER repository the seed already carries in the observation, with its
+  // head pinned to the seed's own ledger sourceCommit: planReconciliation sees it CURRENT (nothing to
+  // rebuild) and pruneIneligibleStores sees it eligible (nothing to delete). Repositories the seed does
+  // not carry are dropped, so a brand-new upstream repo can never turn a minutes-long rehearsal into a
+  // full clone-and-embed. This rewrite is a declared rehearsal bound, recorded in the receipt; the
+  // pipeline's own observation, planning and pruning code is untouched.
+  const frozen = frozenSourceCommits
+    ? observation.repositories.rows
+      .filter((row) => !repoStores.includes(storeOf(row)) && frozenSourceCommits[storeOf(row)])
+      .map((row) => ({
+        ...row,
+        defaultBranchRef: {
+          name: row.defaultBranchRef?.name || 'main',
+          target: { oid: frozenSourceCommits[storeOf(row)], committedDate: null },
+        },
+      }))
+    : [];
+  const chosen = [...sampled, ...frozen];
   const gistRows = observation.gists.rows.slice(0, gistCount);
   return api.canonicalSourceObservation({
     schemaVersion: observation.schemaVersion,
@@ -423,6 +451,41 @@ export function boundObservation({ observation, api, repoStores, gistCount }) {
     repositories: { rows: chosen, expected: chosen.length },
     gists: { rows: gistRows, expected: gistRows.length },
   });
+}
+
+/** The seed ledger's own sourceCommit for every repository store OTHER than the sampled ones —
+ * the commits boundObservation pins those stores to. Aggregates (ruv-gists, concepts) are rebuilt
+ * from nothing every round and are never repository rows, so they are excluded. */
+export function frozenSeedCommits(assetsDir, repoStores) {
+  const ledger = JSON.parse(fs.readFileSync(path.join(assetsDir, 'RVF-GENERATIONS.json'), 'utf8'));
+  const out = {};
+  for (const [store, row] of Object.entries(ledger.stores || {})) {
+    const folded = store.toLowerCase();
+    if (['ruv-gists', 'concepts'].includes(folded) || repoStores.includes(folded)) continue;
+    const sha = String(row?.sourceCommit || '').toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(sha)) out[folded] = sha;
+  }
+  return out;
+}
+
+/**
+ * Scope the frozen repo-recall fixture to the repositories THIS bounded candidate carries (ADR-0091
+ * V1). A seed store whose ledger sourceCommit is null (57 of 182 in the v4.3.26 seed) cannot be frozen
+ * at a commit: the real nightly rebuilds it from upstream, which is hours, not minutes. Out of the
+ * rehearsal's scope, it is pruned, and asking the fixture question of it could only report
+ * `rvf not found`. Every in-scope question is kept byte for byte. Returns the scoped fixture document
+ * plus exactly what was excluded, so the receipt says it out loud.
+ */
+export function scopeRecallFixture({ fixture, inScopeStores }) {
+  const scope = new Set([...inScopeStores].map((store) => String(store).toLowerCase()));
+  const kept = {};
+  const excluded = [];
+  for (const [store, row] of Object.entries(fixture.queries || {})) {
+    if (scope.has(store.toLowerCase())) kept[store] = row;
+    else excluded.push(store);
+  }
+  if (!Object.keys(kept).length) fail('scoping the repo-recall fixture left no questions; the bounded scope carries no fixture repository');
+  return { fixture: { ...fixture, queries: kept }, kept: Object.keys(kept).length, excluded: excluded.sort() };
 }
 
 /** Deterministically pick the `count` smallest ELIGIBLE repositories, measured by the observation's
@@ -614,7 +677,30 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
     generation.forcedRebuild = repoStores;
   }
 
-  const boundedObserve = () => boundObservation({ observation: observeFull(), api, repoStores, gistCount: bounds.gists });
+  // Every other seed store stays in scope FROZEN at its seed sourceCommit (see boundObservation), so
+  // the production prune leaves it alone and the repo-recall gate can ask its fixture question.
+  const frozenSourceCommits = frozenSeedCommits(assetsDir, repoStores);
+  generation.bounded.frozenAtSeed = Object.keys(frozenSourceCommits).length;
+  log(`[gen ${index}] ${generation.bounded.frozenAtSeed} other seed store(s) kept in scope frozen at their seed sourceCommit (not rebuilt, not pruned)`);
+  const boundedObserve = () => boundObservation({
+    observation: observeFull(), api, repoStores, gistCount: bounds.gists, frozenSourceCommits });
+
+  // The repo-recall gate asks one question per fixture repository. Scope it -- in the DISPOSABLE
+  // checkout only, where repo-recall, corpus-candidate --verify and release.mjs all read the same file
+  // -- to the repositories this bounded observation keeps. The committed original is preserved beside
+  // it so every generation scopes from the same source.
+  const fixtureFile = path.join(checkoutRoot, 'data', 'retrieval-query-evidence.json');
+  const originalFixtureFile = path.join(workRoot, 'retrieval-query-evidence.committed.json');
+  if (!fs.existsSync(originalFixtureFile)) fs.copyFileSync(fixtureFile, originalFixtureFile);
+  const inScope = boundObservation({ observation: full, api, repoStores, gistCount: 0, frozenSourceCommits })
+    .repositories.rows.map((row) => String(row.storeName || row.name));
+  const scoped = scopeRecallFixture({
+    fixture: JSON.parse(fs.readFileSync(originalFixtureFile, 'utf8')), inScopeStores: inScope });
+  fs.writeFileSync(fixtureFile, `${JSON.stringify(scoped.fixture, null, 2)}\n`);
+  generation.bounded.recallFixture = { questions: scoped.kept, excluded: scoped.excluded.length,
+    excludedStores: scoped.excluded,
+    reason: 'no seed sourceCommit to freeze at (the real nightly rebuilds these from upstream) or not observed upstream' };
+  log(`[gen ${index}] repo-recall fixture scoped to ${scoped.kept} in-scope repositories (${scoped.excluded.length} out of scope, listed in the receipt)`);
 
   // --- reconcile + assemble ONCE --------------------------------------------------------------
   const invocations = [];
@@ -725,6 +811,15 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
   const nextSeedFile = path.join(workRoot, `seed-gen${index + 1}`, path.basename(bundleFile));
   fs.mkdirSync(path.dirname(nextSeedFile), { recursive: true });
   fs.copyFileSync(bundleFile, nextSeedFile);
+  // The detached C3 and repo-recall reports travel WITH the archive, exactly as release.mjs publishes
+  // them (zip, sig, digest, receipt, .accuracy.json, .recall.json). verifySeedBaseline re-reads both
+  // beside the seed, so handing over the zip alone failed every generation-2 import ("detached
+  // repo-recall report missing") -- unseen until 2026-09-28 because no rehearsal had reached gen 2.
+  for (const suffix of ['.accuracy.json', '.recall.json']) {
+    const report = `${bundleFile}${suffix}`;
+    if (!fs.existsSync(report)) fail(`candidate ${index} has no detached ${suffix} report to hand to generation ${index + 1}`);
+    fs.copyFileSync(report, `${nextSeedFile}${suffix}`);
+  }
   generation.nextSeed = { tag: corpusTag, sha256: archiveSha256, bytes: archiveBytes, file: nextSeedFile,
     contentAddressed: true };
   generation.finishedAt = new Date().toISOString();
