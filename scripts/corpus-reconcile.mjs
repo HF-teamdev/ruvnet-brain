@@ -306,6 +306,33 @@ export async function acquireSealedGeneration({ maxAttempts = 3, assetsDir = nul
     + 'eligible source(s) remain unresolved against the sealed manifest');
 }
 
+/**
+ * The ONE reader of an acquisition result's per-attempt history (ADR-0091 D1).
+ *
+ * WHY THIS EXISTS. cd0f032f renamed the loop's history from `rounds` to `attempts` but left two
+ * independent readers behind: main() (`reconciliation.rounds.flatMap(...)`) and the local rehearsal
+ * (scripts/rehearse-corpus-pipeline.mjs). Both threw "Cannot read properties of undefined (reading
+ * 'flatMap')" AFTER the whole generation had been acquired, so every corpus-publish run died at its
+ * last line and the rehearsal meant to catch that died at the same place. Every reader now goes
+ * through here, and a result without an `attempts` array fails by name instead of by TypeError.
+ */
+export function summarizeReconciliation(reconciliation) {
+  const attempts = reconciliation?.attempts;
+  if (!Array.isArray(attempts)) {
+    fail(`reconciliation result has no attempts array (keys: ${Object.keys(reconciliation || {}).join(', ') || 'none'}); `
+      + 'acquireSealedGeneration returns { observation, coverage, attempts, ... }');
+  }
+  const across = (field) => attempts.flatMap((attempt) => attempt?.[field] || []);
+  return {
+    attempts: attempts.length,
+    observationSha256: reconciliation.observation?.observationSha256 ?? null,
+    plan: across('plan'),
+    refreshed: across('refreshed'),
+    pruned: across('pruned'),
+    rebuilt: across('rebuilt'),
+  };
+}
+
 function defaultRun(command, args, options = {}) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
@@ -680,7 +707,7 @@ export async function reconcileAndPrepareCorpusCandidate({ assetsDir, workspaceD
   const updaters = normalizeUpdaters({
     assetsDir,
     coverage: finalized.coverage,
-    refreshedStores: (finalized.attempts || []).flatMap((a) => (a.refreshed || []).map((r) => r?.store || r)).filter(Boolean),
+    refreshedStores: summarizeReconciliation(finalized).refreshed.map((r) => r?.store || r).filter(Boolean),
     seedIdentity: bootstrapIdentity,
   });
   if (updaters.missing?.length) {
@@ -833,7 +860,10 @@ function arg(argv, name, fallback = null) {
   return index >= 0 && argv[index + 1] ? argv[index + 1] : fallback;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+// The two injectable seams exist so a test can drive main() end to end (ADR-0091 D1): nothing
+// called main() before, which is how its last line stayed broken for weeks. Production passes neither.
+export async function main(argv = process.argv.slice(2), {
+  reconcileAndPrepare = reconcileAndPrepareCorpusCandidate, stdout = process.stdout } = {}) {
   const root = path.resolve(arg(argv, '--root', DEFAULT_ROOT));
   const archiveFile = path.resolve(arg(argv, '--seed-archive', ''));
   const seedTag = arg(argv, '--seed-tag');
@@ -864,12 +894,12 @@ export async function main(argv = process.argv.slice(2)) {
   fs.rmSync(extractParent, { recursive: true, force: true });
   syncCorpusInputs({ root, assetsDir });
   const bootstrapIdentity = { tag: bootstrap.tag, sha256: bootstrap.sha256, privateFenceEvidence: seedPrivateFenceEvidence(assetsDir) };
-  const { reconciliation, candidate } = await reconcileAndPrepareCorpusCandidate({
+  const { reconciliation, candidate } = await reconcileAndPrepare({
     assetsDir, workspaceDir, root, owner, builderSha, candidateDir, receiptFile, coverageFile, bootstrapIdentity,
     accuracyOracleFile, accuracyStores, accuracySample, accuracyTimeoutMs,
   });
-  const plan = reconciliation.rounds.flatMap((round) => round.plan);
-  process.stdout.write(`${JSON.stringify({ ok: true, seedTag, seedSha256, plan, reconciliation, ...candidate }, null, 2)}\n`);
+  const { plan } = summarizeReconciliation(reconciliation);
+  stdout.write(`${JSON.stringify({ ok: true, seedTag, seedSha256, plan, reconciliation, ...candidate }, null, 2)}\n`);
   return 0;
 }
 

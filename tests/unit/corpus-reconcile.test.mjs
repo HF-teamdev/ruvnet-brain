@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   assertBootstrapIdentity,
   assertPathNotOverlapping,
@@ -13,7 +14,10 @@ import {
   pruneIneligibleStores,
   acquireCorpusGeneration,
   acquireSealedGeneration,
+  main,
+  reconcileAndPrepareCorpusCandidate,
   seedPrivateFenceEvidence,
+  summarizeReconciliation,
 } from '../../scripts/corpus-reconcile.mjs';
 
 const temps = [];
@@ -812,5 +816,95 @@ describe('standalone workflow boundary', () => {
     expect(workflow).toContain('kb/PRIVATE-STORES.json');
     expect(workflow).not.toMatch(/releases\/latest|download\/latest|\brelease create\b|node scripts\/corpus-seed-publish\.mjs/);
     expect(workflow).toMatch(/protected-release\.yml/);
+  });
+});
+
+// ADR-0091 D1. main()'s last line read `reconciliation.rounds` for weeks after cd0f032f renamed the
+// history to `attempts`, so every corpus-publish run threw "Cannot read properties of undefined
+// (reading 'flatMap')" AFTER acquiring the whole generation. Nothing called main(), so nothing noticed.
+// This drives main() end to end: a real seed zip, the real bootstrap identity check, extraction,
+// normalization, fence copy and input sync, then the REAL reconcileAndPrepareCorpusCandidate over the
+// REAL acquireSealedGeneration -- so the history main() summarizes is shaped by its actual producer,
+// not by a hand-written fixture. Only network observation, cloning/embedding and assembly are stubbed.
+describe('main() end to end (ADR-0091 D1)', () => {
+  const seedFixture = () => {
+    const dir = temp();
+    const root = path.join(dir, 'checkout');
+    fs.mkdirSync(path.join(root, 'kb'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'kb', 'PRIVATE-STORES.json'), '{"privateStores":[]}');
+    fs.writeFileSync(path.join(root, 'kb', 'external-sources.json'), '{"sources":[]}');
+    fs.writeFileSync(path.join(root, 'kb', 'no-corpus-repos.json'), '{"repos":[]}');
+    const stage = path.join(dir, 'stage');
+    fs.mkdirSync(path.join(stage, 'ruvnet-brain'), { recursive: true });
+    fs.writeFileSync(path.join(stage, 'ruvnet-brain', 'RVF-GENERATIONS.json'), '{"stores":{}}');
+    fs.writeFileSync(path.join(stage, 'ruvnet-brain', 'alpha.big.rvf'), 'seed rvf bytes');
+    const archive = path.join(dir, 'seed.zip');
+    execFileSync('zip', ['-q', '-r', archive, 'ruvnet-brain'], { cwd: stage });
+    const digest = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+    const argv = ['--root', root, '--seed-archive', archive, '--seed-tag', `corpus-sha256-${digest}`,
+      '--seed-sha256', digest, '--assets', path.join(dir, 'assets'), '--workspace', path.join(dir, 'workspace'),
+      '--builder-sha', sha('f')];
+    return { dir, root, argv, assets: path.join(dir, 'assets') };
+  };
+
+  // One stale eligible repository: attempt 1 plans it, "refreshes" it into the ledger, and the settled
+  // coverage then reports it CURRENT, so the real sealed-generation loop accepts on its first attempt.
+  const drive = () => {
+    const ledger = { stores: {} };
+    const row = () => ({ ...repo({ name: 'alpha', upstream: sha('a') }),
+      status: ledger.stores.alpha ? 'CURRENT' : 'STALE' });
+    const seen = {};
+    const reconcileAndPrepare = (options) => reconcileAndPrepareCorpusCandidate({
+      ...options,
+      reconcile: ({ maxAttempts }) => acquireSealedGeneration({
+        maxAttempts,
+        observe: async () => ({ observationSha256: 'b'.repeat(64) }),
+        build: async () => coverage([row()]),
+        readLedger: () => ledger,
+        execute: async (plan) => {
+          for (const entry of plan) ledger.stores[entry.store] = { sourceCommit: entry.upstreamSha };
+          return { refreshed: plan.map((entry) => entry.store) };
+        },
+        prune: async () => ({ pruned: ['retired-store'] }),
+        rebuild: async () => ({ rebuilt: ['concepts', 'ruv-gists'] }),
+      }),
+      normalizeUpdaters: (input) => { seen.refreshedStores = input.refreshedStores; return { missing: [] }; },
+      prepare: () => ({ bundleFile: 'candidate.zip', receiptFile: 'candidate.receipt.json' }),
+    });
+    return { reconcileAndPrepare, seen };
+  };
+
+  it('completes, exits 0 and prints the plan summarized from the real acquisition history', async () => {
+    const fixture = seedFixture();
+    const { reconcileAndPrepare, seen } = drive();
+    let printed = '';
+    const code = await main(fixture.argv, { reconcileAndPrepare, stdout: { write: (text) => { printed += text; } } });
+
+    expect(code).toBe(0);
+    const output = JSON.parse(printed);
+    expect(output.ok).toBe(true);
+    expect(output.plan).toEqual([expect.objectContaining({ store: 'alpha', upstreamSha: sha('a'), reason: 'missing ledger receipt' })]);
+    expect(output.reconciliation.attempts).toHaveLength(1);
+    expect(output.bundleFile).toBe('candidate.zip');
+    // The updater normalization step reads the same history through the same reader.
+    expect(seen.refreshedStores).toEqual(['alpha']);
+    // The real bootstrap steps ran before reconciliation, not a shortcut around them.
+    expect(fs.existsSync(path.join(fixture.assets, 'PRIVATE-STORES.json'))).toBe(true);
+    expect(fs.existsSync(path.join(fixture.assets, 'external-sources.json'))).toBe(true);
+    expect(fs.readFileSync(path.join(fixture.assets, 'alpha.big.rvf'), 'utf8')).toBe('seed rvf bytes');
+  });
+
+  it('summarizeReconciliation reads every attempt, and names a result that has no attempts array', async () => {
+    const history = { observation: { observationSha256: 'c'.repeat(64) }, attempts: [
+      { plan: [{ store: 'alpha' }], refreshed: ['alpha'], pruned: [], rebuilt: [] },
+      { plan: [{ store: 'beta' }], refreshed: ['beta'], pruned: ['old'], rebuilt: ['concepts'] },
+    ] };
+    expect(summarizeReconciliation(history)).toEqual({
+      attempts: 2, observationSha256: 'c'.repeat(64),
+      plan: [{ store: 'alpha' }, { store: 'beta' }], refreshed: ['alpha', 'beta'], pruned: ['old'], rebuilt: ['concepts'],
+    });
+    // The pre-cd0f032f shape must fail by name, never as a bare TypeError at the end of a generation.
+    expect(() => summarizeReconciliation({ observation: {}, rounds: [] }))
+      .toThrow(/no attempts array \(keys: observation, rounds\)/);
   });
 });

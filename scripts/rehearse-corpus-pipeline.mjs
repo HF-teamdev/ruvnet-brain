@@ -548,6 +548,21 @@ export async function verifyExtractedBytesWithoutOriginals({
 // rehearse publication with the recorder, and emit candidate N as the seed for generation N+1.
 // ---------------------------------------------------------------------------------------------
 
+// The rehearsal's record of one generation's reconciliation. It never reads the acquisition history
+// itself: it uses the disposable checkout's own summarizeReconciliation, the same reader main() uses
+// (ADR-0091 D1). Its private copy of the old `rounds` read crashed exactly where main() did.
+export function recordReconciliation({ summarize, reconciliation, durationMs }) {
+  const summary = summarize(reconciliation);
+  return {
+    attempts: summary.attempts,
+    observationSha256: summary.observationSha256,
+    refreshed: summary.refreshed,
+    pruned: summary.pruned.length,
+    rebuilt: summary.rebuilt,
+    durationMs,
+  };
+}
+
 async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds, recorder, tamper, log }) {
   const generation = { index, startedAt: new Date().toISOString(), seed: { tag: seed.tag, sha256: seed.sha256, bytes: seed.bytes, channel: seed.channel } };
   const assetsDir = path.join(workRoot, `assets-gen${index}`);
@@ -608,18 +623,14 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
   const { reconciliation, candidate } = await api.reconcileAndPrepareCorpusCandidate({
     assetsDir, workspaceDir, root: checkoutRoot, owner: bounds.owner, builderSha: bounds.builderSha,
     candidateDir, receiptFile, coverageFile: path.join(checkoutRoot, 'data', 'source-coverage.json'),
-    bootstrapIdentity, maxRounds: bounds.maxRounds,
+    // reconcileAndPrepareCorpusCandidate reads `maxAttempts`; `maxRounds` was silently ignored after
+    // cd0f032f, so --max-rounds never reached the acquisition loop.
+    bootstrapIdentity, maxAttempts: bounds.maxRounds,
     reconcile: (options) => api.acquireCorpusGeneration({ ...options, observe: boundedObserve }),
     prepare: (options) => api.prepareCorpusCandidate({ ...options, run: recordingRun }),
   });
-  generation.reconciliation = {
-    rounds: reconciliation.rounds.length,
-    observationSha256: reconciliation.observation.observationSha256,
-    refreshed: reconciliation.rounds.flatMap((round) => round.refreshed || []),
-    pruned: reconciliation.rounds.flatMap((round) => round.pruned || []).length,
-    rebuilt: reconciliation.rounds.flatMap((round) => round.rebuilt || []),
-    durationMs: Date.now() - reconcileStart,
-  };
+  generation.reconciliation = recordReconciliation({
+    summarize: api.summarizeReconciliation, reconciliation, durationMs: Date.now() - reconcileStart });
   const assemblyInvocations = invocations.filter((row) => row.script === 'build-bundle.mjs');
   generation.assembly = {
     assembleBundleInvocations: assemblyInvocations.length,
@@ -828,6 +839,7 @@ export async function rehearseCorpusPipeline({
       syncCorpusInputs: reconcileMod.syncCorpusInputs,
       acquireCorpusGeneration: reconcileMod.acquireCorpusGeneration,
       reconcileAndPrepareCorpusCandidate: reconcileMod.reconcileAndPrepareCorpusCandidate,
+      summarizeReconciliation: reconcileMod.summarizeReconciliation,
       prepareCorpusCandidate: reconcileMod.prepareCorpusCandidate,
       observeSourceUniverse: coverageMod.observeSourceUniverse,
       canonicalSourceObservation: coverageMod.canonicalSourceObservation,

@@ -12,8 +12,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   acquireSeed, boundObservation, createDisposableCheckout, inventoryTree, installCommandRecorder,
-  verifyExtractedBytesWithoutOriginals,
+  recordReconciliation, verifyExtractedBytesWithoutOriginals,
 } from '../../scripts/rehearse-corpus-pipeline.mjs';
+import { acquireSealedGeneration, summarizeReconciliation } from '../../scripts/corpus-reconcile.mjs';
 import { canonicalSourceObservation, sourceObservationDigest } from '../../scripts/source-coverage.mjs';
 
 const dirs = [];
@@ -260,4 +261,39 @@ describe('disposable checkout', () => {
     const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: checkout.root, encoding: 'utf8' });
     expect(String(head.stdout).trim()).toBe(checkout.head);
   }, 120_000);
+});
+
+// ADR-0091 D1. The rehearsal kept its own copy of `reconciliation.rounds.flatMap(...)` after cd0f032f
+// renamed the history to `attempts`, so the tool meant to catch main()'s crash crashed in the same place.
+describe('reconciliation record (ADR-0091 D1)', () => {
+  it('records the history the REAL sealed-generation loop produces, through the shared reader', async () => {
+    const ledger = { stores: {} };
+    const row = () => ({ key: 'repo:alpha', kind: 'repository', name: 'alpha', url: 'https://github.com/ruvnet/alpha',
+      disposition: 'eligible', upstream: { sha: 'a'.repeat(40) }, artifact: { store: 'alpha' },
+      status: ledger.stores.alpha ? 'CURRENT' : 'STALE' });
+    const reconciliation = await acquireSealedGeneration({
+      maxAttempts: 2,
+      observe: async () => ({ observationSha256: 'b'.repeat(64) }),
+      build: async () => ({ schemaVersion: 1, coverageGeneration: 'g1', rows: [row()] }),
+      readLedger: () => ledger,
+      execute: async (plan) => {
+        for (const entry of plan) ledger.stores[entry.store] = { sourceCommit: entry.upstreamSha };
+        return { refreshed: plan.map((entry) => entry.store) };
+      },
+      prune: async () => ({ pruned: ['retired-store'] }),
+      rebuild: async () => ({ rebuilt: ['concepts', 'ruv-gists'] }),
+    });
+    expect(recordReconciliation({ summarize: summarizeReconciliation, reconciliation, durationMs: 7 })).toEqual({
+      attempts: 1, observationSha256: 'b'.repeat(64), refreshed: ['alpha'], pruned: 1,
+      rebuilt: ['concepts', 'ruv-gists'], durationMs: 7,
+    });
+  });
+
+  it('holds no private reader of the history, and passes the attempt bound the orchestrator actually reads', () => {
+    const source = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname),
+      '..', '..', 'scripts', 'rehearse-corpus-pipeline.mjs'), 'utf8');
+    expect(source).not.toMatch(/reconciliation\.(rounds|attempts)\b/);
+    expect(source).toMatch(/summarizeReconciliation: reconcileMod\.summarizeReconciliation/);
+    expect(source).toMatch(/maxAttempts: bounds\.maxRounds/);
+  });
 });
