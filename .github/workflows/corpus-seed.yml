@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Exact 40-character source SHA of the newest install-verified code release (reachable from origin/main)
+        description: Exact 40-character SHA currently at origin/main (must also be the newest install-verified code release's source)
         required: true
         type: string
       seed_tag:
@@ -90,7 +90,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require the clean source of the approved, install-verified runtime
+      - name: Require the exact clean current main source, which must be the approved install-verified runtime
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -98,19 +98,21 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA" || { echo 'candidate checkout SHA mismatch' >&2; exit 1; }
+          # EXACT equality with origin/main, never "reachable from" it (independent review of ADR-0091 D3,
+          # 2026-09-28): an ancestor let the unattended job build and promote an OLDER runtime over the
+          # live code release.
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA" || { echo 'candidate is not current origin/main' >&2; exit 1; }
           test -z "$(git status --porcelain)" || { echo 'candidate checkout is dirty before reconciliation' >&2; exit 1; }
           # ADR-0091 D3: the corpus is built AT the approved runtime's own source, so the archive's
-          # executables equal that release by construction. The candidate must therefore be exactly the
-          # sourceSha of the newest install-verified code release (resolved from its signed aggregate),
-          # and reachable from origin/main -- not necessarily main HEAD.
-          git merge-base --is-ancestor "$EXPECTED_SHA" origin/main || { echo 'candidate is not reachable from origin/main' >&2; exit 1; }
+          # executables equal that release by construction. main HEAD must therefore BE the sourceSha of
+          # the newest code release, whose signed aggregate must verify (no fallback to older releases).
           grep -q 'export async function resolveApprovedRuntime' scripts/approved-runtime.mjs || {
             echo 'candidate predates ADR-0091 D3 (no approved-runtime resolver); it cannot prove it is the approved runtime' >&2; exit 1; }
           node scripts/approved-runtime.mjs --resolve --repo "$GITHUB_REPOSITORY" \
             --out "$RUNNER_TEMP/approved-runtime.json" > "$RUNNER_TEMP/approved-release.json"
           approved_sha="$(node -p "require(process.env.RUNNER_TEMP + '/approved-release.json').sourceSha")"
           test "$approved_sha" = "$EXPECTED_SHA" || {
-            echo "candidate $EXPECTED_SHA is not the approved runtime source $approved_sha (newest install-verified code release)" >&2; exit 1; }
+            echo "candidate $EXPECTED_SHA is not the approved runtime source $approved_sha (the newest code release)" >&2; exit 1; }
           test -z "$(git status --porcelain)" || { echo 'resolving the approved runtime dirtied the checkout' >&2; exit 1; }
 
       - name: Bind this round to one exact seed identity

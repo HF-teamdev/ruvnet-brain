@@ -74,6 +74,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CORPUS_NIGHTLY: ${{ vars.CORPUS_NIGHTLY }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          CANDIDATE_VERSION: ${{ steps.candidate.outputs.candidate_version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -81,27 +83,50 @@ jobs:
           #  1. The owner's kill switch: repository variable CORPUS_NIGHTLY. Only the exact value `on`
           #     arms it; unset or anything else stands down, so a change to this workflow can never
           #     arm the nightly by itself. Flipping it needs no code release.
-          #  2. An approved runtime exists: the newest vX.Y.Z whose signed public-verification aggregate
-          #     verifies against the committed key, with its sourceSha on main's history. That source --
-          #     usually older than main HEAD -- is what the corpus is built at, so its executables are
-          #     the install-verified ones by construction. This replaces the old committed-pin-file
-          #     check, which no commit could ever keep valid.
+          #  2. main HEAD IS the approved runtime: the NEWEST vX.Y.Z carries a signed public-verification
+          #     aggregate that verifies against the committed key, and its sourceSha is exactly main HEAD.
+          #     The corpus is built there, so its executables are the install-verified ones by
+          #     construction. There is NO fallback to an older release (independent review of D3,
+          #     2026-09-28): promoting an older runtime over the live code release breaks fresh installs
+          #     and is refused by updated clients. This replaces the old committed-pin-file check, which
+          #     no commit could ever keep valid.
           # Standing down is not a failure: a correctly-disarmed scheduler is not a broken one, and a
-          # nightly red X trains the owner to ignore the alert that matters.
+          # nightly red X trains the owner to ignore the alert that matters. "Not yet verified" (the
+          # newest release has no aggregate yet, or main HEAD is a newer release still being published)
+          # stands down. Evidence that is PRESENT but does not hold (bad signature, digest mismatch,
+          # FAIL verdict) is a loud failure -- never a silent skip.
           if [[ "${CORPUS_NIGHTLY:-}" != on ]]; then
             echo 'armed=false' >> "$GITHUB_OUTPUT"
             echo "::notice::corpus-nightly-dispatch is DISARMED: repository variable CORPUS_NIGHTLY is '${CORPUS_NIGHTLY:-unset}', not 'on'. Nothing was dispatched."
             exit 0
           fi
           git fetch --no-tags origin main
-          if ! node scripts/approved-runtime.mjs --resolve --repo "$GITHUB_REPOSITORY" \
-              --out "$RUNNER_TEMP/approved-runtime.json" > "$RUNNER_TEMP/approved-release.json"; then
-            echo '::error::CORPUS_NIGHTLY is on, but no install-verified code release resolves as the approved runtime (reasons above).'
+          set +e
+          node scripts/approved-runtime.mjs --resolve --repo "$GITHUB_REPOSITORY" \
+            --out "$RUNNER_TEMP/approved-runtime.json" > "$RUNNER_TEMP/approved-release.json"
+          resolve_status=$?
+          set -e
+          if [[ "$resolve_status" -eq 3 ]]; then
+            echo 'armed=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::corpus-nightly-dispatch stands down: the newest code release has not reached install-verified yet (no aggregate). Nothing was dispatched.'
+            exit 0
+          fi
+          if [[ "$resolve_status" -ne 0 ]]; then
+            echo '::error::CORPUS_NIGHTLY is on, but the newest code release carries install-verification evidence that does not hold (reasons above). Refusing; no fallback to an older release.'
             exit 1
           fi
           approved_sha="$(node -p "require(process.env.RUNNER_TEMP + '/approved-release.json').sourceSha")"
           approved_tag="$(node -p "require(process.env.RUNNER_TEMP + '/approved-release.json').tag")"
           approved_version="$(node -p "require(process.env.RUNNER_TEMP + '/approved-release.json').version")"
+          if [[ "$approved_sha" != "$CANDIDATE_SHA" ]]; then
+            if [[ "$approved_version" != "$CANDIDATE_VERSION" ]]; then
+              echo 'armed=false' >> "$GITHUB_OUTPUT"
+              echo "::notice::corpus-nightly-dispatch stands down: main HEAD is $CANDIDATE_VERSION, not yet published and install-verified (newest verified release is $approved_tag). Nothing was dispatched."
+              exit 0
+            fi
+            echo "::error::release $approved_tag was verified at $approved_sha, but main HEAD carrying the same version is $CANDIDATE_SHA. Refusing."
+            exit 1
+          fi
           {
             echo 'armed=true'
             echo "approved_sha=$approved_sha"
@@ -113,8 +138,7 @@ jobs:
         if: steps.armed.outputs.armed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          # The resolved approved runtime source, not a raw HEAD read. protected-release runs on main
-          # (--ref main) and builds the corpus at this commit, which is on main's history.
+          # Exactly main HEAD, proven above to BE the newest install-verified release's source.
           CANDIDATE_SHA: ${{ steps.armed.outputs.approved_sha }}
           CANDIDATE_VERSION: ${{ steps.armed.outputs.approved_version }}
         shell: bash
@@ -135,7 +159,6 @@ jobs:
         if: steps.armed.outputs.armed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          # The dispatched run's head_sha is main HEAD (--ref main); that is what the receipt selector matches.
           CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
           APPROVED_SHA: ${{ steps.armed.outputs.approved_sha }}
         shell: bash

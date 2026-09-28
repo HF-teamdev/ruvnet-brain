@@ -827,15 +827,16 @@ describe('legacy provenance is preserved distinctly from current-round rebuilds 
 });
 
 describe('standalone workflow boundary', () => {
-  it('binds preparation to the resolved approved SHA (an ancestor of main)/tag/digest and leaves publication to protected-release', () => {
+  it('binds preparation to the exact current-main SHA, which must BE the resolved approved SHA, plus tag/digest, and leaves publication to protected-release', () => {
     const workflow = fs.readFileSync(path.resolve('.github/workflows/corpus-seed.yml'), 'utf8');
     expect(workflow).toContain('candidate_sha:');
     expect(workflow).toContain('seed_tag:');
     expect(workflow).toContain('seed_sha256:');
     expect(workflow).toContain('ref: ${{ inputs.candidate_sha }}');
-    // ADR-0091 D3: the candidate must BE the newest install-verified release's sourceSha, reachable from
-    // origin/main -- no longer "equal to origin/main".
-    expect(workflow).toContain('git merge-base --is-ancestor "$EXPECTED_SHA" origin/main');
+    // Independent review of ADR-0091 D3 (2026-09-28): EXACTLY origin/main, never merely reachable from it,
+    // AND the newest install-verified release's sourceSha (ADR-0091 D3).
+    expect(workflow).toContain('test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"');
+    expect(workflow).not.toContain('merge-base --is-ancestor');
     expect(workflow).toContain('node scripts/approved-runtime.mjs --resolve --repo "$GITHUB_REPOSITORY"');
     expect(workflow).toContain('test "$approved_sha" = "$EXPECTED_SHA"');
     expect(workflow).toContain('gh release download "$SEED_TAG"');

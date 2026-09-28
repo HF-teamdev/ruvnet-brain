@@ -35,7 +35,9 @@
 //
 // Usage:
 //   node scripts/approved-runtime.mjs --resolve --repo owner/name [--tag vX.Y.Z] [--main-ref origin/main] \
-//        --out <pin.json>                          # resolve (newest, or exactly --tag) and write the pin
+//        --out <pin.json>                          # resolve (newest ONLY, or exactly --tag) and write the pin
+//                                                  # exit 3 = newest release not yet install-verified
+//                                                  # exit 1 = evidence present but invalid (loud)
 //   node scripts/approved-runtime.mjs --verify --archive-manifest <ARCHIVE-MANIFEST.json> \
 //        --pin <pin.json>                          # every corpus promotion
 
@@ -225,6 +227,22 @@ export function readArchiveManifestFromZip(zipFile) {
 }
 
 /**
+ * The newest code release exists but carries NO public-verification aggregate yet: install
+ * verification has not finished (or never ran). That is "not yet verified", not a fault — the nightly
+ * stands down cleanly on it. It is the ONLY resolution failure that is not loud.
+ */
+export class ApprovedRuntimeNotYetVerified extends Error {
+  constructor(tag, message) {
+    super(message);
+    this.name = 'ApprovedRuntimeNotYetVerified';
+    this.code = 'APPROVED_RUNTIME_NOT_YET_VERIFIED';
+    this.tag = tag;
+  }
+}
+/** CLI exit code for ApprovedRuntimeNotYetVerified; every other resolution failure exits 1. */
+export const EXIT_NOT_YET_VERIFIED = 3;
+
+/**
  * Judge ONE code release. Returns the resolution, or throws a reason that names exactly which piece of
  * evidence is missing or wrong. Order is cheapest-first: the 1 MB signed aggregate and git ancestry are
  * checked before the ~555 MB archive is downloaded at all.
@@ -233,7 +251,10 @@ function judgeCodeRelease({ repo, tag, gh, git, mainRef, publicKey, verifyAggreg
   const release = JSON.parse(gh(['api', `repos/${repo}/releases/tags/${tag}`]));
   if (release.draft || release.prerelease) throw new Error('release is a draft or prerelease');
   const assets = new Map((release.assets || []).map((asset) => [asset.name, asset]));
-  if (!assets.has(AGGREGATE_ASSET)) throw new Error(`no ${AGGREGATE_ASSET} — this release never reached install-verified`);
+  if (!assets.has(AGGREGATE_ASSET)) {
+    throw new ApprovedRuntimeNotYetVerified(tag, `code release ${tag} has no ${AGGREGATE_ASSET} yet — `
+      + 'it has not reached install-verified, so there is no approved runtime to build at');
+  }
   if (!assets.has(ARCHIVE_ASSET)) throw new Error(`no ${ARCHIVE_ASSET} asset`);
 
   const aggregateFile = downloadAsset({ repo, tag, name: AGGREGATE_ASSET, dir: scratch });
@@ -285,11 +306,19 @@ function judgeCodeRelease({ repo, tag, gh, git, mainRef, publicKey, verifyAggreg
 }
 
 /**
- * Resolve the approved runtime pin from the newest install-verified code release (or exactly `tag`).
- * Never falls open: when no release qualifies it throws, listing every release it rejected and why.
+ * Resolve the approved runtime pin from the NEWEST published code release (or exactly `tag`).
+ *
+ * NO FALLBACK (independent review of ADR-0091 D3, 2026-09-28). The newest vX.Y.Z must itself carry a
+ * PASS aggregate. It never walks back to an older release: an older runtime promoted as the corpus
+ * `releases/latest` over a newer live code release breaks fresh installs (version mismatch) and is
+ * refused by already-updated clients as incompatible — a self-inflicted outage, and a deliberate
+ * downgrade path for anyone able to withhold or corrupt the newest aggregate. So:
+ *   - newest release has NO aggregate asset  -> throws ApprovedRuntimeNotYetVerified (clean stand-down)
+ *   - newest release has an aggregate that does not verify, is not PASS, or any other evidence fails
+ *                                             -> throws a plain Error (loud failure; never skipped)
  */
 export async function resolveApprovedRuntime({
-  repo, tag = null, mainRef = 'origin/main', root = ROOT, limit = 20,
+  repo, tag = null, mainRef = 'origin/main', root = ROOT,
   gh = defaultGh, git = (args) => defaultGit(args, { cwd: root }),
   publicKey = null,
   // Loaded lazily: bin/install.mjs reaches this module (via installed-brain-health.mjs ->
@@ -308,37 +337,29 @@ export async function resolveApprovedRuntime({
   const verify = verifyAggregate
     || (await import('./public-verification-aggregate.mjs')).verifyPublicVerificationAggregate;
 
-  let tags;
-  if (tag) tags = [tag];
-  else {
+  let candidate = tag;
+  if (!candidate) {
     const listed = JSON.parse(gh(['release', 'list', '--repo', repo, '--limit', '200',
       '--json', 'tagName,isDraft,isPrerelease']) || '[]');
-    tags = listed.filter((row) => !row.isDraft && !row.isPrerelease && CODE_TAG.test(String(row.tagName || '')))
-      .map((row) => row.tagName).sort(semverDescending).slice(0, limit);
+    [candidate] = listed.filter((row) => !row.isDraft && !row.isPrerelease && CODE_TAG.test(String(row.tagName || '')))
+      .map((row) => row.tagName).sort(semverDescending);
   }
-  if (!tags.length) throw new Error(`no code releases (vX.Y.Z) listed on ${repo}`);
+  if (!candidate) throw new Error(`no code releases (vX.Y.Z) listed on ${repo}`);
 
-  const rejected = [];
   const scratch = scratchDir || fs.mkdtempSync(path.join(os.tmpdir(), 'approved-runtime-resolve-'));
+  const dir = path.join(scratch, candidate);
+  fs.mkdirSync(dir, { recursive: true });
   try {
-    for (const candidate of tags) {
-      const dir = path.join(scratch, candidate);
-      fs.mkdirSync(dir, { recursive: true });
-      try {
-        const resolved = judgeCodeRelease({ repo, tag: candidate, gh, git, mainRef, publicKey: key,
-          verifyAggregate: verify, downloadAsset, readArchiveManifest, scratch: dir });
-        return { ...resolved, rejected };
-      } catch (error) {
-        rejected.push({ tag: candidate, reason: error.message });
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
+    return judgeCodeRelease({ repo, tag: candidate, gh, git, mainRef, publicKey: key,
+      verifyAggregate: verify, downloadAsset, readArchiveManifest, scratch: dir });
+  } catch (error) {
+    if (error instanceof ApprovedRuntimeNotYetVerified) throw error;
+    throw new Error(`code release ${candidate}${tag ? '' : ' (the newest)'} carries install-verification evidence that does not hold `
+      + `(refusing it, and refusing to fall back to an older release): ${error.message}`);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
     if (!scratchDir) fs.rmSync(scratch, { recursive: true, force: true });
   }
-  throw new Error(`no install-verified code release qualifies as the approved runtime:\n${
-    rejected.map((row) => `  - ${row.tag}: ${row.reason}`).join('\n')}`);
 }
 
 const arg = (name, fallback) => {
@@ -355,8 +376,10 @@ async function main() {
         tag: arg('--tag', null),
         mainRef: arg('--main-ref', 'origin/main'),
       });
-    } catch (error) { console.error(`[approved-runtime] ${error.message}`); return 1; }
-    for (const row of result.rejected) console.error(`[approved-runtime] skipped ${row.tag}: ${row.reason}`);
+    } catch (error) {
+      console.error(`[approved-runtime] ${error.message}`);
+      return error instanceof ApprovedRuntimeNotYetVerified ? EXIT_NOT_YET_VERIFIED : 1;
+    }
     const out = arg('--out');
     if (out) {
       fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });

@@ -16,7 +16,7 @@ on:
           - code
           - corpus
       candidate_sha:
-        description: Full 40-character source SHA — code mode, current origin/main; corpus mode, the approved (install-verified) runtime source on main's history
+        description: Full 40-character SHA currently at origin/main (corpus mode — also the newest install-verified code release's source)
         required: true
         type: string
       version:
@@ -598,7 +598,7 @@ jobs:
         with:
           node-version: '20'
       - id: candidate
-        name: Bind this corpus run to protected main and one source identity on its history
+        name: Bind this corpus run to one current-main source identity
         shell: bash
         run: |
           set -euo pipefail
@@ -606,14 +606,14 @@ jobs:
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git fetch --no-tags origin main
-          # This run executes current protected main...
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
-          # ...and builds the corpus at EXPECTED_SHA, the approved runtime's source (ADR-0091 D3), which
-          # may trail main HEAD but must be on its history and must BE the requested version.
-          git merge-base --is-ancestor "$EXPECTED_SHA" "$GITHUB_SHA"
-          candidate_version="$(git show "$EXPECTED_SHA:package.json" | node -e "let t='';process.stdin.on('data',(d)=>{t+=d;}).on('end',()=>process.stdout.write(JSON.parse(t).version))")"
-          test "$candidate_version" = "$EXPECTED_VERSION"
+          # EXACT equality, never "an ancestor of GITHUB_SHA" (independent review of ADR-0091 D3,
+          # 2026-09-28): an ancestor let the unattended job promote an OLDER runtime over the live
+          # code release. The corpus is built at protected main HEAD, which must itself be the newest
+          # install-verified release (the next step proves that).
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          test "$(node -p "require('./package.json').version")" = "$EXPECTED_VERSION"
           test -z "$(git status --porcelain)"
           printf 'candidate_sha=%s\nversion=%s\n' "$EXPECTED_SHA" "$EXPECTED_VERSION" >> "$GITHUB_OUTPUT"
       - id: approved
@@ -628,7 +628,8 @@ jobs:
           # every installed client, so it runs only on a runtime an owner-gated code release shipped AND
           # install-verified on all three OSes. That approval is no longer a committed file (a committed
           # pin could never match the release that committed it). It is RESOLVED here: the newest
-          # vX.Y.Z whose signed public-verification-aggregate.json verifies against the committed
+          # vX.Y.Z — only the newest; it never falls back to an older one — whose signed
+          # public-verification-aggregate.json verifies against the committed
           # keys/ruvnet-brain-signing.pub.pem, whose bundleSha256 is that release's exact zip, and whose
           # sourceSha is reachable from origin/main. The pin is rebuilt from that zip's own
           # ARCHIVE-MANIFEST.json and never written into the checkout.
@@ -636,12 +637,11 @@ jobs:
             --out "$RUNNER_TEMP/approved-runtime.json" > "$RUNNER_TEMP/approved-release.json"
           approved_sha="$(node -p "require(process.env.RUNNER_TEMP + '/approved-release.json').sourceSha")"
           approved_tag="$(node -p "require(process.env.RUNNER_TEMP + '/approved-release.json').tag")"
-          # Build AT the approved sourceSha -- usually older than main HEAD, which is fine: the publisher
-          # (release.mjs) requires its --target to be GITHUB_SHA or an ancestor of it. The dispatched
-          # candidate must be exactly the approved runtime's source, never some other commit.
+          # The approved source must BE this run's candidate, which the step above bound to GITHUB_SHA
+          # and origin/main exactly. The publisher (release.mjs) re-requires target == GITHUB_SHA.
           if [[ "$approved_sha" != "$EXPECTED_SHA" ]]; then
-            echo "::error::candidate $EXPECTED_SHA is not the approved runtime: the newest install-verified code release is $approved_tag @ $approved_sha."
-            echo '::error::Dispatch the corpus run with candidate_sha set to that release source (corpus-nightly-dispatch does this).'
+            echo "::error::main HEAD $EXPECTED_SHA is not the approved runtime: the newest code release is $approved_tag @ $approved_sha."
+            echo '::error::The corpus is only ever built at main HEAD when main HEAD IS the newest install-verified release.'
             exit 1
           fi
           test "$(node -p "require(process.env.RUNNER_TEMP + '/approved-release.json').version")" = "$EXPECTED_VERSION"
@@ -715,7 +715,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_SHA: ${{ needs.corpus-identity.outputs.candidate_sha }}
-          RUN_HEAD_SHA: ${{ github.sha }}
           PREPARATION_RUN_ID: ${{ github.run_id }}
           PREPARATION_RUN_ATTEMPT: ${{ github.run_attempt }}
           PREPARATION_ARTIFACT: ${{ needs.corpus-prepare.outputs.artifact_name }}
@@ -730,10 +729,6 @@ jobs:
           import { execFileSync } from 'node:child_process';
           const repo = process.env.GITHUB_REPOSITORY;
           const sha = process.env.CANDIDATE_SHA;
-          // ADR-0091 D3: this run executes protected main (run.head_sha) and prepares the corpus at the
-          // approved runtime's source (sha), which may trail it. Each identity is bound separately.
-          const runHead = process.env.RUN_HEAD_SHA;
-          if (!/^[0-9a-f]{40}$/.test(runHead || '')) throw new Error('untrusted corpus run head identity');
           const runId = Number(process.env.PREPARATION_RUN_ID);
           const runAttempt = Number(process.env.PREPARATION_RUN_ATTEMPT);
           const workflowPath = '.github/workflows/protected-release.yml';
@@ -750,7 +745,7 @@ jobs:
           const trustedRun = (run) => Number.isSafeInteger(run.id) && run.id === runId
             && run.workflow_id === workflow.id && run.path === workflowPath
             && run.event === 'workflow_dispatch' && run.run_attempt === runAttempt
-            && run.head_sha === runHead && run.head_branch === 'main'
+            && run.head_sha === sha && run.head_branch === 'main'
             && Number.isSafeInteger(run.repository?.id) && run.repository.id > 0
             && run.repository.full_name === repo && run.head_repository?.full_name === repo
             && run.head_repository.id === run.repository.id;
@@ -760,7 +755,7 @@ jobs:
           if (process.env.PREPARATION_ARTIFACT !== artifactName) throw new Error('untrusted corpus artifact name');
           const trustedArtifact = (artifact) => Number.isSafeInteger(artifact.id) && artifact.id > 0
             && artifact.name === artifactName && artifact.expired === false
-            && artifact.workflow_run?.id === run.id && artifact.workflow_run.head_sha === runHead
+            && artifact.workflow_run?.id === run.id && artifact.workflow_run.head_sha === sha
             && artifact.workflow_run.head_branch === run.head_branch
             && artifact.workflow_run.repository_id === run.repository.id
             && artifact.workflow_run.head_repository_id === run.repository.id;
@@ -835,6 +830,10 @@ jobs:
         run: |
           set -euo pipefail
           staged="$RUNNER_TEMP/corpus-import"
+          # The code that verifies, signs and publishes is THIS run's own protected-main commit, never an
+          # older one: corpus-identity bound the candidate to GITHUB_SHA exactly.
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -s "$staged/ruvnet-brain.zip"
           test -s "$staged/corpus-receipt.json"
           test -s "$staged/corpus-preparation.identity"

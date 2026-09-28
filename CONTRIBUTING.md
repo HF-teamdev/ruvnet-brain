@@ -16,7 +16,7 @@ instructions. `npm run single-source:check` fails CI if a second, conflicting in
 | Set the version | `npm run version:set -- X.Y.Z` (first commit of the release branch) | `npm run version:check` exits 0 |
 | Release code | Preflight → fast-forward `main` → dispatch `protected-release.yml mode=code` → owner approves the `Production – ruvnet-brain` deployment | Terminal receipt `install-verified` on Linux, macOS, Windows; npm `latest` = GitHub `releases/latest` = `main` |
 | Build the customer corpus | CI only: `corpus-seed.yml` → `scripts/corpus-reconcile.mjs` | Sealed candidate + receipt artifact |
-| Publish the corpus | `protected-release.yml mode=corpus` (nightly dispatcher), armed only while repository variable `CORPUS_NIGHTLY` is `on` **and** an `install-verified` code release resolves (at run time, `scripts/approved-runtime.mjs --resolve`; never a committed file); the corpus is built at that release's commit | `corpus-sha256-*` release promoted to `releases/latest` |
+| Publish the corpus | `protected-release.yml mode=corpus` (nightly dispatcher), armed only while repository variable `CORPUS_NIGHTLY` is `on` **and** `main` HEAD is itself the newest code release and that release is `install-verified` (resolved at run time, `scripts/approved-runtime.mjs --resolve`; never a committed file, never a fallback to an older release); the corpus is built at that commit | `corpus-sha256-*` release promoted to `releases/latest` |
 | Update a user's machine | One owner per machine: the Brain's scheduler (`npx ruvnet-brain --enable-nightly`) **or** agentic-kit (`ak sync`) — never both | `SOURCE.json` `releaseTag` equals the plugin version; latest `~/.cache/ruvnet-brain/refresh-runs/*.json` is PASS |
 
 Nothing else publishes. `scripts/release-authority.mjs` fails CI if any file other than
@@ -70,12 +70,13 @@ to anonymous API calls and is rate-limited.
 `protected-release.yml mode=corpus`, which signs and promotes a `corpus-sha256-*` release. It stands
 down unless the repository variable `CORPUS_NIGHTLY` is exactly `on` (the owner's kill switch; unset
 means off, and flipping it needs no code release) **and** an approved runtime resolves.
-The approved runtime is never committed: `node scripts/approved-runtime.mjs --resolve` finds the newest
-`vX.Y.Z` release whose signed `public-verification-aggregate.json` verifies against
+The approved runtime is never committed: `node scripts/approved-runtime.mjs --resolve` takes the newest
+`vX.Y.Z` release only, requires its signed `public-verification-aggregate.json` to verify against
 `keys/ruvnet-brain-signing.pub.pem`, and rebuilds the runtime pin from that release's own zip
-(ADR-0091 D3). The corpus is built at that release's source commit, which may trail `main` (so a
-pipeline fix reaches the nightly only once a release containing it is install-verified), and its
-executables are the install-verified ones byte for byte. Never commit `data/approved-runtime.json`; `single-source:check`
+(ADR-0091 D3). It never falls back to an older release: promoting an older runtime over the live code
+release breaks fresh installs. No aggregate yet = the nightly stands down (exit 3); an aggregate that
+does not verify = a loud failure. The corpus is built at that release's source commit, which must be
+exactly `main` HEAD, and its executables are the install-verified ones byte for byte. Never commit `data/approved-runtime.json`; `single-source:check`
 C1 fails if one appears.
 
 **Local ingestion is for development.** `node scripts/ingest-repo.mjs --name <repo> [--org <org>]`

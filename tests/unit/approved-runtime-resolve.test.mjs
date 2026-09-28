@@ -4,11 +4,14 @@
 // v4.3.34 aggregate + 555 MB archive were proven separately against the real verifier and the
 // committed key (accept / tampered / non-ancestor); that archive is far too large to commit here.
 import { afterEach, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readApprovedRuntime, resolveApprovedRuntime } from '../../scripts/approved-runtime.mjs';
+import {
+  ApprovedRuntimeNotYetVerified, EXIT_NOT_YET_VERIFIED, readApprovedRuntime, resolveApprovedRuntime,
+} from '../../scripts/approved-runtime.mjs';
 
 const dirs = [];
 afterEach(() => { while (dirs.length) fs.rmSync(dirs.pop(), { recursive: true, force: true }); });
@@ -77,11 +80,39 @@ describe('resolveApprovedRuntime — which release is approved', () => {
     expect(result.pin.files.map((row) => row.path)).toEqual(['forge-update.mjs']); // corpus data is never pinned
   });
 
-  it('skips a newer release that never reached install-verified, and says why', async () => {
-    const { options } = world({ releases: [{ tag: 'v9.0.10', aggregate: false }, { tag: 'v9.0.2' }] });
-    const result = await resolveApprovedRuntime(options);
-    expect(result.release.tag).toBe('v9.0.2');
-    expect(result.rejected).toEqual([{ tag: 'v9.0.10', reason: expect.stringMatching(/never reached install-verified/) }]);
+  // Independent review of ADR-0091 D3 (2026-09-28): falling back to an older verified release let the
+  // unattended corpus job promote an OLDER runtime over the live code release as releases/latest.
+  it('NO FALLBACK: newest release with NO aggregate yet is a clean "not yet verified" — never an older release', async () => {
+    const { options, downloads } = world({ releases: [{ tag: 'v9.0.10', aggregate: false }, { tag: 'v9.0.2' }] });
+    const error = await resolveApprovedRuntime(options).then(() => null, (caught) => caught);
+    expect(error).toBeInstanceOf(ApprovedRuntimeNotYetVerified);
+    expect(error.code).toBe('APPROVED_RUNTIME_NOT_YET_VERIFIED');
+    expect(error.tag).toBe('v9.0.10');
+    expect(error.message).toMatch(/v9\.0\.10 has no public-verification-aggregate\.json yet/);
+    // The older, perfectly valid v9.0.2 was never even looked at.
+    expect(downloads.filter((entry) => entry.startsWith('v9.0.2/'))).toEqual([]);
+  });
+
+  it('NO FALLBACK: newest release with a TAMPERED aggregate fails loudly — not a silent skip to an older release', async () => {
+    const { options, downloads } = world({ releases: [{ tag: 'v9.0.10' }, { tag: 'v9.0.2' }],
+      verify: (aggregate) => {
+        if (aggregate.identity.tag === 'v9.0.10') throw new Error('public verification aggregate signature mismatch');
+        return aggregate;
+      } });
+    const error = await resolveApprovedRuntime(options).then(() => null, (caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ApprovedRuntimeNotYetVerified); // loud, not a stand-down
+    expect(error.message).toMatch(/v9\.0\.10 \(the newest\)[\s\S]*refusing to fall back to an older release[\s\S]*signature mismatch/);
+    expect(downloads.filter((entry) => entry.startsWith('v9.0.2/'))).toEqual([]);
+  });
+
+  it('NO FALLBACK: a newest release whose signed aggregate says FAIL is a loud failure, not a skip', async () => {
+    const { options } = world({ releases: [{ tag: 'v9.0.10', aggregateBody: { verdict: 'FAIL',
+      identity: { tag: 'v9.0.10', version: '9.0.10', sourceSha: SOURCE['v9.0.10'], bundleSha256: sha(ZIP_BYTES) } } },
+    { tag: 'v9.0.2' }] });
+    const error = await resolveApprovedRuntime(options).then(() => null, (caught) => caught);
+    expect(error).not.toBeInstanceOf(ApprovedRuntimeNotYetVerified);
+    expect(error.message).toMatch(/v9\.0\.10[\s\S]*aggregate verdict is FAIL, not PASS/);
   });
 
   it('ignores drafts and prereleases entirely', async () => {
@@ -100,7 +131,7 @@ describe('resolveApprovedRuntime — every piece of evidence must hold, and it n
   it('RED: an aggregate the verifier rejects (bad signature / tampered) disqualifies the release', async () => {
     const { options } = world({ releases: [{ tag: 'v9.0.10' }],
       verify: () => { throw new Error('public verification aggregate signature mismatch'); } });
-    await expect(resolveApprovedRuntime(options)).rejects.toThrow(/v9\.0\.10: public verification aggregate signature mismatch/);
+    await expect(resolveApprovedRuntime(options)).rejects.toThrow(/v9\.0\.10 \(the newest\)[\s\S]*public verification aggregate signature mismatch/);
   });
 
   it('RED: an aggregate that describes a different release is refused', async () => {
@@ -131,16 +162,61 @@ describe('resolveApprovedRuntime — every piece of evidence must hold, and it n
     await expect(resolveApprovedRuntime(options)).rejects.toThrow(/downloaded ruvnet-brain\.zip is [0-9a-f]{64}, not the verified/);
   });
 
-  it('RED: when nothing qualifies it throws and lists every rejection — it never returns a pin', async () => {
-    const { options } = world({ releases: [{ tag: 'v9.0.10', aggregate: false }, { tag: 'v9.0.2' }], ancestors: [] });
-    await expect(resolveApprovedRuntime(options)).rejects.toThrow(
-      /no install-verified code release qualifies[\s\S]*v9\.0\.10: no public-verification-aggregate[\s\S]*v9\.0\.2: aggregate sourceSha/);
+  it('RED: --tag with an invalid aggregate is loud too, and names that exact release', async () => {
+    const { options } = world({ releases: [{ tag: 'v9.0.10' }, { tag: 'v9.0.2' }], ancestors: [] });
+    await expect(resolveApprovedRuntime({ ...options, tag: 'v9.0.2' })).rejects.toThrow(
+      /code release v9\.0\.2 carries[\s\S]*aggregate sourceSha a{40} is not reachable/);
   });
 
   it('with no injected verifier, the REAL aggregate verifier runs (a malformed aggregate is refused)', async () => {
     const { options } = world({ releases: [{ tag: 'v9.0.10' }] });
     await expect(resolveApprovedRuntime({ ...options, verifyAggregate: null }))
-      .rejects.toThrow(/v9\.0\.10: public verification aggregate is malformed/);
+      .rejects.toThrow(/v9\.0\.10 \(the newest\)[\s\S]*public verification aggregate is malformed/);
+  });
+});
+
+describe('approved-runtime.mjs --resolve CLI — the exit code the nightly stands down on', () => {
+  // Crosses the process boundary: a fake `gh` (RUVNET_GH_COMMAND) serves one newest release.
+  const fakeGh = (withAggregate) => {
+    const dir = tmp();
+    const script = path.join(dir, 'gh.cjs');
+    fs.writeFileSync(script, `const fs = require('node:fs'); const path = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] === 'release' && args[1] === 'list') { process.stdout.write(JSON.stringify([{ tagName: 'v9.0.10' }, { tagName: 'v9.0.2' }])); process.exit(0); }
+if (args[0] === 'api') {
+  const assets = [{ name: 'ruvnet-brain.zip' }];
+  if (${withAggregate}) assets.push({ name: 'public-verification-aggregate.json' });
+  process.stdout.write(JSON.stringify({ draft: false, prerelease: false, assets })); process.exit(0);
+}
+if (args[0] === 'release' && args[1] === 'download') {
+  const dir = args[args.indexOf('--dir') + 1];
+  fs.writeFileSync(path.join(dir, args[args.indexOf('--pattern') + 1]), JSON.stringify({ verdict: 'PASS', forged: true }));
+  process.exit(0);
+}
+process.exit(9);
+`);
+    const wrapper = path.join(dir, 'gh');
+    fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+    fs.chmodSync(wrapper, 0o755);
+    return wrapper;
+  };
+  const cli = (gh) => spawnSync(process.execPath, [path.resolve('scripts/approved-runtime.mjs'), '--resolve', '--repo', REPO,
+    '--out', path.join(tmp(), 'pin.json')], { encoding: 'utf8', env: { ...process.env, RUVNET_GH_COMMAND: gh } });
+
+  it(`exits ${EXIT_NOT_YET_VERIFIED} (stand down) when the newest release has no aggregate yet`, () => {
+    const result = cli(fakeGh(false));
+    expect(EXIT_NOT_YET_VERIFIED).toBe(3);
+    expect(result.status, result.stderr).toBe(3);
+    expect(result.stderr).toMatch(/v9\.0\.10 has no public-verification-aggregate\.json yet/);
+    expect(result.stdout).toBe('');
+  });
+
+  it('exits 1 (loud) when the newest release carries an aggregate that does not verify', () => {
+    const result = cli(fakeGh(true));
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toMatch(/v9\.0\.10 \(the newest\)[\s\S]*refusing to fall back/);
+    expect(result.stderr).not.toMatch(/v9\.0\.2/);
+    expect(result.stdout).toBe('');
   });
 });
 
