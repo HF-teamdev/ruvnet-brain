@@ -164,8 +164,16 @@ export async function runProtectedCorpusSeed({
   } catch (error) {
     corpusFailure(`corpus receipt is unreadable/corrupt (${error.message})`);
   }
-  if (!isHex(target, 40) || target !== head || target !== env.GITHUB_SHA || target !== receipt.builderSourceSha) {
-    corpusFailure('target must exactly equal HEAD, GITHUB_SHA, and the corpus receipt builderSourceSha');
+  // ADR-0091 D3: the corpus is built AT the approved runtime's sourceSha, the newest install-verified
+  // code release, which usually trails main HEAD. This run is dispatched on protected main, so
+  // GITHUB_SHA is main HEAD; the target must be that commit or a proven ancestor of it (still on
+  // protected main's history, never a side branch). It must still BE HEAD and the receipt's builder.
+  const onProtectedMain = isHex(env.GITHUB_SHA, 40) && (target === env.GITHUB_SHA
+    || run('git', ['merge-base', '--is-ancestor', String(target), env.GITHUB_SHA], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).status === 0);
+  if (!isHex(target, 40) || target !== head || !onProtectedMain || target !== receipt.builderSourceSha) {
+    corpusFailure('target must exactly equal HEAD, be GITHUB_SHA or an ancestor of it, and equal the corpus receipt builderSourceSha');
   }
 
   // Schema 3 (ADR-086 Step 15 / A6): the receipt binds the full provenance closure shipped INSIDE

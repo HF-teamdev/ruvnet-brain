@@ -128,6 +128,29 @@ describe('protected corpus-seed release authority', () => {
     expect(fs.existsSync(f.log)).toBe(false);
   });
 
+  // ADR-0091 D3: the corpus is built at the approved (install-verified) release's sourceSha, which may
+  // trail main HEAD, while the protected run is dispatched on main (GITHUB_SHA = main HEAD).
+  it('refuses when GITHUB_SHA is not a descendant of the target (target is off protected main\'s history)', async () => {
+    const f = await fixture();
+    f.env.GITHUB_SHA = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    const result = run(f);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/target.*HEAD.*GITHUB_SHA.*receipt/i);
+    expect(fs.existsSync(f.log)).toBe(false);
+  });
+
+  it('publishes when the target is the approved commit and GITHUB_SHA is a newer main commit descending from it', async () => {
+    const f = await fixture();
+    // A real commit whose parent is HEAD, created as a dangling object (no ref, no working-tree change).
+    f.env.GITHUB_SHA = execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost',
+      'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'fixture: a newer main commit'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    expect(f.env.GITHUB_SHA).not.toBe(HEAD);
+    const result = run(f);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const calls = fs.readFileSync(f.log, 'utf8').trim().split('\n').map(JSON.parse);
+    expect(calls[1].slice(0, 7)).toEqual(['release', 'create', f.tag, '--prerelease', '--latest=false', '--target', HEAD]);
+  });
+
   it('requires a full lowercase digest tag bound to the receipt and bundle bytes', async () => {
     for (const tag of ['corpus-sha256-short', `v${'a'.repeat(64)}`, `corpus-sha256-${'A'.repeat(64)}`]) {
       const f = await fixture();

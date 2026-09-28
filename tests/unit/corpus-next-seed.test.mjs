@@ -99,7 +99,9 @@ function ghFor(generations, { extraReleases = [], listFails = false } = {}) {
   };
 }
 
-const resolve = (root, gh) => resolveNextCorpusSeed({ repo: 'stuinfla/ruvnet-brain', root, run: gh.run });
+// ADR-0091 D3: the pin is always passed explicitly (this run's --resolve output); there is no committed default.
+const resolve = (root, gh) => resolveNextCorpusSeed({ repo: 'stuinfla/ruvnet-brain', root, run: gh.run,
+  pinFile: path.join(root, 'data/approved-runtime.json') });
 
 describe('corpus next-seed resolution (ADR-086 step 18)', () => {
   it('GREEN: night N+1 seeds from night N\'s verified compatible generation', () => {
@@ -188,6 +190,12 @@ describe('corpus next-seed resolution (ADR-086 step 18)', () => {
     const root = workspace();
     fs.rmSync(path.join(root, 'data/approved-runtime.json'));
     expect(() => resolve(root, ghFor([]))).toThrow(/no approved runtime pin/);
+  });
+
+  it('never falls back to a committed pin path when --pin is omitted (ADR-0091 D3)', () => {
+    const root = workspace(); // a file sits at data/approved-runtime.json, and must NOT be picked up
+    expect(() => resolveNextCorpusSeed({ repo: 'stuinfla/ruvnet-brain', root, run: ghFor([]).run }))
+      .toThrow(/no approved runtime pin supplied/);
   });
 
   it.each([

@@ -12,7 +12,8 @@
 // the bootstrap/recovery input and is content-addressed independently.
 //
 // "Compatible" is decided against the SAME approved runtime pin that gates promotion
-// (scripts/approved-runtime.mjs): a generation whose archive shipped a different brainVersion is a
+// (scripts/approved-runtime.mjs). Since ADR-0091 D3 that pin is never a committed file: the caller
+// passes this run's own `approved-runtime.mjs --resolve` output as --pin. A generation whose archive shipped a different brainVersion is a
 // different runtime, and seeding from it would drag unapproved executables forward through reuse.
 //
 // "Verified" is decided by evidence that is checkable without downloading 500 MB here: the tag must
@@ -23,7 +24,7 @@
 // before reconciliation, and corpus-candidate.mjs re-derives the whole candidate from the bytes).
 //
 // Usage:
-//   node scripts/corpus-next-seed.mjs --repo owner/name [--pin data/approved-runtime.json]
+//   node scripts/corpus-next-seed.mjs --repo owner/name --pin <resolved pin.json>
 //                                     [--bootstrap data/corpus-seed.json] [--out <file>]
 
 import fs from 'node:fs';
@@ -143,7 +144,7 @@ export function resolveNextCorpusSeed({
 } = {}) {
   if (!/^[^/\s]+\/[^/\s]+$/.test(String(repo || ''))) throw new Error('--repo must be owner/name');
 
-  const approved = readApprovedRuntime(pinFile || path.join(root, 'data/approved-runtime.json'));
+  const approved = readApprovedRuntime(pinFile);
   const pinFailures = validateApprovedRuntime(approved);
   if (pinFailures.length) throw new Error(`approved runtime pin is invalid: ${pinFailures.join('; ')}`);
 

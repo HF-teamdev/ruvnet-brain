@@ -101,9 +101,15 @@ describe('protected-release corpus chain (ADR-086 steps 9 + 17)', () => {
 
   it('WRONG RUNTIME BYTES: promotion is refused unless the archive ships the approved shipped runtime', () => {
     const blocks = jobBlocks(workflow());
-    expect(blocks['corpus-identity']).toContain('data/approved-runtime.json');
+    expect(workflow()).not.toContain('data/approved-runtime.json'); // ADR-0091 D3: never a committed pin
+    expect(blocks['corpus-identity']).toContain('node scripts/approved-runtime.mjs --resolve --repo "$GITHUB_REPOSITORY"');
     expect(blocks['corpus-publish']).toContain('node scripts/approved-runtime.mjs --verify --archive-manifest');
     const publish = blocks['corpus-publish'];
+    // The publisher re-resolves EXACTLY the release identity approved, on its own runner, requires it to
+    // name this candidate, and verifies against that pin — it never trusts a pin handed over as output.
+    expect(publish).toContain('--resolve --repo "$GITHUB_REPOSITORY" --tag "$APPROVED_TAG"');
+    expect(publish).toContain('--pin "$RUNNER_TEMP/approved-runtime.json"');
+    expect(publish.indexOf('approved-runtime.mjs --resolve')).toBeLessThan(publish.indexOf('approved-runtime.mjs --verify'));
     // The pin must be checked BEFORE anything is signed: a signature over unapproved executables is
     // the exact artifact this guard exists to never produce.
     expect(publish.indexOf('approved-runtime.mjs --verify')).toBeLessThan(publish.indexOf('sign-bundle.mjs'));
@@ -201,11 +207,24 @@ describe('missing owner prerequisites fail loudly rather than silently', () => {
     expect(publish.indexOf('RUVNET_SIGNING_KEY:-')).toBeLessThan(publish.indexOf('node scripts/sign-bundle.mjs'));
   });
 
-  it('names the exact owner action when no code release has pinned the runtime yet', () => {
-    const identity = jobBlocks(workflow())['corpus-identity'];
-    expect(identity).toContain('data/approved-runtime.json is missing');
-    expect(identity).toContain('approved-runtime.mjs --emit');
-    const guard = identity.split('if [[ ! -s data/approved-runtime.json ]]; then')[1].split('fi')[0];
+  it('runs on protected main but builds at the approved runtime source, which must be on main\'s history (ADR-0091 D3)', () => {
+    const blocks = jobBlocks(workflow());
+    const identity = blocks['corpus-identity'];
+    expect(identity).toContain('test "$(git rev-parse origin/main)" = "$GITHUB_SHA"');
+    expect(identity).toContain('git merge-base --is-ancestor "$EXPECTED_SHA" "$GITHUB_SHA"');
+    expect(identity).toContain('git show "$EXPECTED_SHA:package.json"');
+    // The candidate must be exactly the resolved approved source, and the refusal says what to do.
+    const guard = identity.split('if [[ "$approved_sha" != "$EXPECTED_SHA" ]]; then')[1].split(/\n\s*fi\n/)[0];
+    expect(guard).toContain('is not the approved runtime');
     expect(guard).toContain('exit 1');
+    // The seed chain is judged against the SAME resolved pin, passed explicitly.
+    expect(identity).toContain('--pin "$RUNNER_TEMP/approved-runtime.json" --out "$RUNNER_TEMP/next-seed.json"');
+    expect(identity.indexOf('approved-runtime.mjs --resolve')).toBeLessThan(identity.indexOf('corpus-next-seed.mjs'));
+    // Provenance binds the run to ITS head (main) and the artifact to the corpus source, separately.
+    const authorize = blocks['corpus-authorize'];
+    expect(authorize).toContain('RUN_HEAD_SHA: ${{ github.sha }}');
+    expect(authorize).toContain('run.head_sha === runHead');
+    expect(authorize).toContain('artifact.workflow_run.head_sha === runHead');
+    expect(authorize).toContain('const artifactName = `corpus-seed-prepared-${sha}`');
   });
 });

@@ -131,22 +131,57 @@ describe('corpus nightly dispatcher (ADR-086 step 18)', () => {
   });
 });
 
-describe('the dispatcher is disarmed until step 16 has shipped (ADR-086 A7 ordering)', () => {
-  it('stands down cleanly rather than dispatching before an owner-gated code release pins the runtime', () => {
+describe('the dispatcher arms only on the owner switch plus a resolved install-verified runtime (ADR-0091 D3)', () => {
+  const armedStep = () => read(DISPATCHER)
+    .split('name: Stand down unless the owner armed the nightly and an install-verified runtime resolves')[1]
+    .split('- name:')[0];
+
+  it('never reads a committed pin; it resolves the approved runtime from the signed install verification', () => {
     const source = read(DISPATCHER);
-    expect(source).toContain('if [[ -s data/approved-runtime.json ]]; then');
-    expect(source).toContain("echo 'armed=true' >> \"$GITHUB_OUTPUT\"");
-    expect(source).toContain("echo 'armed=false' >> \"$GITHUB_OUTPUT\"");
-    expect(source).toContain('corpus-nightly-dispatch is DISARMED');
-    // Every step that can reach the release rail is gated on the armed state.
-    const gated = source.match(/if: steps\.armed\.outputs\.armed == 'true'/g) || [];
-    expect(gated.length).toBeGreaterThanOrEqual(2);
+    expect(source).not.toContain('data/approved-runtime.json');
+    expect(armedStep()).toContain('node scripts/approved-runtime.mjs --resolve --repo "$GITHUB_REPOSITORY"');
+    // merge-base --is-ancestor needs history, so the checkout must not be shallow.
+    expect(source).toMatch(/fetch-depth: 0/);
+  });
+
+  it('the kill switch: only CORPUS_NIGHTLY == on arms it; unset or anything else stands down cleanly', () => {
+    const step = armedStep();
+    expect(step).toContain('CORPUS_NIGHTLY: ${{ vars.CORPUS_NIGHTLY }}');
+    const offBranch = step.split('if [[ "${CORPUS_NIGHTLY:-}" != on ]]; then')[1].split(/\n\s*fi\n/)[0];
+    expect(offBranch).toContain("echo 'armed=false' >> \"$GITHUB_OUTPUT\"");
+    expect(offBranch).toContain('corpus-nightly-dispatch is DISARMED');
+    expect(offBranch).toContain('exit 0');
+    // The switch is checked BEFORE anything is resolved or downloaded.
+    expect(step.indexOf('!= on ]]')).toBeLessThan(step.indexOf('approved-runtime.mjs --resolve'));
+  });
+
+  it('main HEAD newer than the newest install-verified release does NOT stand down: it builds at the approved source', () => {
+    // ADR-0091 D3 consequence: the nightly runs at the approved runtime's sourceSha, usually older than
+    // main HEAD. Five consecutive releases (v4.3.25-v4.3.29) never reached install-verified; a
+    // "HEAD must be verified" rule would have disarmed the nightly for that entire stretch.
+    const step = armedStep();
+    expect(step).not.toContain('"$approved_sha" != "$CANDIDATE_SHA"');
+    expect(step).toContain('echo "approved_sha=$approved_sha"');
+  });
+
+  it('armed but NOTHING resolves (bad signature, missing evidence) fails loudly rather than hiding it', () => {
+    const failed = armedStep().split('--out "$RUNNER_TEMP/approved-runtime.json" > "$RUNNER_TEMP/approved-release.json"; then')[1].split(/\n\s*fi\n/)[0];
+    expect(failed).toContain('::error::');
+    expect(failed).toContain('exit 1');
+  });
+
+  it('dispatches the RESOLVED identity, and every step that can reach the release rail is gated on armed', () => {
+    const source = read(DISPATCHER);
     const dispatchStep = source.split('name: Dispatch protected-release.yml on protected main in corpus mode')[1].split('- name:')[0];
     expect(dispatchStep).toContain("if: steps.armed.outputs.armed == 'true'");
-    // Disarmed is NOT a failure: a nightly red X for a correctly-disarmed scheduler trains the owner
-    // to ignore the alert that matters.
-    const armedStep = source.split('name: Stand down until an owner-gated code release has armed unattended promotion')[1].split('- id:')[0].split('- name:')[0];
-    expect(armedStep).not.toContain('exit 1');
-    expect(armedStep).not.toContain('::error::');
+    expect(dispatchStep).toContain('CANDIDATE_SHA: ${{ steps.armed.outputs.approved_sha }}');
+    expect(dispatchStep).toContain('--ref main');
+    // The run-record selector still matches the dispatched run by ITS head (main HEAD), not the corpus source.
+    const record = source.split('name: Record the target run this schedule actually created')[1].split('- name:')[0];
+    expect(record).toContain('CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}');
+    expect(dispatchStep).toContain('CANDIDATE_VERSION: ${{ steps.armed.outputs.approved_version }}');
+    const gated = source.match(/if: steps\.armed\.outputs\.armed == 'true'/g) || [];
+    expect(gated.length).toBeGreaterThanOrEqual(2);
+    expect(armedStep()).toContain("echo 'armed=true'");
   });
 });
