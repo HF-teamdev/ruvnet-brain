@@ -17,7 +17,10 @@
 //   scripts/corpus-candidate.mjs  --verify (CLI) and verifySeedBaseline
 //   scripts/release.mjs           --corpus-seed (CLI, the real future product-consumption path)
 //
-// WHAT IS BOUNDED, AND SAID OUT LOUD: `--repos N` (default 2) and `--gists M` (default 3). A
+// WHAT IS BOUNDED, AND SAID OUT LOUD: `--repos N` (default 2) and `--gists M` (default 3). The C3
+// diagnostic measures the same deterministic question sample corpus-seed.yml passes
+// (`--accuracy-sample`, default C3_DIAGNOSTIC_SAMPLE_QUESTIONS; `--accuracy-sample full` for the
+// whole oracle, which is ~1,164 queries against the full seed and runs well over an hour). A
 // rehearsal receipt ALWAYS carries `bounds` and the banner below so nobody can mistake a 2-store
 // rehearsal for a 194-store corpus build. Everything else is the production code path.
 //
@@ -35,7 +38,7 @@
 //
 // Usage:
 //   node scripts/rehearse-corpus-pipeline.mjs [--repos 2] [--gists 3] [--generations 2]
-//        [--receipt <file>] [--seed <local ruvnet-brain.zip>] [--keep] [--tamper <mode>]
+//        [--accuracy-sample <n>|full] [--receipt <file>] [--seed <local ruvnet-brain.zip>] [--keep] [--tamper <mode>]
 //
 // Done is an exit code, not an opinion: FAIL exits non-zero. A phase that could not run is a SKIP
 // with a stated reason, never a silent pass.
@@ -616,8 +619,13 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
   // --- reconcile + assemble ONCE --------------------------------------------------------------
   const invocations = [];
   const recordingRun = (command, args, options = {}) => {
-    invocations.push({ command, script: path.basename(String(args?.[0] || '')), args: args.map(String) });
-    return spawnSync(command, args, { encoding: 'utf8', ...options });
+    const row = { command, script: path.basename(String(args?.[0] || '')), args: args.map(String) };
+    invocations.push(row);
+    const began = Date.now();
+    const result = spawnSync(command, args, { encoding: 'utf8', ...options });
+    row.durationMs = Date.now() - began;
+    row.exit = result.status ?? null;
+    return result;
   };
   const reconcileStart = Date.now();
   const { reconciliation, candidate } = await api.reconcileAndPrepareCorpusCandidate({
@@ -625,7 +633,7 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
     candidateDir, receiptFile, coverageFile: path.join(checkoutRoot, 'data', 'source-coverage.json'),
     // reconcileAndPrepareCorpusCandidate reads `maxAttempts`; `maxRounds` was silently ignored after
     // cd0f032f, so --max-rounds never reached the acquisition loop.
-    bootstrapIdentity, maxAttempts: bounds.maxRounds,
+    bootstrapIdentity, maxAttempts: bounds.maxRounds, accuracySample: bounds.accuracyQuestions,
     reconcile: (options) => api.acquireCorpusGeneration({ ...options, observe: boundedObserve }),
     prepare: (options) => api.prepareCorpusCandidate({ ...options, run: recordingRun }),
   });
@@ -636,6 +644,7 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
     assembleBundleInvocations: assemblyInvocations.length,
     receiptInvocations: invocations.filter((row) => row.script === 'corpus-candidate.mjs').length,
     bundleFile: candidate.bundleFile,
+    steps: invocations.map(({ script, durationMs, exit }) => ({ script, durationMs, exit })),
   };
   if (assemblyInvocations.length !== 1) {
     fail(`assembly must happen exactly once per candidate; build-bundle.mjs ran ${assemblyInvocations.length} time(s)`);
@@ -741,6 +750,8 @@ export async function rehearseCorpusPipeline({
   tamperGeneration = 1,
   forceRebuild = true,
   seedOverride = null,
+  // null = the checkout's own C3_DIAGNOSTIC_SAMPLE_QUESTIONS (what CI runs); 'full' = no sample.
+  accuracySample = null,
   keep = false,
   workRootParent = null,
   installedBrainDir = path.join(os.homedir(), '.cache', 'ruvnet-brain', 'kb'),
@@ -755,7 +766,7 @@ export async function rehearseCorpusPipeline({
     banner: BANNER,
     startedAt,
     host: { node: process.version, platform: `${process.platform}/${process.arch}` },
-    bounds: { repos, gists, generations, maxRounds, owner, forceRebuild, tamper, tamperGeneration },
+    bounds: { repos, gists, generations, maxRounds, owner, forceRebuild, tamper, tamperGeneration, accuracySample },
     phases: [],
     generations: [],
     verdict: 'FAIL',
@@ -828,10 +839,17 @@ export async function rehearseCorpusPipeline({
 
     // ---- phase 4: load the disposable checkout's own modules ---------------------------------
     const load = (relative) => import(pathToFileURL(path.join(checkoutRoot, relative)).href);
-    const [reconcileMod, coverageMod, candidateMod, zipMod] = await Promise.all([
+    const [reconcileMod, coverageMod, candidateMod, zipMod, accuracyMod] = await Promise.all([
       load('scripts/corpus-reconcile.mjs'), load('scripts/source-coverage.mjs'),
-      load('scripts/corpus-candidate.mjs'), load('kb/zip-extract.mjs'),
+      load('scripts/corpus-candidate.mjs'), load('kb/zip-extract.mjs'), load('scripts/oracle/retrieval-accuracy.mjs'),
     ]);
+    // The same C3 question sample CI runs (ADR-0091 D2), unless the caller asked for the full audit.
+    const accuracyQuestions = accuracySample === 'full' ? null
+      : accuracySample == null ? accuracyMod.C3_DIAGNOSTIC_SAMPLE_QUESTIONS : Number(accuracySample);
+    if (accuracyQuestions != null && (!Number.isSafeInteger(accuracyQuestions) || accuracyQuestions <= 0)) {
+      fail(`--accuracy-sample must be a positive integer or 'full' (got ${accuracySample})`);
+    }
+    receipt.bounds.accuracySample = accuracyQuestions ?? 'full';
     const api = {
       assertBootstrapIdentity: reconcileMod.assertBootstrapIdentity,
       normalizeExtractedCorpus: reconcileMod.normalizeExtractedCorpus,
@@ -891,7 +909,7 @@ export async function rehearseCorpusPipeline({
       }
       const result = await runGeneration({
         index, api, checkoutRoot, workRoot, seed, recorder, tamper, log,
-        bounds: { repos, gists, owner, maxRounds, builderSha: checkout.head, forceRebuild, tamperGeneration },
+        bounds: { repos, gists, owner, maxRounds, builderSha: checkout.head, forceRebuild, tamperGeneration, accuracyQuestions },
       });
       receipt.generations.push(result.generation);
       phase(`generation-${index}`, 'PASS', {
@@ -986,6 +1004,7 @@ export async function main(argv = process.argv.slice(2)) {
     tamperGeneration: Number(arg(argv, '--tamper-generation', 1)),
     forceRebuild: !argv.includes('--no-force-rebuild'),
     seedOverride: arg(argv, '--seed', null),
+    accuracySample: arg(argv, '--accuracy-sample', null),
     keep: argv.includes('--keep'),
     workRootParent: arg(argv, '--work-root', null),
   });

@@ -285,6 +285,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/release-evidence"
+          # ADR-0091 D2: C3 is a non-blocking diagnostic whose readers check binding, not completeness,
+          # yet the full run (~1,164 queries x ~4.2 s) cost 82 minutes here. --accuracy-sample 80
+          # measures a deterministic 80-question sample in both modes (160 queries, ~11-12 min). It
+          # must equal C3_DIAGNOSTIC_SAMPLE_QUESTIONS in scripts/oracle/retrieval-accuracy.mjs (a unit
+          # test pins them). Full audit on demand: scripts/oracle/retrieval-accuracy.mjs with no sample flag.
           node scripts/corpus-reconcile.mjs \
             --root "$GITHUB_WORKSPACE" \
             --seed-archive "$RUNNER_TEMP/corpus-seed-download/ruvnet-brain.zip" \
@@ -297,6 +302,7 @@ jobs:
             --candidate-out "$RUNNER_TEMP/corpus-candidate/ruvnet-brain" \
             --receipt-out "$GITHUB_WORKSPACE/release-evidence/corpus-receipt.json" \
             --accuracy-oracle "$GITHUB_WORKSPACE/data/retrieval-accuracy-oracle.json" \
+            --accuracy-sample 80 \
             --builder-sha "$EXPECTED_SHA" \
             --owner ruvnet | tee "$GITHUB_WORKSPACE/release-evidence/corpus-reconcile.log"
 

@@ -695,7 +695,8 @@ export async function reconcileAndPrepareCorpusCandidate({ assetsDir, workspaceD
   owner = 'ruvnet', builderSha, candidateDir, receiptFile, coverageFile, bootstrapIdentity = null, maxAttempts = 3,
   reconcile = (options) => acquireCorpusGeneration(options),
   normalizeUpdaters = normalizeUpdaterManifest,
-  accuracyOracleFile = null, accuracyStores = null, accuracySample = null, accuracyTimeoutMs = null,
+  accuracyOracleFile = null, accuracyStores = null, accuracySample = null, accuracySamplePerPartition = null,
+  accuracyTimeoutMs = null,
   prepare = prepareCorpusCandidate } = {}) {
   const finalized = await reconcile({ owner, assetsDir, workspaceDir, root, maxAttempts });
   // Every shipped repository store needs a complete updater entry, and a seed that predates the
@@ -718,7 +719,7 @@ export async function reconcileAndPrepareCorpusCandidate({ assetsDir, workspaceD
   const candidate = await prepare({
     root, assetsDir, builderSha, candidateDir, receiptFile, coverageFile, bootstrapIdentity,
     coverage: finalized.coverage,
-    accuracyOracleFile, accuracyStores, accuracySample, accuracyTimeoutMs,
+    accuracyOracleFile, accuracyStores, accuracySample, accuracySamplePerPartition, accuracyTimeoutMs,
   });
   return { reconciliation: finalized, updaters, candidate };
 }
@@ -734,7 +735,11 @@ export function prepareCorpusCandidate({
   coverage,
   accuracyOracleFile = null,
   accuracyStores = null,
+  // ADR-0091 D2: a whole-oracle, deterministic question sample (retrieval-accuracy.mjs
+  // --sample-questions). `accuracySamplePerPartition` is the older first-k-per-partition bound; its
+  // floor is one question per partition (196 x 2 queries, ~27 min hosted), so it cannot meet D2.
   accuracySample = null,
+  accuracySamplePerPartition = null,
   accuracyTimeoutMs = null,
   run = defaultRun,
 }) {
@@ -797,9 +802,14 @@ export function prepareCorpusCandidate({
   const bundleFile = path.join(path.dirname(candidate), `${path.basename(candidate)}.zip`);
   // ADR-086 Step 15: the benchmark runs HERE — after single-pass assembly and before the seal —
   // against the EXTRACTED final archive through the customer query path, never against `assets`.
-  // The report is written detached, beside the archive, and the seal below binds its digest. A
-  // bounded run (--stores/--sample) still writes a report, but it marks itself incomplete and the
-  // seal refuses it, so a bounded measurement can never be presented as a corpus-wide pass.
+  // The report is written detached, beside the archive, and the receipt below binds its digest.
+  // C3 is a non-blocking diagnostic (ADR-086 amendment 2026-09-15): every reader of this report
+  // (corpus-candidate.mjs, release.mjs, corpus-seed.yml) uses readDiagnosticAccuracyReport, which
+  // checks only its schema and its binding to this archive, oracle and generator -- never whether
+  // coverage is complete. So a bounded run (--stores/--sample/--sample-questions) seals exactly like
+  // a full one; it marks itself `coverage.complete: false`, and only the retained strict reader
+  // (validateAccuracyReport, the re-arm path) would refuse it. corpus-seed.yml runs a question
+  // sample (ADR-0091 D2) because the full run cost 82 minutes on a hosted runner.
   const accuracyReportFile = `${bundleFile}.accuracy.json`;
   // A stale leftover report from a prior run must never be mistaken for a fresh measurement of
   // THIS bundle -- delete it before invoking the script so only a report the script just wrote
@@ -808,7 +818,8 @@ export function prepareCorpusCandidate({
   const accuracyResult = run(process.execPath, [accuracyScript, '--bundle', bundleFile,
     '--oracle', accuracyOracle, '--out', accuracyReportFile,
     ...(accuracyStores != null ? ['--stores', String(accuracyStores)] : []),
-    ...(accuracySample != null ? ['--sample', String(accuracySample)] : []),
+    ...(accuracySample != null ? ['--sample-questions', String(accuracySample)] : []),
+    ...(accuracySamplePerPartition != null ? ['--sample', String(accuracySamplePerPartition)] : []),
     ...(accuracyTimeoutMs != null ? ['--timeout-ms', String(accuracyTimeoutMs)] : [])],
   { stdio: 'inherit' }) || {};
   // C3 was demoted to a non-blocking diagnostic on 2026-09-15 (commit a20727b7, ADR-086
@@ -876,10 +887,14 @@ export async function main(argv = process.argv.slice(2), {
   const builderSha = String(arg(argv, '--builder-sha', '')).toLowerCase();
   const owner = arg(argv, '--owner', 'ruvnet');
   const accuracyOracleFile = path.resolve(arg(argv, '--accuracy-oracle', path.join(root, 'data', 'retrieval-accuracy-oracle.json')));
-  // Bounded measurement is explicit and opt-in. It never yields a sealable candidate — the seal
-  // refuses an incomplete report — so these flags exist for measuring, not for shipping.
+  // Bounded measurement is explicit and opt-in; omit every flag below for the full C3 audit.
+  // `--accuracy-sample <n>` measures n oracle questions in total (both query modes), chosen
+  // deterministically -- what corpus-seed.yml passes (ADR-0091 D2). A bounded report still seals,
+  // because C3 is a diagnostic and its readers check binding, not completeness.
   const accuracyStores = arg(argv, '--accuracy-stores') ? Number(arg(argv, '--accuracy-stores')) : null;
   const accuracySample = arg(argv, '--accuracy-sample') ? Number(arg(argv, '--accuracy-sample')) : null;
+  const accuracySamplePerPartition = arg(argv, '--accuracy-sample-per-partition')
+    ? Number(arg(argv, '--accuracy-sample-per-partition')) : null;
   const accuracyTimeoutMs = arg(argv, '--accuracy-timeout-ms') ? Number(arg(argv, '--accuracy-timeout-ms')) : null;
 
   const bootstrap = assertBootstrapIdentity({ archiveFile, tag: seedTag, sha256: seedSha256, allowPinnedTag: process.argv.includes('--allow-pinned-seed-tag') });
@@ -896,7 +911,7 @@ export async function main(argv = process.argv.slice(2), {
   const bootstrapIdentity = { tag: bootstrap.tag, sha256: bootstrap.sha256, privateFenceEvidence: seedPrivateFenceEvidence(assetsDir) };
   const { reconciliation, candidate } = await reconcileAndPrepare({
     assetsDir, workspaceDir, root, owner, builderSha, candidateDir, receiptFile, coverageFile, bootstrapIdentity,
-    accuracyOracleFile, accuracyStores, accuracySample, accuracyTimeoutMs,
+    accuracyOracleFile, accuracyStores, accuracySample, accuracySamplePerPartition, accuracyTimeoutMs,
   });
   const { plan } = summarizeReconciliation(reconciliation);
   stdout.write(`${JSON.stringify({ ok: true, seedTag, seedSha256, plan, reconciliation, ...candidate }, null, 2)}\n`);

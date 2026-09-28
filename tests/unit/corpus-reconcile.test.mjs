@@ -379,11 +379,34 @@ describe('candidate preparation', () => {
       candidateDir: path.join(root, 'candidate', 'ruvnet-brain'),
       receiptFile: path.join(root, 'evidence', 'corpus-receipt.json'),
       coverageFile: path.join(root, 'data', 'source-coverage.json'),
-      coverage: coverageFixture('CURRENT'), accuracyStores: 2, accuracySample: 5, run,
+      coverage: coverageFixture('CURRENT'), accuracyStores: 2, accuracySamplePerPartition: 5, run,
     });
     const benchmark = calls.map((call) => call.join(' ')).find((call) => /retrieval-accuracy\.mjs/.test(call));
     expect(benchmark).toMatch(/--stores 2/);
     expect(benchmark).toMatch(/--sample 5/);
+  });
+
+  // ADR-0091 D2: accuracySample (CLI --accuracy-sample) is the whole-oracle question sample.
+  it('accuracySample forwards --sample-questions, and omitting it runs the full, unsampled C3', () => {
+    const root = candidateRoot();
+    const benchmarkFor = (extra) => {
+      const calls = [];
+      const run = (command, args) => { calls.push([command, ...args]); return { status: 0, stdout: '', stderr: '' }; };
+      prepareCorpusCandidate({
+        root, assetsDir: path.join(root, 'assets'), builderSha: sha('e'),
+        candidateDir: path.join(root, 'candidate', 'ruvnet-brain'),
+        receiptFile: path.join(root, 'evidence', 'corpus-receipt.json'),
+        coverageFile: path.join(root, 'data', 'source-coverage.json'),
+        coverage: coverageFixture('CURRENT'), run, ...extra,
+      });
+      return calls.map((call) => call.join(' ')).find((call) => /retrieval-accuracy\.mjs/.test(call));
+    };
+    const sampled = benchmarkFor({ accuracySample: 80 });
+    expect(sampled).toMatch(/--sample-questions 80/);
+    expect(sampled).not.toMatch(/--sample 80/);
+    const full = benchmarkFor({});
+    expect(full).not.toMatch(/--sample/);
+    expect(full).not.toMatch(/--stores/);
   });
 
   it('rejects a coverage object that is missing or not the real coverage shape', () => {

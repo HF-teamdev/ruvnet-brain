@@ -60,8 +60,8 @@ const recallNotes = (receipt) => {
       + ` about themselves from their own content; ${r.exactFileTop5}/${r.questions} return the exact`
       + ` labeled file in the top 5 (floor ${r.floor}).`,
     'NOT measured: generated-answer correctness, citation support, or unscoped whole-corpus discovery.',
-    `ADR-086 C3 was NOT met and is NOT claimed — its measurement ships as ${receipt.accuracyReport.file}`
-      + ' for inspection.',
+    `ADR-086 C3 was NOT met and is NOT claimed — its diagnostic measurement (a declared question sample`
+      + ` when its coverage.bounded says so) ships as ${receipt.accuracyReport.file} for inspection.`,
   ];
 };
 import { verifyBundle } from './verify-bundle.mjs';
@@ -210,10 +210,11 @@ export async function runProtectedCorpusSeed({
 
   // ADR-086 Step 15's second binding. The detached accuracy report travels beside the archive; this
   // proves (a) the file the receipt names is the file present here, byte for byte, (b) the report
-  // was measured against THESE archive bytes, (c) every partition in both query modes passed
-  // 20x>=19x with no timeouts and no bounded sampling, and (d) it was produced by the committed
-  // benchmark against the committed oracle — so a swapped oracle or a patched benchmark is caught
-  // here even though the receipt itself carries only {file, sha256, bytes}.
+  // was measured against THESE archive bytes, and (c) it was produced by the committed benchmark
+  // against the committed oracle — so a swapped oracle or a patched benchmark is caught here even
+  // though the receipt itself carries only {file, sha256, bytes}. It does NOT check the score or
+  // coverage completeness: C3 is a diagnostic (ADR-086 amendment 2026-09-15), and the corpus
+  // pipeline measures a declared question sample of it (ADR-0091 D2).
   const accuracyReportFile = `${bundleFile}.accuracy.json`;
   if (receipt.accuracyReport.file !== path.basename(accuracyReportFile)) {
     corpusFailure('corpus receipt names an accuracy report that is not the one beside this archive');
