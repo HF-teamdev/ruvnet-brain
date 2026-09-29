@@ -696,11 +696,26 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
     const seedCommitOf = (store) => String(Object.entries(seedLedger.stores || {})
       .find(([name]) => name.toLowerCase() === store)?.[1]?.sourceCommit || '').toLowerCase();
     // A carry needs seed bytes at a commit that DIFFERS from upstream; a transient retry needs neither.
-    injectTarget = injection === 'transient' ? repoStores[0]
-      : repoStores.find((store) => /^[0-9a-f]{40}$/.test(seedCommitOf(store)) && upstreamOf(store) && seedCommitOf(store) !== upstreamOf(store)) || null;
+    const carryable = (store) => /^[0-9a-f]{40}$/.test(seedCommitOf(store)) && upstreamOf(store) && seedCommitOf(store) !== upstreamOf(store);
+    injectTarget = injection === 'transient' ? repoStores[0] : repoStores.find(carryable) || null;
+    if (!injectTarget && injection === 'qa') {
+      // The smallest bounded stores are often unchanged since the seed. A QA-injected store is never
+      // embedded (its forge-refresh is answered synthetically), so adding the smallest carryable seed
+      // store to the bounded set costs one clone. Declared in the receipt.
+      const extra = [...full.repositories.rows]
+        .sort((a, b) => (a.diskUsage ?? Number.MAX_SAFE_INTEGER) - (b.diskUsage ?? Number.MAX_SAFE_INTEGER))
+        .map((row) => String(row.storeName || row.name).toLowerCase())
+        .find((store) => !repoStores.includes(store) && carryable(store)) || null;
+      if (extra) {
+        repoStores.push(extra);
+        generation.bounded.repositories = repoStores;
+        generation.bounded.addedForInjection = extra;
+        injectTarget = extra;
+      }
+    }
     if (!injectTarget) {
-      fail(`--inject-store-failure ${injection}: none of the bounded stores [${repoStores.join(', ')}] has seed bytes at a commit `
-        + 'that differs from upstream, so nothing could be carried -- widen --repos');
+      fail(`--inject-store-failure ${injection}: no observed store has seed bytes at a commit that differs from upstream, `
+        + 'so nothing could be carried');
     }
     generation.injection = { mode: injection, target: injectTarget, synthetic: true, events: [] };
     log(`[gen ${index}] INJECTING a synthetic ${injection} failure into store ${injectTarget}`);
