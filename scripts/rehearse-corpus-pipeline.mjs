@@ -44,7 +44,7 @@
 // Usage:
 //   node scripts/rehearse-corpus-pipeline.mjs [--repos 2] [--gists 3] [--generations 2]
 //        [--accuracy-sample <n>|full] [--receipt <file>] [--seed <local ruvnet-brain.zip>] [--keep] [--tamper <mode>]
-//        [--no-seed-selection] [--no-code-release-between]
+//        [--no-seed-selection] [--no-code-release-between] [--inject-store-failure transient|qa] [--inject-generation <n>]
 //
 // ADR-0091 D4 (V4): from generation 2 on, the seed is chosen by the REAL scripts/corpus-next-seed.mjs
 // resolver from a local registry holding generation N (exactly the files release.mjs tried to upload)
@@ -67,6 +67,12 @@ export const REAL_ROOT = path.resolve(HERE, '..');
 const BANNER = 'BOUNDED REHEARSAL — a small explicitly-bounded subset, NOT a full corpus build';
 const HEX64 = /^[a-f0-9]{64}$/;
 const TAMPER_MODES = new Set(['none', 'extracted-byte', 'archive-byte', 'bypass-interception']);
+// ADR-0091 D5 (V5): inject ONE store failure into a real reconciliation. `transient` fails the target's
+// first `git clone` (it must be retried once, in a fresh worker directory, and recover); `qa` answers the
+// target's forge-refresh with corpus-qa's refusal status without running it (it must NOT be retried, and
+// the store must be carried at its re-hashed seed bytes as STALE + carry). Both are synthetic, declared
+// in the receipt, and applied at the process-runner seam executeReconciliation already exposes.
+const INJECTION_MODES = new Set(['none', 'transient', 'qa']);
 const PROBE_ARG = '__rehearsal_probe__';
 
 // Every `gh`/`npm` invocation that would MUTATE anything outside this process. Matched against the
@@ -682,9 +688,28 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
   // seed RVF bytes so planReconciliation must rebuild them from upstream. Without this a seed whose
   // stores are already CURRENT would exercise no acquisition at all, and the rehearsal would prove
   // nothing about the expensive half of the pipeline.
+  const injection = bounds.injectStoreFailure !== 'none' && index === bounds.injectGeneration ? bounds.injectStoreFailure : 'none';
+  let injectTarget = null;
+  if (injection !== 'none') {
+    const upstreamOf = (store) => full.repositories.rows.find((row) => String(row.storeName || row.name).toLowerCase() === store)
+      ?.defaultBranchRef?.target?.oid?.toLowerCase() || null;
+    const seedCommitOf = (store) => String(Object.entries(seedLedger.stores || {})
+      .find(([name]) => name.toLowerCase() === store)?.[1]?.sourceCommit || '').toLowerCase();
+    // A carry needs seed bytes at a commit that DIFFERS from upstream; a transient retry needs neither.
+    injectTarget = injection === 'transient' ? repoStores[0]
+      : repoStores.find((store) => /^[0-9a-f]{40}$/.test(seedCommitOf(store)) && upstreamOf(store) && seedCommitOf(store) !== upstreamOf(store)) || null;
+    if (!injectTarget) {
+      fail(`--inject-store-failure ${injection}: none of the bounded stores [${repoStores.join(', ')}] has seed bytes at a commit `
+        + 'that differs from upstream, so nothing could be carried -- widen --repos');
+    }
+    generation.injection = { mode: injection, target: injectTarget, synthetic: true, events: [] };
+    log(`[gen ${index}] INJECTING a synthetic ${injection} failure into store ${injectTarget}`);
+  }
   if (bounds.forceRebuild) {
-    for (const store of repoStores) fs.rmSync(path.join(assetsDir, `${store}.big.rvf`), { force: true });
-    generation.forcedRebuild = repoStores;
+    // A QA-injected store keeps its seed bytes: they are what the carry must re-hash and keep.
+    const forced = repoStores.filter((store) => !(injection === 'qa' && store === injectTarget));
+    for (const store of forced) fs.rmSync(path.join(assetsDir, `${store}.big.rvf`), { force: true });
+    generation.forcedRebuild = forced;
   }
 
   // Every other seed store stays in scope FROZEN at its seed sourceCommit (see boundObservation), so
@@ -723,6 +748,29 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
     row.exit = result.status ?? null;
     return result;
   };
+  const injectingRun = (command, args, options) => {
+    const events = generation.injection?.events;
+    const target = generation.injection?.target;
+    const clone = command === 'git' && args[0] === 'clone';
+    const cloneDir = clone ? String(args.at(-1)) : '';
+    if (target && clone && path.basename(path.dirname(cloneDir)) === target && injection === 'transient') {
+      events.push({ event: 'git clone', dir: path.relative(workRoot, cloneDir), injected: 'transient failure (exit 128)' });
+      return Promise.resolve({ status: 128, stdout: '', stderr: '[rehearsal] injected transient failure: connection reset' });
+    }
+    if (target && clone && path.basename(path.dirname(cloneDir)).startsWith(`${target}-retry`)) {
+      events.push({ event: 'git clone', dir: path.relative(workRoot, cloneDir), injected: null });
+    }
+    const forge = command === process.execPath && String(args[0]).endsWith(`${path.sep}forge-refresh.mjs`);
+    if (target && forge && args[args.indexOf('--name') + 1] === target) {
+      if (injection === 'qa') {
+        events.push({ event: 'forge-refresh', out: path.relative(workRoot, args[args.indexOf('--out') + 1]),
+          injected: `corpus-qa refusal (exit ${api.CORPUS_QA_FAILED_EXIT}), forge not run` });
+        return Promise.resolve({ status: api.CORPUS_QA_FAILED_EXIT, stdout: '', stderr: '[rehearsal] injected corpus-qa refusal' });
+      }
+      events.push({ event: 'forge-refresh', out: path.relative(workRoot, args[args.indexOf('--out') + 1]), injected: null });
+    }
+    return api.defaultRunAsync(command, args, options);
+  };
   const reconcileStart = Date.now();
   const { reconciliation, candidate } = await api.reconcileAndPrepareCorpusCandidate({
     assetsDir, workspaceDir, root: checkoutRoot, owner: bounds.owner, builderSha: bounds.builderSha,
@@ -730,7 +778,8 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
     // reconcileAndPrepareCorpusCandidate reads `maxAttempts`; `maxRounds` was silently ignored after
     // cd0f032f, so --max-rounds never reached the acquisition loop.
     bootstrapIdentity, maxAttempts: bounds.maxRounds, accuracySample: bounds.accuracyQuestions,
-    reconcile: (options) => api.acquireCorpusGeneration({ ...options, observe: boundedObserve }),
+    reconcile: (options) => api.acquireCorpusGeneration({ ...options, observe: boundedObserve,
+      ...(injection !== 'none' ? { execute: (executeOptions) => api.executeReconciliation({ ...executeOptions, run: injectingRun }) } : {}) }),
     prepare: (options) => api.prepareCorpusCandidate({ ...options, run: recordingRun }),
   });
   generation.reconciliation = recordReconciliation({
@@ -765,6 +814,31 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
   generation.candidate.storeCount = receipt.storeCount;
   generation.candidate.stores = receipt.stores.map(({ name, kind }) => ({ name, kind }));
   log(`[gen ${index}] sealed candidate ${archiveSha256.slice(0, 16)} — ${receipt.storeCount} stores, ${archiveBytes} bytes`);
+  generation.degraded = candidate.degraded || { carried: [], missing: [] };
+  if (injection !== 'none') {
+    const sealedCoverage = JSON.parse(fs.readFileSync(path.join(checkoutRoot, 'data', 'source-coverage.json'), 'utf8'));
+    const row = sealedCoverage.rows.find((entry) => entry.kind === 'repository' && String(entry.artifact?.store).toLowerCase() === injectTarget);
+    generation.injection.sealedRow = row ? { status: row.status, carry: row.carry ?? null, failure: row.failure ?? null,
+      artifactSourceCommit: row.artifact?.sourceCommit ?? null, upstreamSha: row.upstream?.sha ?? null } : null;
+    const events = generation.injection.events;
+    const problems = [];
+    if (injection === 'qa') {
+      const carried = generation.degraded.carried.find((entry) => entry.store === injectTarget);
+      if (!carried || carried.attempts !== 1 || !/^qa: /.test(carried.reason)) problems.push(`${injectTarget} was not carried once as a QA failure (${JSON.stringify(carried || null)})`);
+      if (events.filter((entry) => entry.event === 'forge-refresh').length !== 1) problems.push('a QA failure was retried');
+      if (row?.status !== 'STALE' || !row?.carry) problems.push(`the sealed coverage row is ${row?.status || 'absent'}${row?.carry ? '' : ' with no carry record'}, not STALE + carry`);
+    } else {
+      if (!generation.reconciliation.refreshed.includes(injectTarget)) problems.push(`${injectTarget} did not recover on its retry`);
+      const clones = events.filter((entry) => entry.event === 'git clone');
+      if (clones.length !== 2 || !clones[1].dir.includes(`${injectTarget}-retry1`)) problems.push(`expected one failed clone then one retry in ${injectTarget}-retry1 (${JSON.stringify(clones)})`);
+      if (generation.degraded.carried.length || generation.degraded.missing.length) problems.push('a recovered transient failure left the generation degraded');
+      if (row?.status !== 'CURRENT') problems.push(`the recovered store's sealed row is ${row?.status}, not CURRENT`);
+    }
+    generation.injection.verdict = problems.length ? 'FAIL' : 'PASS';
+    if (problems.length) fail(`injected ${injection} failure did not behave as ADR-0091 D5 requires: ${problems.join('; ')}`);
+    log(`[gen ${index}] injected ${injection} failure in ${injectTarget} behaved as required: `
+      + `${injection === 'qa' ? 'not retried, carried at its seed bytes, sealed row STALE + carry' : 'retried once in a fresh directory and recovered'}`);
+  }
 
   // --- remove access to the originals, then verify the extracted bytes ------------------------
   generation.extractedByteVerification = await verifyExtractedBytesWithoutOriginals({
@@ -773,8 +847,20 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
   });
   log(`[gen ${index}] extracted-byte verification passed with staging revoked (${generation.extractedByteVerification.files} files)`);
 
-  // --- rehearse the real product-consumption path, publication RECORDED not executed -----------
+  // --- ADR-0091 D5 + D10: a degraded generation is sealed but not published until D10 allows it ---
   const corpusTag = `corpus-sha256-${archiveSha256}`;
+  if (generation.degraded.carried.length || generation.degraded.missing.length) {
+    const decision = api.degradedPublication();
+    if (!decision.allowed) {
+      generation.publication = { status: 'WITHHELD-DEGRADED', corpusTag, reason: decision.reason,
+        carried: generation.degraded.carried.map((entry) => entry.store), missing: generation.degraded.missing.map((entry) => entry.store) };
+      generation.finishedAt = new Date().toISOString();
+      log(`[gen ${index}] degraded generation sealed and WITHHELD from publication: ${decision.reason}`);
+      return { generation, withheld: true, nextSeed: null, published: null };
+    }
+  }
+
+  // --- rehearse the real product-consumption path, publication RECORDED not executed -----------
   const proof = recorder.proveIntercepting();
   if (!proof.ok) {
     generation.publication = { status: 'FAIL', reason: 'command interception could not be proven; refusing to run a publication path that might reach the network', proof };
@@ -948,6 +1034,8 @@ export async function rehearseCorpusPipeline({
   owner = 'ruvnet',
   tamper = 'none',
   tamperGeneration = 1,
+  injectStoreFailure = 'none',
+  injectGeneration = 1,
   forceRebuild = true,
   seedOverride = null,
   // ADR-0091 D4. seedSelection: generation N+1's seed is chosen by the real corpus-next-seed resolver
@@ -964,6 +1052,9 @@ export async function rehearseCorpusPipeline({
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
   if (!TAMPER_MODES.has(tamper)) fail(`unknown --tamper mode ${tamper} (expected: ${[...TAMPER_MODES].join(', ')})`);
+  if (!INJECTION_MODES.has(injectStoreFailure)) {
+    fail(`unknown --inject-store-failure mode ${injectStoreFailure} (expected: ${[...INJECTION_MODES].join(', ')})`);
+  }
   const startedAt = new Date().toISOString();
   const started = Date.now();
   const receipt = {
@@ -973,7 +1064,7 @@ export async function rehearseCorpusPipeline({
     startedAt,
     host: { node: process.version, platform: `${process.platform}/${process.arch}` },
     bounds: { repos, gists, generations, maxRounds, owner, forceRebuild, tamper, tamperGeneration, accuracySample,
-      seedSelection, codeReleaseBetween },
+      seedSelection, codeReleaseBetween, injectStoreFailure, injectGeneration },
     phases: [],
     generations: [],
     seedSelection: [],
@@ -1048,11 +1139,11 @@ export async function rehearseCorpusPipeline({
 
     // ---- phase 4: load the disposable checkout's own modules ---------------------------------
     const load = (relative) => import(pathToFileURL(path.join(checkoutRoot, relative)).href);
-    const [reconcileMod, coverageMod, candidateMod, zipMod, accuracyMod, nextSeedMod, approvedMod, recallMod, selectionMod] = await Promise.all([
+    const [reconcileMod, coverageMod, candidateMod, zipMod, accuracyMod, nextSeedMod, approvedMod, recallMod, selectionMod, failureMod] = await Promise.all([
       load('scripts/corpus-reconcile.mjs'), load('scripts/source-coverage.mjs'),
       load('scripts/corpus-candidate.mjs'), load('kb/zip-extract.mjs'), load('scripts/oracle/retrieval-accuracy.mjs'),
       load('scripts/corpus-next-seed.mjs'), load('scripts/approved-runtime.mjs'), load('scripts/oracle/repo-recall.mjs'),
-      load('scripts/rehearse-seed-selection.mjs'),
+      load('scripts/rehearse-seed-selection.mjs'), load('scripts/corpus-store-failure.mjs'),
     ]);
     // The same C3 question sample CI runs (ADR-0091 D2), unless the caller asked for the full audit.
     const accuracyQuestions = accuracySample === 'full' ? null
@@ -1070,6 +1161,9 @@ export async function rehearseCorpusPipeline({
       reconcileAndPrepareCorpusCandidate: reconcileMod.reconcileAndPrepareCorpusCandidate,
       summarizeReconciliation: reconcileMod.summarizeReconciliation,
       prepareCorpusCandidate: reconcileMod.prepareCorpusCandidate,
+      executeReconciliation: reconcileMod.executeReconciliation,
+      defaultRunAsync: reconcileMod.defaultRunAsync,
+      degradedPublication: failureMod.degradedPublication,
       observeSourceUniverse: coverageMod.observeSourceUniverse,
       canonicalSourceObservation: coverageMod.canonicalSourceObservation,
       buildCoverage: coverageMod.buildCoverage,
@@ -1087,6 +1181,7 @@ export async function rehearseCorpusPipeline({
     for (const [name, value] of Object.entries(api)) {
       if (typeof value !== 'function') fail(`the disposable checkout does not export ${name}`);
     }
+    api.CORPUS_QA_FAILED_EXIT = failureMod.CORPUS_QA_FAILED_EXIT;
     phase('load-pipeline-entrypoints', 'PASS', { entrypoints: Object.keys(api).length });
 
     // ---- phase 5: real seed acquisition (or an explicit SKIP) --------------------------------
@@ -1144,7 +1239,8 @@ export async function rehearseCorpusPipeline({
       }
       const result = await runGeneration({
         index, api, checkoutRoot, workRoot, seed, recorder, tamper, log,
-        bounds: { repos, gists, owner, maxRounds, builderSha, forceRebuild, tamperGeneration, accuracyQuestions },
+        bounds: { repos, gists, owner, maxRounds, builderSha, forceRebuild, tamperGeneration, accuracyQuestions,
+          injectStoreFailure, injectGeneration },
       });
       receipt.generations.push(result.generation);
       phase(`generation-${index}`, 'PASS', {
@@ -1170,6 +1266,14 @@ export async function rehearseCorpusPipeline({
       phase(`generation-${index}-approved-runtime`, 'PASS', { ...runtimeCheck,
         reason: `verifyApprovedRuntime PASS: ${verdict.checked} runtime files equal the checkout's, none unpinned, seed ${seed.tag} did not leak an executable` });
 
+      if (result.withheld) {
+        phase(`generation-${index}-publication`, 'PASS', { status: 'WITHHELD-DEGRADED', ...result.generation.publication,
+          reason: `degraded generation sealed but not published (ADR-0091 D5/D10): ${result.generation.publication.reason}` });
+        if (index < generations) {
+          phase('remaining-generations', 'SKIP', { reason: `generation ${index} was withheld, so there is no published generation ${index} to seed from` });
+        }
+        break;
+      }
       if (seedSelection && index < generations) {
         lastPublished = publishLocally({ selectionMod, registryDir, published: result.published, workRoot, index });
       }
@@ -1259,6 +1363,8 @@ export async function main(argv = process.argv.slice(2)) {
     owner: arg(argv, '--owner', 'ruvnet'),
     tamper: arg(argv, '--tamper', 'none'),
     tamperGeneration: Number(arg(argv, '--tamper-generation', 1)),
+    injectStoreFailure: arg(argv, '--inject-store-failure', 'none'),
+    injectGeneration: Number(arg(argv, '--inject-generation', 1)),
     forceRebuild: !argv.includes('--no-force-rebuild'),
     seedOverride: arg(argv, '--seed', null),
     seedSelection: !argv.includes('--no-seed-selection'),
