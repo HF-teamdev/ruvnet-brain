@@ -62,7 +62,7 @@ import { validatePublicInventory } from './public-inventory.mjs';
 import { bindAssembledReleaseProjection, createReleaseProjection } from './release-projection.mjs';
 import { materializePublicInputs, SELECTION_FILE, validateSelectionReceipt } from './public-inputs.mjs';
 import { isPrivate, loadPrivateSlugs, shouldFenceL2 } from './private-fence.mjs';
-import { validateCoverageLedger } from './coverage-integrity.mjs';
+import { eligibleRepositoryStanding, validateCoverageLedger } from './coverage-integrity.mjs';
 // The org total is DERIVED, never a literal: it was hardcoded 248 in this file and in its
 // sibling while the account actually had 200 — one stale fact, restated twice (2026-08-12).
 import { orgRepoCount } from './org-repo-count.mjs';
@@ -672,6 +672,11 @@ async function assembleBundleImpl({ corpusDir, runtimeRoot, outDir, identity = {
     // validatePublicInventory has already bound that ledger to the bytes on disk.
     for (const row of corpusCoverage.rows) {
       if (row.disposition !== 'eligible') continue;
+      // ADR-0091 D5: a MISSING row with a `failure` record ships no store at all (validatePublicInventory
+      // already proved no bytes exist under its name), so there is no ledger generation to bind. A
+      // STALE row with a `carry` record binds below exactly like a CURRENT one: its artifact digest and
+      // source generation ARE the carried bytes this ledger carries.
+      if (row.kind === 'repository' && eligibleRepositoryStanding(row) === 'absent') continue;
       const store = String(row.artifact?.store || '');
       const generation = ledgerIn.stores?.[store]
         || Object.entries(ledgerIn.stores || {}).find(([key]) => key.toLowerCase() === store.toLowerCase())?.[1];

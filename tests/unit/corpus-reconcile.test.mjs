@@ -241,7 +241,10 @@ describe('reconciliation execution', () => {
       .toBeTruthy();
   });
 
-  it('stops when forge-refresh does not produce the exact upstream ledger receipt', async () => {
+  // ADR-0091 D5: this used to reject the whole round. The worker's output still fails validation (so
+  // nothing it produced is merged), but the failure is now ISOLATED to its store: a store with no
+  // prior bytes becomes MISSING with a failure record, and an integrity failure is never retried.
+  it('isolates a store whose forge-refresh does not produce the exact upstream ledger receipt', async () => {
     const root = temp();
     const assetsDir = path.join(root, 'assets');
     fs.mkdirSync(assetsDir, { recursive: true });
@@ -255,8 +258,17 @@ describe('reconciliation execution', () => {
       if (command === 'git' && args.includes('rev-parse')) return { status: 0, stdout: `${sha('a')}\n`, stderr: '' };
       return { status: 0, stdout: '', stderr: '' };
     };
-    await expect(executeReconciliation({ plan, assetsDir, workspaceDir: path.join(root, 'clones'), root, run }))
-      .rejects.toThrow(/worker artifact family is incomplete|did not bind alpha to the exact upstream SHA/i);
+    const clones = [];
+    const recordingRun = (command, args, options) => {
+      if (command === 'git' && args[0] === 'clone') clones.push(args.at(-1));
+      return run(command, args, options);
+    };
+    const result = await executeReconciliation({ plan, assetsDir, workspaceDir: path.join(root, 'clones'), root,
+      run: recordingRun, log: () => {} });
+    expect(result).toMatchObject({ refreshed: [], carried: [], integrityFailures: [],
+      missing: [{ store: 'alpha', failure: { reason: 'integrity: worker output validation failed', attempts: 1 } }] });
+    expect(clones, 'an integrity failure is never retried').toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(path.join(assetsDir, 'RVF-GENERATIONS.json'), 'utf8'))).toEqual({ stores: {} });
   });
 
   // Required proof 4 (2026-09-13): a worker failure must abort and join its still-running siblings
@@ -264,7 +276,10 @@ describe('reconciliation execution', () => {
   // already been given up on. Before this fix `executeReconciliation` had no cancellation at all: a
   // failing lane's `Promise.all` member rejected immediately while sibling lanes kept running,
   // completely unobserved.
-  it('aborts and joins still-running sibling workers when one worker fails mid-round', async () => {
+  // ADR-0091 D5 retired the abort-all half of this proof: one store's failure no longer cancels its
+  // siblings (it now becomes a carry/failure record, see corpus-reconcile-isolation.test.mjs). The
+  // join guarantee stays, for the one cancellation that is still round-wide: an EXTERNAL signal.
+  it('an external abort still joins every still-running worker before the round rejects', async () => {
     const root = temp();
     const assetsDir = path.join(root, 'assets');
     const workspaceDir = path.join(root, 'clones');
@@ -278,11 +293,15 @@ describe('reconciliation execution', () => {
     ];
     let betaCloneStarted = false;
     let betaSawAbort = false;
+    const external = new AbortController();
     const run = (command, args, options = {}) => {
       if (command === 'git' && args[0] === 'clone') {
         fs.mkdirSync(args.at(-1), { recursive: true });
         const isBeta = args.at(-1).includes('beta');
-        if (!isBeta) return Promise.resolve({ status: 1, stdout: '', stderr: 'simulated alpha clone failure' });
+        if (!isBeta) {
+          external.abort(new Error('caller discarded the round'));
+          return Promise.resolve({ status: null, error: Object.assign(new Error('aborted'), { name: 'AbortError' }) });
+        }
         // beta hangs -- exactly like a real long-running clone would -- until the shared signal
         // aborts it, proving the still-running sibling is actually joined, not left dangling.
         betaCloneStarted = true;
@@ -295,8 +314,11 @@ describe('reconciliation execution', () => {
       }
       return { status: 0, stdout: '', stderr: '' };
     };
-    await expect(executeReconciliation({ plan, assetsDir, workspaceDir, root, run, concurrency: 2 }))
-      .rejects.toThrow(/simulated alpha clone failure/);
+    // beta's clone starts first (plan order is alpha, beta, but alpha aborts only once beta is running).
+    const betaFirst = (command, args, options) => (command === 'git' && args[0] === 'clone' && !args.at(-1).includes('beta')
+      ? new Promise((resolve) => setTimeout(() => resolve(run(command, args, options)), 20)) : run(command, args, options));
+    await expect(executeReconciliation({ plan, assetsDir, workspaceDir, root, run: betaFirst, concurrency: 2,
+      signal: external.signal, log: () => {} })).rejects.toThrow(/caller discarded the round/);
     expect(betaCloneStarted, 'beta must actually have started, or this test guards nothing').toBe(true);
     expect(betaSawAbort, 'beta must have observed the shared abort signal and joined promptly').toBe(true);
   });
@@ -698,8 +720,9 @@ describe('sealed-generation acquisition (acquireSealedGeneration)', () => {
       maxAttempts: 1, assetsDir: temp(), observe, readLedger: noopLedger, ...f,
     });
     expect(builds).toBe(2);
-    expect(f.build).toHaveBeenNthCalledWith(1, observationA);
-    expect(f.build).toHaveBeenNthCalledWith(2, observationA); // same sealed observation, not a new one
+    // The second argument is D5's per-store outcome record (empty here: nothing failed).
+    expect(f.build).toHaveBeenNthCalledWith(1, observationA, {});
+    expect(f.build).toHaveBeenNthCalledWith(2, observationA, {}); // same sealed observation, not a new one
     expect(observe).toHaveBeenCalledTimes(1);
     expect(result.coverage).toEqual(settled); // the post-rebuild coverage is what ships
   });
@@ -984,6 +1007,7 @@ describe('main() end to end (ADR-0091 D1)', () => {
     expect(summarizeReconciliation(history)).toEqual({
       attempts: 2, observationSha256: 'c'.repeat(64),
       plan: [{ store: 'alpha' }, { store: 'beta' }], refreshed: ['alpha', 'beta'], pruned: ['old'], rebuilt: ['concepts'],
+      degraded: { carried: [], missing: [] },
     });
     // The pre-cd0f032f shape must fail by name, never as a bare TypeError at the end of a generation.
     expect(() => summarizeReconciliation({ observation: {}, rounds: [] }))

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import readline from 'node:readline';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { canonicalJson, digest, validateCoverageLedger } from './coverage-integrity.mjs';
+import { canonicalJson, digest, eligibleRepositoryStanding, validateCoverageLedger } from './coverage-integrity.mjs';
 
 // Both release phases resolve against an explicit installed context, never the checkout.
 export async function resolveInstalledCanaryCitation({ kbDir, matched, expected, passageFileDigests = new Map() }) {
@@ -204,8 +204,10 @@ export function auditOracleCoverage({ coverage, queryEvidence, exemptions = null
   const checked = validateCoverageLedger(coverage);
   if (!checked.valid) throw new Error(`coverage ledger is invalid: ${checked.failures.join('; ')}`);
   validateRetrievalQueryEvidence(queryEvidence);
+  // ADR-0091 D5: a shipped store is CURRENT or STALE with a verified carry (its bytes ship). A
+  // MISSING-with-failure store ships nothing; the fixture-vs-available denominator is D6.4's change.
   const eligibleRows = coverage.rows.filter((row) => row.kind === 'repository'
-    && row.disposition === 'eligible' && row.status === 'CURRENT');
+    && row.disposition === 'eligible' && eligibleRepositoryStanding(row) === 'shipped');
   const eligible = ordered(eligibleRows.map(storeOf));
   if (!eligible.length || new Set(eligible).size !== eligible.length || eligible.some((store) => !store)) {
     throw new Error('eligible coverage denominator is invalid');
@@ -353,7 +355,7 @@ export function validatePlanAgainstCoverage(plan, coverage, { allowObservedBasel
   const generation = coverage.kind === 'ruvnet-brain-release-coverage'
     ? coverage.releaseCoverageGeneration : coverage.coverageGeneration;
   const eligible = ordered(coverage.rows.filter((row) => row.kind === 'repository'
-    && row.disposition === 'eligible' && row.status === 'CURRENT').map(storeOf));
+    && row.disposition === 'eligible' && eligibleRepositoryStanding(row) === 'shipped').map(storeOf));
   if (!eligible.length || new Set(eligible).size !== eligible.length) throw new Error('eligible coverage denominator is invalid');
   const baseline = new Set(plan.baseline.stores);
   const delta = eligible.filter((store) => !baseline.has(store));
@@ -418,7 +420,7 @@ export function buildRetrievalCanaryPlan({ coverage, baseline, candidate, covera
   validateRetrievalQueryEvidence(queryEvidence);
   if (queryEvidence.sourceCommit === candidate.sourceSha) throw new Error('independent query source is not pre-candidate');
   const eligible = coverage.rows.filter((row) => row.kind === 'repository' && row.disposition === 'eligible');
-  if (!eligible.length || eligible.some((row) => row.status !== 'CURRENT' || !storeOf(row))) {
+  if (!eligible.length || eligible.some((row) => eligibleRepositoryStanding(row) !== 'shipped' || !storeOf(row))) {
     throw new Error('eligible repository coverage is incomplete');
   }
   const duplicateStores = eligible.map(storeOf).filter((store, index, stores) => stores.indexOf(store) !== index);
