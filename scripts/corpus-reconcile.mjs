@@ -24,6 +24,7 @@ import { readDiagnosticAccuracyReport } from './oracle/retrieval-accuracy.mjs';
 import { storeRoot } from '../kb/store-root.mjs';
 import { captureGistSources } from './gist-receipts.mjs';
 import { projectSourceStore, RUNTIME_LEDGER_KIND } from './rvf-generation.mjs';
+import { compareKnowledgeInputs, fromCoverage as knowledgeFromCoverage, fromSeed as knowledgeFromSeed } from './knowledge-input-digest.mjs';
 
 export { rebuildCorpusAggregates };
 
@@ -298,7 +299,7 @@ async function measureFreshness({ closingObservation, observation }) {
  * generation; `latest` is never substituted, and an exhausted partial generation is never accepted.
  */
 export async function acquireSealedGeneration({ maxAttempts = 3, assetsDir = null, observe, build,
-  readLedger: currentLedger, execute, prune, rebuild, preflight = null, closingObservation = null } = {}) {
+  readLedger: currentLedger, execute, prune, rebuild, preflight = null, closingObservation = null, unchanged = null } = {}) {
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10
     || [observe, build, currentLedger, execute, prune, rebuild].some((fn) => typeof fn !== 'function')) {
     fail('bounded acquisition configuration is invalid');
@@ -306,6 +307,15 @@ export async function acquireSealedGeneration({ maxAttempts = 3, assetsDir = nul
   // ONE discovery pass. This observation is the sealed manifest every later step consumes; it is never
   // re-taken, so upstream churn cannot restart or invalidate the generation.
   const observation = await observe();
+  // NO-CHANGE, DECIDED BEFORE ANYTHING IS BUILT (2026-09-29 nightly redesign). When every knowledge
+  // input equals the seed's (scripts/knowledge-input-digest.mjs), the night ends here: no gist
+  // preflight, no clone, no embedding, no aggregate rebuild, nothing sealed or published.
+  if (typeof unchanged === 'function') {
+    const knowledgeInput = await unchanged(observation);
+    if (knowledgeInput?.unchanged === true) {
+      return { noChange: true, observation, attempts: [], consistencyModel: CONSISTENCY_MODEL, knowledgeInput };
+    }
+  }
   // Validate/fetch the source most likely to fail late (gist detail/raw access) before any expensive
   // repository clone and embedding work. Its verified bodies are the existing capture cache consumed
   // by the later aggregate build, so preflight does not double-fetch or weaken source binding.
@@ -891,6 +901,14 @@ export async function acquireCorpusGeneration({ owner = 'ruvnet', assetsDir, wor
   rebuild = (coverage, observation, _attempt, capturedGists) => rebuildCorpusAggregates({
     assetsDir, observation, coverage, root, cache: capturedGists,
   }),
+  // The seed's knowledge inputs come from the evidence it carries (read FIRST: a seed without it --
+  // the pre-contract bootstrap -- always builds, and costs no second coverage measurement); tonight's
+  // from the coverage `build` measures off the sealed observation, plus this checkout's public prose.
+  unchanged = async (observation) => {
+    const seed = knowledgeFromSeed(assetsDir);
+    if (!seed) return { unchanged: false, reason: 'the seed carries no knowledge-input evidence' };
+    return compareKnowledgeInputs({ seed, tonight: await knowledgeFromCoverage(await build(observation, {}), root) });
+  },
 } = {}) {
   if (!assetsDir || !workspaceDir) fail('stable reconciliation requires explicit assets and workspace directories');
   const workspace = path.resolve(workspaceDir || '');
@@ -914,6 +932,7 @@ export async function acquireCorpusGeneration({ owner = 'ruvnet', assetsDir, wor
     prune,
     rebuild,
     preflight,
+    unchanged,
   });
 }
 
@@ -935,6 +954,8 @@ export async function reconcileAndPrepareCorpusCandidate({ assetsDir, workspaceD
   accuracyTimeoutMs = null,
   prepare = prepareCorpusCandidate } = {}) {
   const finalized = await reconcile({ owner, assetsDir, workspaceDir, root, maxAttempts });
+  // Nothing the corpus is built from changed since the seed: nothing to normalize, seal or measure.
+  if (finalized?.noChange === true) return { reconciliation: finalized, noChange: true, updaters: null, candidate: null };
   // Every shipped repository store needs a complete updater entry, and a seed that predates the
   // convention leaves inherited stores without one -- measured 2026-09-15: 100 of 194 repository
   // stores, none of them refreshed that run, which build-bundle rightly refused to ship. Normalize
@@ -1167,7 +1188,11 @@ export async function main(argv = process.argv.slice(2), {
     ? Number(arg(argv, '--accuracy-sample-per-partition')) : null;
   const accuracyTimeoutMs = arg(argv, '--accuracy-timeout-ms') ? Number(arg(argv, '--accuracy-timeout-ms')) : null;
 
-  const bootstrap = assertBootstrapIdentity({ archiveFile, tag: seedTag, sha256: seedSha256, allowPinnedTag: process.argv.includes('--allow-pinned-seed-tag') });
+  // `--no-change-out <file>`: always written (true or false) once reconciliation returns, so
+  // corpus-seed.yml never has to infer a no-change night from a missing file.
+  const noChangeOut = arg(argv, '--no-change-out');
+  // The argv this main() was HANDED, never process.argv: an injected invocation must mean what it says.
+  const bootstrap = assertBootstrapIdentity({ archiveFile, tag: seedTag, sha256: seedSha256, allowPinnedTag: argv.includes('--allow-pinned-seed-tag') });
   if (fs.existsSync(assetsDir) && fs.readdirSync(assetsDir).length) fail(`bootstrap assets directory is not empty (${assetsDir})`);
   fs.mkdirSync(path.dirname(assetsDir), { recursive: true });
   const extractParent = fs.mkdtempSync(path.join(path.dirname(assetsDir), '.corpus-seed-extract-'));
@@ -1189,10 +1214,23 @@ export async function main(argv = process.argv.slice(2), {
   fs.rmSync(extractParent, { recursive: true, force: true });
   syncCorpusInputs({ root, assetsDir });
   const bootstrapIdentity = { tag: bootstrap.tag, sha256: bootstrap.sha256, privateFenceEvidence: seedPrivateFenceEvidence(assetsDir) };
-  const { reconciliation, candidate } = await reconcileAndPrepare({
+  const { reconciliation, candidate, noChange = false } = await reconcileAndPrepare({
     assetsDir, workspaceDir, root, owner, builderSha, candidateDir, receiptFile, coverageFile, bootstrapIdentity,
     accuracyOracleFile, accuracyStores, accuracySample, accuracySamplePerPartition, accuracyTimeoutMs,
   });
+  if (noChangeOut) {
+    fs.mkdirSync(path.dirname(path.resolve(noChangeOut)), { recursive: true });
+    fs.writeFileSync(path.resolve(noChangeOut), `${JSON.stringify({
+      noChange: noChange === true,
+      knowledgeInputSha256: noChange === true ? reconciliation?.knowledgeInput?.tonightSha256 ?? null : null,
+      observationSha256: reconciliation?.observation?.observationSha256 ?? null,
+    })}\n`);
+  }
+  if (noChange === true) {
+    stdout.write(`${JSON.stringify({ ok: true, noChange: true, seedTag, seedSha256,
+      knowledgeInput: reconciliation?.knowledgeInput ?? null }, null, 2)}\n`);
+    return 0;
+  }
   const { plan } = summarizeReconciliation(reconciliation);
   const degraded = candidate.degraded || { carried: [], missing: [] };
   const isDegraded = degraded.carried.length + degraded.missing.length > 0;
