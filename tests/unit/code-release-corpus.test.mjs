@@ -49,7 +49,7 @@ describe('assemblyPathFor — the one place the dual path is chosen (ADR-0091 D6
 async function scenario({ onBuild = null } = {}) {
   const root = tmp('code-release-root-');
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '4.3.36' }));
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '9.9.9' }));
   fs.writeFileSync(path.join(root, 'data', 'source-coverage.json'), '{"committed":true}\n');
   const assets = tmp('code-release-seed-');
   const files = { 'alpha.big.rvf': 'rvf-bytes', 'alpha.passages.jsonl': '{"id":1}\n', 'alpha.meta.json': '{}',
