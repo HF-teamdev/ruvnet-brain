@@ -118,11 +118,13 @@ export async function loadCompatibilityProfile({ runtimeRoot = ROOT, fixtureFile
     throw new Error(`${root} has no repo-recall reader to judge a seed with`);
   }
   const { model, dimensions } = parseBuildFingerprint(forge.FORGE_BUILD_FINGERPRINT);
+  const fixture = recall.loadFixture(fixtureFile || path.join(root, recall.DEFAULT_FIXTURE_FILE));
   return {
     runtimeRoot: root,
     model,
     dimensions,
-    fixtureSha256: recall.loadFixture(fixtureFile || path.join(root, recall.DEFAULT_FIXTURE_FILE)).fixtureSha256,
+    fixtureSha256: fixture.fixtureSha256,
+    fixtureStores: fixture.questions.map((question) => question.store),
     floorValue: recall.ABSOLUTE_FLOOR,
     readRecallReport: recall.readRecallReport,
   };
@@ -213,34 +215,33 @@ function judgeRelease({ run, repo, tag, digest, profile, rejected, requireCovera
     if (sha256Of(recallFile) !== receipt.recallReport.sha256 || fs.statSync(recallFile).size !== receipt.recallReport.bytes) {
       return reject('unverified: repo-recall report is not the one the receipt binds');
     }
-    let claimedFixture = null;
-    try { claimedFixture = JSON.parse(fs.readFileSync(recallFile, 'utf8'))?.fixture?.sha256 ?? null; } catch { /* the reader names it below */ }
+    let claimed = null;
+    try { claimed = JSON.parse(fs.readFileSync(recallFile, 'utf8')); } catch { /* the reader names it below */ }
+    const claimedFixture = claimed?.fixture?.sha256 ?? null;
     if (claimedFixture !== profile.fixtureSha256) {
       return reject(`incompatible: recall report was measured against fixture ${String(claimedFixture).slice(0, 12)}, `
         + `this runtime's frozen fixture is ${profile.fixtureSha256.slice(0, 12)}`);
     }
-    try {
-      profile.readRecallReport({
-        reportFile: recallFile,
-        archive: { file: ARCHIVE_ASSET, sha256: digest, bytes: archive.size },
-        expectedFixtureSha256: profile.fixtureSha256,
-        // The same bar corpus-seed.yml's seed re-check uses: a published seed is graded against the
-        // fixed ABSOLUTE_FLOOR, never re-judged by a later, higher committed floor.
-        floorValue: profile.floorValue,
-      });
-    } catch (error) {
-      return reject(`incompatible: recall report fails this runtime's reader (${error.message})`);
+    // ADR-0091 D7.3: a report that claims retired questions is verified against the generation's own
+    // sealed coverage (its D6.2 sidecar), recomputed by the reader -- in the nightly mode too, or one
+    // retirement would push every night onto the bootstrap. No sidecar means the claim is unverifiable,
+    // and the generation is skipped.
+    const claimsRetirement = claimed?.retirement !== undefined;
+    if (claimsRetirement && !requireCoverage && [COVERAGE_ASSET, COVERAGE_RECEIPT_ASSET].some((name) => named(name).length !== 1)) {
+      return reject('incompatible: recall report claims retired question(s) but the generation published no coverage sidecar '
+        + `(${COVERAGE_ASSET} + ${COVERAGE_RECEIPT_ASSET}) to verify them against`);
     }
 
     // D6.2 -- the code-release mode's extra check, from two more small files: the sidecar must name
     // THIS generation, bind THESE coverage bytes, and the coverage must describe this receipt's stores.
     let coverage = null;
-    if (requireCoverage) {
+    let coverageBytes = null;
+    if (requireCoverage || claimsRetirement) {
       const sidecarFile = download(run, { repo, tag, pattern: COVERAGE_RECEIPT_ASSET, dir: scratch });
       const coverageFile = sidecarFile && download(run, { repo, tag, pattern: COVERAGE_ASSET, dir: scratch });
       if (!sidecarFile || !coverageFile) return reject('unverified: coverage sidecar could not be downloaded', { indeterminate: true });
       try {
-        const coverageBytes = fs.readFileSync(coverageFile);
+        coverageBytes = fs.readFileSync(coverageFile);
         const verified = verifyCoverageSidecar({ sidecar: JSON.parse(fs.readFileSync(sidecarFile, 'utf8')), coverageBytes,
           generationTag: tag, archiveSha256: digest, archiveBytes: archive.size });
         bindCoverageToReceipt({ coverage: verified.coverage, receipt });
@@ -251,13 +252,30 @@ function judgeRelease({ run, repo, tag, digest, profile, rejected, requireCovera
       }
     }
 
+    try {
+      profile.readRecallReport({
+        reportFile: recallFile,
+        archive: { file: ARCHIVE_ASSET, sha256: digest, bytes: archive.size },
+        expectedFixtureSha256: profile.fixtureSha256,
+        // The same bar corpus-seed.yml's seed re-check uses: a published seed is graded against the
+        // fixed ABSOLUTE_FLOOR, never re-judged by a later, higher committed floor.
+        floorValue: profile.floorValue,
+        // Ignored by a pre-D7 reader, which then fails closed on a retirement-bearing report's totals.
+        coverageBytes,
+        ...(profile.fixtureStores ? { fixtureStores: profile.fixtureStores } : {}),
+      });
+    } catch (error) {
+      return reject(`incompatible: recall report fails this runtime's reader (${error.message})`);
+    }
+
     return {
       origin: 'published-generation',
       tag,
       asset: ARCHIVE_ASSET,
       sha256: digest,
       bytes: archive.size,
-      ...(coverage ? { coverage } : {}),
+      // The nightly descriptor keeps its pre-D7 shape even when a retirement claim fetched the coverage.
+      ...(coverage && requireCoverage ? { coverage } : {}),
       sourceCommit: typeof receipt.builderSourceSha === 'string' ? receipt.builderSourceSha : null,
       // Informational only since D4: the runtime that BUILT the seed, which may be older than the
       // runtime about to consume it. Nothing gates on it.

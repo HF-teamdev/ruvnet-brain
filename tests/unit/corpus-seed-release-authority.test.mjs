@@ -5,7 +5,10 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createCorpusReceipt } from '../../scripts/corpus-candidate.mjs';
 import { verifyCoverageSidecar } from '../../scripts/corpus-coverage-sidecar.mjs';
-import { fixtureReleaseRoot, sealedCorpusBundle, writeAccuracyReport, writeCoverageFor } from '../helpers/corpus-seed-fixture.mjs';
+import {
+  fixtureReleaseRoot, ineligibleRepositoryRow, retireInRecallReport, sealedCorpusBundle, sha256, writeAccuracyReport, writeCoverageFor,
+} from '../helpers/corpus-seed-fixture.mjs';
+import { loadFixture } from '../../scripts/oracle/repo-recall.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const HEAD = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
@@ -304,6 +307,54 @@ describe('corpus generation coverage sidecar (ADR-0091 D6.2)', () => {
     const result = run(f, { args: [...f.args.slice(0, at), ...f.args.slice(at + 2)] });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/coverage must be an absolute regular file/);
+    expect(ghCalls(f)).toEqual([]);
+  });
+});
+
+// ADR-0091 D7.3: readers verify a claimed retirement, never trust it. The fixture's coverage is a complete
+// one-row enumeration (alpha), so every frozen fixture repository other than alpha has NO row -- a
+// genuine retirement -- unless a row is added for it, which makes the same claim false.
+describe('a claimed repo-recall retirement is recomputed from coverage by the publisher (ADR-0091 D7.3)', () => {
+  const ghCalls = (f) => (fs.existsSync(f.log) ? fs.readFileSync(f.log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []);
+  const RETIRED = loadFixture().questions[0].store;
+  const reseal = async (f, coverageFile) => {
+    f.receipt = await createCorpusReceipt({ bundleFile: f.bundle, receiptFile: f.receiptFile, builderSourceSha: HEAD,
+      createdAt: '2026-08-21T12:34:56.000Z', coverageFile });
+  };
+
+  it('GREEN: a retirement the generation\'s own coverage proves seals (corpus-candidate) and publishes (release.mjs)', async () => {
+    const f = await fixture();
+    retireInRecallReport(`${f.bundle}.recall.json`, [RETIRED], f.coverageFile);
+    await reseal(f, f.coverageFile);
+    expect(f.receipt.recallSummary.questions).toBe(loadFixture().questions.length - 1);
+    const result = run(f);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(ghCalls(f).some((args) => args[1] === 'create')).toBe(true);
+  });
+
+  it('RED: corpus-candidate rejects a claimed retirement when it is given no coverage to verify it against', async () => {
+    const f = await fixture();
+    retireInRecallReport(`${f.bundle}.recall.json`, [RETIRED], f.coverageFile);
+    await expect(reseal(f, null)).rejects.toThrow(/claims retired question\(s\) but no coverage was supplied/);
+  });
+
+  it('RED: a FALSE retirement (the repository has a coverage row) is rejected by corpus-candidate AND by release.mjs, before any network call', async () => {
+    const f = await fixture();
+    // The repository exists in the observation (an ineligible row), so it is not retired -- claiming it is
+    // exactly how a report would hide a question it could not answer.
+    await writeCoverageFor(f.receipt, f.coverageFile, { extraRows: [ineligibleRepositoryRow(RETIRED)] });
+    const recallFile = `${f.bundle}.recall.json`;
+    retireInRecallReport(recallFile, [RETIRED], f.coverageFile);
+    const lie = new RegExp(`claims \\[${RETIRED.toLowerCase()}\\] retired, but the coverage it names does not retire them`);
+    await expect(reseal(f, f.coverageFile)).rejects.toThrow(lie);
+    // release.mjs reads the report itself, not only through corpus-candidate: bind the forged report into
+    // the receipt so the publisher's OWN reader is the one that has to catch it.
+    f.receipt.recallReport = { file: path.basename(recallFile), sha256: sha256(recallFile), bytes: fs.statSync(recallFile).size };
+    writeReceipt(f);
+    const result = run(f);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/retrieval does not qualify this corpus for publication/);
+    expect(result.stderr).toMatch(lie);
     expect(ghCalls(f)).toEqual([]);
   });
 });

@@ -410,6 +410,11 @@ describe('candidate preparation', () => {
     expect(joined[3]).toMatch(/--recall-report .*ruvnet-brain\.zip\.recall\.json/);
     expect(joined[4]).toMatch(/corpus-candidate\.mjs .*--verify/);
     expect(joined[4]).toMatch(/--recall-report .*ruvnet-brain\.zip\.recall\.json/);
+    // ADR-0091 D7: the recall gate retires fixture repositories absent from THIS sealed observation, and
+    // both corpus-candidate calls recompute that claim from the same coverage bytes rather than trust it.
+    const sealedCoverage = path.join(root, 'data', 'source-coverage.json');
+    for (const index of [2, 3, 4]) expect(calls[index].slice(calls[index].indexOf('--coverage'), calls[index].indexOf('--coverage') + 2))
+      .toEqual(['--coverage', sealedCoverage]);
     expect(result.accuracyReportFile).toBe(path.join(root, 'candidate', 'ruvnet-brain.zip.accuracy.json'));
     expect(result.recallReportFile).toBe(path.join(root, 'candidate', 'ruvnet-brain.zip.recall.json'));
     expect(joined.join('\n')).not.toMatch(/corpus-seed-publish|release create|--publish|source-coverage\.mjs/);

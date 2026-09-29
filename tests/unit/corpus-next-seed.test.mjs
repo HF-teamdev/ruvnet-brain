@@ -9,7 +9,7 @@ import {
 } from '../../scripts/corpus-next-seed.mjs';
 import { readRecallReport, tally } from '../../scripts/oracle/repo-recall.mjs';
 import { createCoverageReceipt } from '../../scripts/corpus-coverage-sidecar.mjs';
-import { writeCoverageFor } from '../helpers/corpus-seed-fixture.mjs';
+import { ineligibleRepositoryRow, writeCoverageFor } from '../helpers/corpus-seed-fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const dirs = [];
@@ -358,7 +358,9 @@ describe('the compatibility profile is read from the consuming runtime, never re
     // A stand-in "approved runtime" tree whose fixture differs from this checkout's.
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corpus-next-seed-runtime-'));
     dirs.push(runtimeRoot);
-    for (const relative of ['scripts/oracle/repo-recall.mjs', 'kb/forge-corpus.mjs', 'kb/incremental-refresh.mjs', 'kb/rvf-index.mjs', 'kb/zip-extract.mjs']) {
+    // repo-recall's import closure (ADR-0091 D7 added the shared retirement rule and the coverage ledger validator).
+    for (const relative of ['scripts/oracle/repo-recall.mjs', 'kb/forge-corpus.mjs', 'kb/incremental-refresh.mjs', 'kb/rvf-index.mjs', 'kb/zip-extract.mjs',
+      'scripts/fixture-denominator.mjs', 'scripts/coverage-integrity.mjs', 'plugin/scripts/coverage-integrity.mjs']) {
       fs.mkdirSync(path.dirname(path.join(runtimeRoot, relative)), { recursive: true });
       fs.copyFileSync(path.join(ROOT, relative), path.join(runtimeRoot, relative));
     }
@@ -499,5 +501,62 @@ describe('code-release resolution requires the D6.2 coverage sidecar (ADR-0091 D
     expect(downloadFailed.rejected).toEqual([expect.objectContaining({ tag: covered.tag, indeterminate: true })]);
     const incompatible = await resolve(workspace(), ghFor([generation('7')]), { requireCoverage: true });
     expect(incompatible.rejected.some((row) => row.indeterminate)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// ADR-0091 D7.3: a recall report that claims retired questions is verified against the generation's
+// own sealed coverage -- in the NIGHTLY mode too, or one retirement would strand every night on the
+// bootstrap. The claim is recomputed by the reader, never trusted.
+// ---------------------------------------------------------------------------------------------
+
+/** Rebind `row`'s recall report to one where `retired` stores are claimed retired against its coverage. */
+function claimRetirement(row, retired) {
+  const coverageText = row.coverageAssets?.['CORPUS-COVERAGE.json'] ?? '{}';
+  const rows = [
+    { store: 'alpha', expectedPath: 'README.md', repoCovered: true, exactFileRank: 1, returnedPaths: ['alpha/README.md'] },
+    ...retired.map((store) => ({ store, expectedPath: 'README.md', retired: true, repoCovered: false, exactFileRank: null, returnedPaths: [] })),
+  ];
+  const report = {
+    schemaVersion: 1, kind: 'ruvnet-brain-repo-recall', state: 'PASS', failures: [],
+    archive: { file: 'ruvnet-brain.zip', sha256: row.sha256, bytes: row.bytes },
+    fixture: { file: 'data/retrieval-query-evidence.json', sha256: FIXTURE_SHA, sourceCommit: null, questionCount: rows.length },
+    retirement: { coverageSha256: crypto.createHash('sha256').update(coverageText).digest('hex'), stores: [...retired].sort() },
+    floor: { value: 0, committed: null, absolute: 0, acceptedForRelease: null },
+    totals: tally(rows),
+    rows,
+  };
+  row.recallText = JSON.stringify(report);
+  row.receipt.recallReport = { file: 'ruvnet-brain.zip.recall.json',
+    sha256: crypto.createHash('sha256').update(row.recallText).digest('hex'), bytes: Buffer.byteLength(row.recallText) };
+  return row;
+}
+
+describe('seed selection verifies a claimed repo-recall retirement from the generation\'s coverage (ADR-0091 D7.3)', () => {
+  it('GREEN (nightly mode): a retirement the sidecar coverage proves is accepted, and the nightly descriptor keeps its shape', async () => {
+    // writeCoverageFor observes exactly one repository (alpha), completely: beta has no row -> retired.
+    const covered = claimRetirement(await coveredGeneration('7'), ['beta']);
+    const gh = ghFor([covered]);
+    const { seed, rejected } = await resolve(workspace(), gh);
+    expect(reasons(rejected)).toBe('');
+    expect(seed).toMatchObject({ origin: 'published-generation', tag: covered.tag });
+    expect(seed.coverage).toBeUndefined();
+    expect(gh.downloads().some((call) => call.includes('--pattern CORPUS-COVERAGE.json'))).toBe(true);
+  });
+
+  it('RED: a FALSE retirement (the repository has a coverage row) is skipped with its reason; the walk falls back', async () => {
+    // The coverage gives alpha-twin a row (ineligible): the repository exists, so it is NOT retired.
+    const lying = claimRetirement(await coveredGeneration('7', { coverageOptions: { extraRows: [ineligibleRepositoryRow('alpha-twin')] } }),
+      ['alpha-twin']);
+    const { seed, rejected } = await resolve(workspace(), ghFor([lying]));
+    expect(seed.origin).toBe('committed-bootstrap');
+    expect(reasons(rejected)).toMatch(/incompatible: recall report fails this runtime's reader .*claims \[alpha-twin\] retired, but the coverage it names does not retire them/);
+  });
+
+  it('RED: a claimed retirement from a generation that published no coverage sidecar is unverifiable, so it is skipped', async () => {
+    const bare = claimRetirement(generation('7'), ['beta']);
+    const { seed, rejected } = await resolve(workspace(), ghFor([bare]));
+    expect(seed.origin).toBe('committed-bootstrap');
+    expect(reasons(rejected)).toMatch(/claims retired question\(s\) but the generation published no coverage sidecar/);
   });
 });

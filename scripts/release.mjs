@@ -266,11 +266,16 @@ export async function runProtectedCorpusSeed({
     || fs.statSync(recallReportFile).size !== receipt.recallReport.bytes) {
     corpusFailure('detached repo-recall report bytes do not match the corpus receipt');
   }
+  // ADR-0091 D7.3: a claimed retirement is recomputed from THIS generation's sealed coverage (the bytes
+  // published beside the archive as CORPUS-COVERAGE.json), never taken from the report's own claim.
+  const recallFixture = loadFixture();
   try {
     readRecallReport({
       reportFile: recallReportFile,
       archive: archiveIdentity,
-      expectedFixtureSha256: loadFixture().fixtureSha256,
+      expectedFixtureSha256: recallFixture.fixtureSha256,
+      coverageBytes: fs.readFileSync(coverageFile),
+      fixtureStores: recallFixture.questions.map((question) => question.store),
     });
   } catch (error) {
     corpusFailure(`retrieval does not qualify this corpus for publication (${error.message})`);
@@ -285,7 +290,7 @@ export async function runProtectedCorpusSeed({
   // here. It runs before any `gh` call so an untrue candidate never reaches the network.
   try {
     await verifyCorpusReceipt({
-      receiptFile, bundleFile, accuracyReportFile, recallReportFile, expectedBuilderSha: target, expectedArchiveSha256: archiveSha256,
+      receiptFile, bundleFile, accuracyReportFile, recallReportFile, coverageFile, expectedBuilderSha: target, expectedArchiveSha256: archiveSha256,
     });
   } catch (error) {
     corpusFailure(`corpus receipt does not verify against the sealed archive (${error.message})`);

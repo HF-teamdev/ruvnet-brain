@@ -1077,10 +1077,12 @@ export function prepareCorpusCandidate({
   // THE BLOCKING RETRIEVAL GATE (ADR-086 amendment 2026-09-15). Same placement and same discipline
   // as the C3 run above — the EXTRACTED final archive through the customer query path — but this is
   // the measurement that can refuse a candidate. It asks the 194 frozen human questions, one per
-  // repository, and fails on any error, any repository that returns nothing of its own, or any
-  // exact-file Hit@5 below the committed ratchet floor.
+  // repository, and fails on any error or any repository that returns nothing of its own. The
+  // exact-file Hit@5 floor is RECORDED in the report and never fails the CLI (ADR-0091 D7.6).
+  // `--coverage` is this candidate's sealed observation: a fixture repository with no row in it is
+  // retired (D7.2) instead of asked a question it has no store to answer.
   const recallReportFile = `${bundleFile}.recall.json`;
-  checked(run, process.execPath, [recallScript, '--bundle', bundleFile, '--out', recallReportFile],
+  checked(run, process.execPath, [recallScript, '--bundle', bundleFile, '--out', recallReportFile, '--coverage', policy],
     { stdio: 'inherit' });
   // The candidate receipt is derived ENTIRELY from the sealed bundle's own bytes plus the detached,
   // digest-bound reports — the separate assets/policy directory used to build it is no longer an
@@ -1090,11 +1092,11 @@ export function prepareCorpusCandidate({
     : [];
   checked(run, process.execPath, [receiptScript, '--bundle', bundleFile,
     '--receipt', receipt, '--builder-source-sha', builderSha,
-    '--accuracy-report', accuracyReportFile, '--recall-report', recallReportFile,
+    '--accuracy-report', accuracyReportFile, '--recall-report', recallReportFile, '--coverage', policy,
     ...bootstrapArgs], { stdio: 'inherit' });
   checked(run, process.execPath, [receiptScript, '--verify', '--bundle', bundleFile,
     '--receipt', receipt, '--accuracy-report', accuracyReportFile,
-    '--recall-report', recallReportFile], { stdio: 'inherit' });
+    '--recall-report', recallReportFile, '--coverage', policy], { stdio: 'inherit' });
   return {
     bundleFile, receiptFile: receipt, coverageFile: policy,
     accuracyReportFile, accuracyOracleFile: accuracyOracle, recallReportFile, degraded,

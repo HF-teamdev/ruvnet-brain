@@ -263,29 +263,53 @@ jobs:
           # here would reject every seed this pipeline is now capable of producing — but leaving it
           # unbound would let a diagnostic from some other archive ride along looking like evidence.
           if [ "$SEED_IS_DIGEST_DERIVED" = 1 ]; then
+          # BEGIN seed-recall-verify (ADR-0091 D7.3; executed by tests/unit/recall-retirement-readers.test.mjs)
+          # A seed report that claims retired questions is verified against the seed's OWN sealed coverage
+          # (its D6.2 sidecar), recomputed here -- never taken from the report's claim. A generation that
+          # published no sidecar gives no coverage, so any retirement it claims is rejected.
+          seed_has_sidecar="$(node -e "const r=require(process.env.RUNNER_TEMP+'/corpus-seed-release.json');const n=(x)=>(r.assets||[]).filter((a)=>a.name===x).length;console.log(n('CORPUS-COVERAGE.json')===1&&n('coverage-receipt.json')===1?1:0)")"
+          if [ "$seed_has_sidecar" = 1 ]; then
+            gh release download "$SEED_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'CORPUS-COVERAGE.json' --dir "$RUNNER_TEMP/corpus-seed-download"
+            gh release download "$SEED_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'coverage-receipt.json' --dir "$RUNNER_TEMP/corpus-seed-download"
+          fi
           node --input-type=module <<'NODE'
           import { readDiagnosticAccuracyReport } from './scripts/oracle/retrieval-accuracy.mjs';
           import { ABSOLUTE_FLOOR, loadFixture, readRecallReport } from './scripts/oracle/repo-recall.mjs';
+          import { verifyCoverageSidecar } from './scripts/corpus-coverage-sidecar.mjs';
           import fs from 'node:fs';
-          const bundle = `${process.env.RUNNER_TEMP}/corpus-seed-download/ruvnet-brain.zip`;
+          const dir = `${process.env.RUNNER_TEMP}/corpus-seed-download`;
+          const bundle = `${dir}/ruvnet-brain.zip`;
           const archive = { file: 'ruvnet-brain.zip', sha256: process.env.SEED_SHA256, bytes: fs.statSync(bundle).size };
           readDiagnosticAccuracyReport({ reportFile: `${bundle}.accuracy.json`, archive });
+          let coverageBytes = null;
+          if (fs.existsSync(`${dir}/coverage-receipt.json`)) {
+            coverageBytes = fs.readFileSync(`${dir}/CORPUS-COVERAGE.json`);
+            verifyCoverageSidecar({ sidecar: JSON.parse(fs.readFileSync(`${dir}/coverage-receipt.json`, 'utf8')), coverageBytes,
+              generationTag: process.env.SEED_TAG, archiveSha256: process.env.SEED_SHA256, archiveBytes: archive.bytes });
+          }
           // A SEED is graded against ABSOLUTE_FLOOR, not against today's committed floor. The ratchet
           // exists to gate what we are about to ACCEPT; re-judging an already-published seed by a
           // later, higher bar would strand the pipeline the first time the floor is raised — the last
           // good seed would stop being usable and there would be nothing to build the next
           // generation from. ABSOLUTE_FLOOR is a fixed minimum the report cannot talk its way under,
           // so this stays fail-closed without creating that trap.
+          const fixture = loadFixture();
           const { report } = readRecallReport({
             reportFile: `${bundle}.recall.json`,
             archive,
-            expectedFixtureSha256: loadFixture().fixtureSha256,
+            expectedFixtureSha256: fixture.fixtureSha256,
             floorValue: ABSOLUTE_FLOOR,
+            coverageBytes,
+            fixtureStores: fixture.questions.map((question) => question.store),
           });
           console.log(`seed repo-recall gate verified against the downloaded seed bytes: `
             + `${report.totals.repoCoverage}/${report.totals.questions} repositories answering, `
-            + `${report.totals.hitTop5}/${report.totals.questions} exact-file Hit@5`);
+            + `${report.totals.hitTop5}/${report.totals.questions} exact-file Hit@5`
+            + (report.totals.retired ? `, ${report.totals.retired} retired (verified against the seed's coverage)` : ''));
           NODE
+          # END seed-recall-verify
           fi
 
       - name: Reconcile exact upstream SHAs and seal a candidate
@@ -381,7 +405,8 @@ jobs:
             --bundle "$RUNNER_TEMP/corpus-candidate/ruvnet-brain.zip" \
             --receipt release-evidence/corpus-receipt.json \
             --accuracy-report "$RUNNER_TEMP/corpus-candidate/ruvnet-brain.zip.accuracy.json" \
-            --recall-report "$RUNNER_TEMP/corpus-candidate/ruvnet-brain.zip.recall.json"
+            --recall-report "$RUNNER_TEMP/corpus-candidate/ruvnet-brain.zip.recall.json" \
+            --coverage data/source-coverage.json
           artifact_name="corpus-seed-prepared-$EXPECTED_SHA"
           {
             echo "artifact_name=$artifact_name"

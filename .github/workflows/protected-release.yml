@@ -860,7 +860,8 @@ jobs:
           # passes every identity check above and dies here.
           node scripts/corpus-candidate.mjs --verify \
             --bundle "$staged/ruvnet-brain.zip" \
-            --receipt "$staged/corpus-receipt.json"
+            --receipt "$staged/corpus-receipt.json" \
+            --coverage "$staged/source-coverage.json"
           # RUNTIME BYTES. Independently re-resolve the pin for EXACTLY the release corpus-identity approved
           # (its signed aggregate re-verified on this runner, not handed over as a job output), require it
           # to name this candidate, then require the archive's executable surface to equal it byte for byte.
