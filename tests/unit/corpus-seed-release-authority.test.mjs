@@ -125,38 +125,47 @@ describe('protected corpus-seed release authority', () => {
   it.each([
     ['target differs from HEAD', (f) => { f.args = replaceArg(f.args, '--target', 'f'.repeat(40)); }],
     ['target is not a 40-hex SHA (format checked first)', (f) => { f.args = replaceArg(f.args, '--target', '--upload-pack=touch'); }],
-    ['GITHUB_SHA differs from HEAD', (f) => { f.env.GITHUB_SHA = 'f'.repeat(40); }],
     ['receipt source differs from target', (f) => { f.receipt.builderSourceSha = 'f'.repeat(40); writeReceipt(f); }],
+    ['GITHUB_SHA is not a commit at all', (f) => { f.env.GITHUB_SHA = '--upload-pack=touch'; }],
   ])('refuses when %s', async (_name, mutate) => {
     const f = await fixture();
     mutate(f);
     const result = run(f);
     expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/target.*HEAD.*GITHUB_SHA.*receipt/i);
+    expect(result.stderr).toMatch(/target must exactly equal HEAD and the corpus receipt builderSourceSha \(and GITHUB_SHA must be a commit\)/);
     expect(fs.existsSync(f.log)).toBe(false);
   });
 
-  // Independent review of ADR-0091 D3 (2026-09-28): target must EQUAL GITHUB_SHA. Accepting "GITHUB_SHA
-  // or an ancestor of it" let the unattended corpus job promote an OLDER runtime over the live release.
-  it('refuses when GITHUB_SHA is not a descendant of the target (target is off protected main\'s history)', async () => {
+  // DECOUPLED FROM main HEAD (2026-09-29 nightly redesign). The corpus is built at the approved
+  // runtime's source, which is on main's history but usually behind main HEAD. The rule is ANCESTRY
+  // of this run's GITHUB_SHA -- never equality with it (which stood the nightly down whenever main was
+  // ahead of the newest verified release). What the equality rule protected against (promoting an
+  // OLDER runtime over a newer live code release) is enforced for customer promotion by the
+  // publish-time re-resolve of --approved-tag (tests/unit/corpus-customer-promotion.test.mjs).
+  it.each([
+    ['an unknown commit', () => 'f'.repeat(40)],
+    ['an OLDER commit (the target is off, or ahead of, protected main\'s history)',
+      () => execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: ROOT, encoding: 'utf8' }).trim()],
+  ])('refuses when GITHUB_SHA is %s, before invoking gh', async (_name, sha) => {
     const f = await fixture();
-    f.env.GITHUB_SHA = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    f.env.GITHUB_SHA = sha();
     const result = run(f);
     expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/target.*HEAD.*GITHUB_SHA.*receipt/i);
+    expect(result.stderr).toMatch(/is not an ancestor of this run's GITHUB_SHA/);
     expect(fs.existsSync(f.log)).toBe(false);
   });
 
-  it('REFUSES when GITHUB_SHA is a newer main commit descending from the target (an ancestor is not enough)', async () => {
+  it('ACCEPTS a target that is an ancestor of a newer main GITHUB_SHA (the approved runtime behind main)', async () => {
     const f = await fixture();
     // A real commit whose parent is HEAD, created as a dangling object (no ref, no working-tree change).
     f.env.GITHUB_SHA = execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost',
       'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'fixture: a newer main commit'], { cwd: ROOT, encoding: 'utf8' }).trim();
     expect(f.env.GITHUB_SHA).not.toBe(HEAD);
     const result = run(f);
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
-    expect(result.stderr).toMatch(/target must exactly equal HEAD, GITHUB_SHA, and the corpus receipt builderSourceSha/);
-    expect(fs.existsSync(f.log)).toBe(false);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const calls = fs.readFileSync(f.log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.map((call) => `${call[0]} ${call[1]}`)).toEqual(['release view', 'release create']);
+    expect(calls[1][calls[1].indexOf('--target') + 1]).toBe(HEAD);
   });
 
   it('requires a full lowercase digest tag bound to the receipt and bundle bytes', async () => {
