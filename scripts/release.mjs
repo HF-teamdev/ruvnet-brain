@@ -117,6 +117,28 @@ function corpusFailure(message) {
   throw new Error(`[corpus-seed] ${message}`);
 }
 
+/**
+ * A newer code release was published after this corpus was built at its approved runtime. Promoting
+ * it now would put an OLDER runtime on releases/latest over a newer live code release (fresh installs
+ * then fail on a version mismatch). That is not a broken night -- the next night builds at the newer
+ * runtime -- so it is a distinct, typed outcome: exit CORPUS_SUPERSEDED_EXIT, recorded as `superseded`.
+ */
+export const CORPUS_SUPERSEDED_EXIT = 4;
+export class CorpusSuperseded extends Error {
+  constructor(message) {
+    super(`[corpus-seed] superseded: ${message}`);
+    this.name = 'CorpusSuperseded';
+    this.code = 'CORPUS_SUPERSEDED';
+  }
+}
+
+const CODE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
+const compareCodeTags = (left, right) => {
+  const a = CODE_TAG.exec(left).slice(1).map(Number);
+  const b = CODE_TAG.exec(right).slice(1).map(Number);
+  return Math.sign(a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+};
+
 export async function runProtectedCorpusSeed({
   argv = process.argv.slice(2),
   env = process.env,
@@ -169,14 +191,28 @@ export async function runProtectedCorpusSeed({
   } catch (error) {
     corpusFailure(`corpus receipt is unreadable/corrupt (${error.message})`);
   }
-  // EXACT equality, never "GITHUB_SHA or an ancestor of it" (independent review of ADR-0091 D3,
-  // 2026-09-28). Accepting an ancestor let the unattended corpus job promote an OLDER runtime over the
-  // current live code release as `releases/latest` — fresh installs then fail on a version mismatch
-  // and already-updated clients refuse it as incompatible. The corpus is built at the newest
-  // install-verified release's sourceSha, and that must BE the protected main commit this run executes.
-  // The format check runs first; the comparisons below never hand the value to a subprocess.
-  if (!isHex(target, 40) || target !== head || target !== env.GITHUB_SHA || target !== receipt.builderSourceSha) {
-    corpusFailure('target must exactly equal HEAD, GITHUB_SHA, and the corpus receipt builderSourceSha');
+  // DECOUPLED FROM main HEAD (2026-09-29 nightly redesign). The corpus is built at the APPROVED
+  // runtime -- the newest code release with a verified install aggregate -- whose source is on main's
+  // history but is usually NOT main HEAD. The old rule (target === GITHUB_SHA) stood the nightly down
+  // whenever main was ahead of the newest verified release. The guard that rule was protecting
+  // (independent review of ADR-0091 D3: never promote an OLDER runtime over the live code release)
+  // is now enforced directly: target must be the checkout, the receipt's builder, an ancestor of this
+  // protected run's GITHUB_SHA, and -- for a customer promotion -- the commit of --approved-tag, which
+  // must still be the NEWEST code release at publish time (below; otherwise CorpusSuperseded).
+  // Format checks run first; no value reaches a subprocess unvalidated.
+  if (!isHex(target, 40) || target !== head || target !== receipt.builderSourceSha || !isHex(env.GITHUB_SHA, 40)) {
+    corpusFailure('target must exactly equal HEAD and the corpus receipt builderSourceSha (and GITHUB_SHA must be a commit)');
+  }
+  const ancestry = run('git', ['merge-base', '--is-ancestor', target, env.GITHUB_SHA], {
+    cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (ancestry.error || ancestry.status !== 0) corpusFailure(`target ${target} is not an ancestor of this run's GITHUB_SHA ${env.GITHUB_SHA}`);
+  const approvedTag = cliArg(argv, '--approved-tag');
+  if (promoteLatest) {
+    if (!CODE_TAG.test(String(approvedTag || ''))) corpusFailure('customer promotion requires --approved-tag vX.Y.Z (the approved runtime this corpus was built at)');
+    if (receipt.archiveManifestReleaseTag !== approvedTag) {
+      corpusFailure(`the archive ships runtime ${receipt.archiveManifestReleaseTag}, not the approved runtime ${approvedTag}`);
+    }
   }
 
   // Schema 3 (ADR-086 Step 15 / A6): the receipt binds the full provenance closure shipped INSIDE
@@ -344,16 +380,48 @@ export async function runProtectedCorpusSeed({
     if (!Number.isFinite(Date.parse(generation))) corpusFailure('corpus receipt createdAt is not a readable generation timestamp');
   }
 
-  const viewArgs = ['release', 'view', tag, '--json', 'tagName', '--repo', repo];
   const ghCommand = env.RUVNET_GH_COMMAND || 'gh';
   const ghPrefix = env.RUVNET_GH_SCRIPT ? [env.RUVNET_GH_SCRIPT] : [];
-  const view = run(ghCommand, [...ghPrefix, ...viewArgs], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const gh = (args) => run(ghCommand, [...ghPrefix, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const ghJson = (args, label) => {
+    const result = gh(args);
+    if (result.error || result.status !== 0) {
+      corpusFailure(`cannot read ${label} (${String(result.error?.message || result.stderr || result.stdout || '').trim() || `gh exited ${result.status}`})`);
+    }
+    try { return JSON.parse(String(result.stdout || 'null')); }
+    catch (error) { corpusFailure(`cannot parse ${label} (${error.message})`); }
+  };
+
+  if (promoteLatest) {
+    // PUBLISH-TIME RE-RESOLVE, before anything is written. Preparation takes hours; a code release
+    // may have been published meanwhile. The newest code release is selected exactly as
+    // scripts/approved-runtime.mjs selects it (non-draft, non-prerelease vX.Y.Z, highest version).
+    // Its signed install aggregate was re-verified for --approved-tag by the workflow step that built
+    // the runtime pin moments ago; what can change after that is only WHICH release is newest.
+    const listed = ghJson(['release', 'list', '--repo', repo, '--limit', '200', '--json', 'tagName,isDraft,isPrerelease'], 'the code release list');
+    const [newest] = (Array.isArray(listed) ? listed : [])
+      .filter((row) => !row?.isDraft && !row?.isPrerelease && CODE_TAG.test(String(row?.tagName || '')))
+      .map((row) => row.tagName).sort((a, b) => compareCodeTags(b, a));
+    if (!newest) corpusFailure(`no published code release is listed on ${repo}; the approved runtime ${approvedTag} cannot be confirmed`);
+    const order = compareCodeTags(newest, approvedTag);
+    if (order > 0) {
+      throw new CorpusSuperseded(`code release ${newest} was published after this corpus was built at ${approvedTag}; `
+        + 'promoting it would put an older runtime over the live code release. The next night builds at the newer runtime.');
+    }
+    if (order < 0) corpusFailure(`approved runtime ${approvedTag} is newer than every published code release (newest ${newest})`);
+    const commit = ghJson(['api', `repos/${repo}/commits/${approvedTag}`], `the commit of ${approvedTag}`);
+    if (String(commit?.sha || '').toLowerCase() !== target) {
+      corpusFailure(`target ${target} is not the source of the approved runtime ${approvedTag} (${commit?.sha || 'unknown'})`);
+    }
+  }
+
+  const viewArgs = ['release', 'view', tag, '--json', 'tagName', '--repo', repo];
+  const view = gh(viewArgs);
   if (!view.error && view.status === 0) corpusFailure(`release ${tag} already exists; refusing to overwrite immutable corpus seed`);
   const viewError = String(view.error?.message || view.stderr || view.stdout || '');
   if (!/(release not found|no release found)/i.test(viewError)) corpusFailure(`cannot prove ${tag} is absent (${viewError.trim() || `gh exited ${view.status}`})`);
 
   const receiptSha256 = sha256File(receiptFile);
-  const gh = (args) => run(ghCommand, [...ghPrefix, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
   if (!promoteLatest) {
     // BOOTSTRAP/RECOVERY seeds stay exactly as ADR-086's original contract left them: an immutable
@@ -464,13 +532,22 @@ export async function runProtectedCorpusSeed({
     corpusFailure(`corpus promotion to latest failed (${String(promote.error?.message || promote.stderr || promote.stdout || '').trim()})`);
   }
 
-  const finalView = gh(['release', 'view', tag, '--json', 'tagName,isDraft,isLatest,isPrerelease,assets', '--repo', repo]);
+  // `isLatest` is NOT a `gh release view` field (gh 2.101.0: "Unknown JSON field"; it exists only on
+  // `gh release list`), so asking for it made this confirmation fail against the real CLI every time.
+  // Latest-ness is read from the one authoritative endpoint instead: releases/latest must BE this tag.
+  // tests/unit/gh-json-fields.test.mjs checks every --json field list against the captured real CLI.
+  const finalView = gh(['release', 'view', tag, '--json', 'tagName,isDraft,isPrerelease,assets', '--repo', repo]);
   if (finalView.error || finalView.status !== 0) corpusFailure('cannot confirm the promoted corpus release');
   let promoted;
   try { promoted = JSON.parse(String(finalView.stdout || 'null')); }
   catch (error) { corpusFailure(`cannot read the promoted corpus release (${error.message})`); }
+  const latestNow = gh(['api', `repos/${repo}/releases/latest`]);
+  let latestTag = null;
+  if (!latestNow.error && latestNow.status === 0) {
+    try { latestTag = JSON.parse(String(latestNow.stdout || 'null'))?.tag_name ?? null; } catch { latestTag = null; }
+  }
   const promotedAssets = (promoted?.assets || []).map((asset) => asset?.name).sort();
-  if (promoted?.tagName !== tag || promoted.isDraft !== false || promoted.isLatest !== true
+  if (promoted?.tagName !== tag || promoted.isDraft !== false || latestTag !== tag
     || promoted.isPrerelease !== false || JSON.stringify(promotedAssets) !== JSON.stringify(expectedAssets)) {
     corpusFailure('corpus release did not reach a complete, non-draft, non-prerelease latest state');
   }
@@ -487,7 +564,13 @@ if (CORPUS_SEED) {
     console.log(JSON.stringify({ ok: true, mode: 'corpus-seed', ...result }, null, 2));
   } catch (error) {
     console.error(error.message);
-    process.exitCode = 1;
+    if (error instanceof CorpusSuperseded) {
+      // Typed, not red: stdout carries the outcome the workflow records.
+      console.log(JSON.stringify({ ok: false, mode: 'corpus-seed', outcome: 'superseded', reason: error.message }));
+      process.exitCode = CORPUS_SUPERSEDED_EXIT;
+    } else {
+      process.exitCode = 1;
+    }
   }
 } else {
 
