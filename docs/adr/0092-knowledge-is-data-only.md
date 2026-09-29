@@ -3,6 +3,7 @@ id: ADR-092
 title: Knowledge is data only — build each store once, ship only what changed, never through a code release
 status: Proposed
 date: 2026-09-29
+updated: 2026-09-29
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [corpus, release, simplification, supersession]
 supersedes: []
@@ -10,6 +11,8 @@ amends: [ADR-085, ADR-086, ADR-091]
 ---
 
 # ADR-092 — Knowledge is data only
+
+**Status**: Proposed (2026-09-29)
 
 ## Owner requirement
 
