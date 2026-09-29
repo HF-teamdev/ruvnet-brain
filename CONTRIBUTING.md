@@ -141,7 +141,12 @@ Project-level hooks are empty. The installed plugin registers exactly the hooks 
 `plugin/scripts/hook-shim.mjs`: SessionStart restore; UserPromptSubmit grounding + advisories;
 PreToolUse `decision-gate` on file writes (the only hook that may refuse, for rUv-product code
 without a fresh `search_ruvnet`); PostToolUse grounding stamp; Stop continuation and grounding
-check; snapshot capture on Stop/PreCompact/SessionEnd. `npm run hooks:check` and
+check; snapshot capture on Stop/PreCompact/SessionEnd. The same snapshot capture records each
+turn's outcome at Stop (final assistant text, files changed, command descriptions — never user
+text) to AgentDB namespace `turns` — the project's `.swarm/memory.db` if it exists, otherwise
+`~/.claude/global-memory/.swarm/memory.db`; `.swarm` is never created in a repository — and at
+SessionEnd/PreCompact runs `ruflo memory distill run` on that db so the records become patterns.
+Writes run in a detached worker; `RUVNET_TURN_CAPTURE=off` disables it. `npm run hooks:check` and
 `npm run wired:check` fail on any hook or module that is registered-but-missing or present-but-unwired.
 
 ## Tests
