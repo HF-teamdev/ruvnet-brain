@@ -17,7 +17,10 @@
 import { eligibleRepositoryStanding } from '../plugin/scripts/coverage-integrity.mjs';
 
 const lower = (value) => String(value || '').toLowerCase();
-const ordered = (values) => [...new Set(values)].sort();
+// localeCompare, exactly as scripts/retrieval-canary.mjs orders and set-checks these lists. Default
+// code-unit sort disagrees on real store names ('chatgpt-…' vs 'chatgpt_…'), which the canary's
+// checkedSet rejects as 'eligible denominator set is invalid'.
+const ordered = (values) => [...new Set(values)].sort((a, b) => a.localeCompare(b));
 
 /** True only for a repository enumeration the coverage itself proves complete and terminal. */
 export function repositoryEnumerationComplete(coverage) {

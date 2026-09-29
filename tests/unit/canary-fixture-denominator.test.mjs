@@ -111,3 +111,49 @@ describe('canary denominator: fixture ⊆ available (ADR-0091 D6.4)', () => {
     expect(() => reseal((d) => { d.unfixturedEligibleCount = 5; })).toThrow(/fixture denominator is inconsistent/);
   });
 });
+
+// Real store names mix '-', '_' and '.', where code-unit order and localeCompare order disagree
+// (the committed 182-store fixture diverges at 'chatgpt-…' vs 'chatgpt_…'). The canary's checkedSet
+// demands localeCompare order, so the denominator must produce exactly that order. Preflight of
+// 4.3.36 failed with 'eligible denominator set is invalid' on the real fixture before this was fixed.
+describe('canary denominator: ordering matches the canary set check on punctuated store names', () => {
+  const PUNCTUATED = ['chatgpt-dev-mode', 'chatgpt_plugin_python', 'ruv.io', 'ruv-dev', 'ai-code-generator-', 'aido'];
+  const localeOrdered = (values) => [...values].sort((a, b) => a.localeCompare(b));
+  it('orders every denominator list the way the canary validator requires', () => {
+    expect([...PUNCTUATED].sort()).not.toEqual(localeOrdered(PUNCTUATED)); // the case is genuinely discriminating
+    const coverage = coverageOf([...PUNCTUATED.map((store) => row(store)), row('zeta_new'), row('zeta-new2')]);
+    const denominator = fixtureDenominator({ coverage, fixtureStores: PUNCTUATED });
+    expect(denominator.fixture).toEqual(localeOrdered(PUNCTUATED));
+    expect(denominator.questioned).toEqual(localeOrdered(PUNCTUATED));
+    expect(denominator.unfixturedEligible).toEqual(localeOrdered(['zeta_new', 'zeta-new2']));
+    const retiring = coverageOf(PUNCTUATED.filter((store) => !store.startsWith('chatgpt')).map((store) => row(store)));
+    expect(retiredFixtureStores({ coverage: retiring, fixtureStores: PUNCTUATED }))
+      .toEqual(localeOrdered(['chatgpt-dev-mode', 'chatgpt_plugin_python']));
+  });
+
+  it('seals and re-validates a canary plan over a punctuated fixture', () => {
+    const evidence = sealRetrievalQueryEvidence({
+      schemaVersion: 2, kind: 'ruvnet-brain-retrieval-query-evidence', sourceCommit: 'd'.repeat(40),
+      sourcePath: 'data/retrieval-query-evidence.json', queryStoreSetSha256: digest(localeOrdered(PUNCTUATED)),
+      queries: Object.fromEntries(PUNCTUATED.map((store) => {
+        const value = { query: `independently authored behavior question for ${store} runtime boundary`,
+          expected: { path: passagesFor(store)[0].path, passageSha256: digest(passagesFor(store)[0]) } };
+        return [store, { ...value, recordSha256: digest({ store, ...value }) }];
+      })),
+    });
+    const coverage = coverageOf(PUNCTUATED.map((store) => row(store)));
+    const coverageIdentity = { sha256: digest(coverage), bytes: Buffer.byteLength(JSON.stringify(coverage)) };
+    const baselineStores = PUNCTUATED.slice(0, 4);
+    const plan = buildRetrievalCanaryPlan({
+      coverage, coverageIdentity, queryEvidence: evidence, readPassages: (_dir, store) => passagesFor(store), allowNoDelta: true,
+      baseline: { schemaVersion: 1, kind: 'ruvnet-brain-verified-public-baseline', tag: getVersionTag(),
+        archiveSha256: '1'.repeat(64), archiveBytes: 1234, archiveManifestSha256: '2'.repeat(64),
+        verificationReceiptSha256: '3'.repeat(64), stores: baselineStores, storeCount: baselineStores.length },
+      candidate: { sourceSha: 'a'.repeat(40), packageSha256: 'b'.repeat(64), archiveSha256: '4'.repeat(64),
+        coverageSha256: coverageIdentity.sha256, publicLedgerSha256: '5'.repeat(64), publicLedgerBytes: 4321,
+        publicStoreCount: PUNCTUATED.length, publicInventoryPartitionSha256: '6'.repeat(64) },
+    });
+    expect(validateRetrievalCanaryPlan(plan)).toBeTruthy();
+    expect(validatePlanAgainstCoverage(plan, coverage)).toBe(plan);
+  });
+});
