@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createCorpusReceipt } from '../../scripts/corpus-candidate.mjs';
-import { fixtureReleaseRoot, sealedCorpusBundle, writeAccuracyReport } from '../helpers/corpus-seed-fixture.mjs';
+import { verifyCoverageSidecar } from '../../scripts/corpus-coverage-sidecar.mjs';
+import { fixtureReleaseRoot, sealedCorpusBundle, writeAccuracyReport, writeCoverageFor } from '../helpers/corpus-seed-fixture.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const HEAD = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
@@ -55,10 +56,13 @@ process.exit(0);
   });
   const digest = receipt.archive.sha256;
   const tag = `corpus-sha256-${digest}`;
+  const coverageFile = path.join(dir, 'source-coverage.json');
+  await writeCoverageFor(receipt, coverageFile);
   const args = [
     '--corpus-seed', '--corpus-tag', tag,
     '--corpus-bundle', bundle,
     '--corpus-receipt', receiptFile,
+    '--corpus-coverage', coverageFile,
     '--target', HEAD,
     '--repo', 'stuinfla/ruvnet-brain',
   ];
@@ -77,7 +81,7 @@ process.exit(0);
     RUVNET_GH_COMMAND: process.execPath,
     RUVNET_GH_SCRIPT: path.join(bin, 'gh-fixture.mjs'),
   };
-  return { dir, bundle, digest, receipt, receiptFile, tag, args, env, log, releaseRoot };
+  return { dir, bundle, digest, receipt, receiptFile, tag, args, env, log, releaseRoot, coverageFile };
 }
 
 function run(f, { args = f.args, env = f.env } = {}) {
@@ -246,8 +250,60 @@ describe('protected corpus-seed release authority', () => {
       '--title', `Immutable corpus seed ${f.digest.slice(0, 16)}`,
       '--notes', expect.stringContaining(`Archive SHA-256: ${f.digest}`),
       f.bundle, f.receiptFile, `${f.bundle}.accuracy.json`, `${f.bundle}.recall.json`,
+      // ADR-0091 D6.2: the generation's sealed coverage and its sidecar ride with every corpus release.
+      expect.stringMatching(/[\\/]CORPUS-COVERAGE\.json$/), expect.stringMatching(/[\\/]coverage-receipt\.json$/),
     ]);
     expect(calls[1]).not.toContain('--draft');
     expect(calls[1]).not.toContain('--clobber');
+  });
+});
+
+// ADR-0091 D6.2 (+ the D10 check D5 could not place in the publisher): the corpus publisher is the one
+// place that can SEE a generation's coverage, so it binds it, refuses a degraded one, and publishes it.
+describe('corpus generation coverage sidecar (ADR-0091 D6.2)', () => {
+  const ghCalls = (f) => (fs.existsSync(f.log) ? fs.readFileSync(f.log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []);
+
+  it('publishes CORPUS-COVERAGE.json (exact sealed bytes) and a coverage-receipt.json a later reader can verify', async () => {
+    const f = await fixture();
+    const result = run(f);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const create = ghCalls(f).find((args) => args[1] === 'create');
+    const coverageAsset = create.find((arg) => String(arg).endsWith('/CORPUS-COVERAGE.json'));
+    const receiptAsset = create.find((arg) => String(arg).endsWith('/coverage-receipt.json'));
+    expect(fs.readFileSync(coverageAsset)).toEqual(fs.readFileSync(f.coverageFile));
+    const sidecar = JSON.parse(fs.readFileSync(receiptAsset, 'utf8'));
+    expect(sidecar).toMatchObject({ schemaVersion: 1, kind: 'ruvnet-brain-corpus-coverage-receipt', generationTag: f.tag,
+      archiveSha256: f.digest, coverageFile: 'CORPUS-COVERAGE.json', degraded: { carried: [], missing: [] } });
+    // The shape D10's publisher-side check and D6's resolver read.
+    const verified = verifyCoverageSidecar({ sidecar, coverageBytes: fs.readFileSync(coverageAsset), generationTag: f.tag,
+      archiveSha256: f.digest, archiveBytes: f.receipt.archive.bytes });
+    expect(verified.degraded).toEqual({ carried: [], missing: [] });
+  });
+
+  it('REFUSES a degraded generation (a carried store) before any network call while D10 records no transition', async () => {
+    const f = await fixture();
+    await writeCoverageFor(f.receipt, f.coverageFile, { carried: true });
+    const result = run(f);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/degraded generation \(1 carried, 0 missing\) must not be published: no tolerant-validator transition/);
+    expect(ghCalls(f)).toEqual([]);
+  });
+
+  it('REFUSES coverage that was measured against other bytes than this archive, before any network call', async () => {
+    const f = await fixture();
+    await writeCoverageFor(f.receipt, f.coverageFile, { rvfSha256: '2'.repeat(64) });
+    const result = run(f);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/sealed coverage does not bind this archive .*different alpha RVF bytes/);
+    expect(ghCalls(f)).toEqual([]);
+  });
+
+  it('REFUSES to publish a generation without its coverage', async () => {
+    const f = await fixture();
+    const at = f.args.indexOf('--corpus-coverage');
+    const result = run(f, { args: [...f.args.slice(0, at), ...f.args.slice(at + 2)] });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/coverage must be an absolute regular file/);
+    expect(ghCalls(f)).toEqual([]);
   });
 });

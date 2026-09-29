@@ -66,6 +66,9 @@ const recallNotes = (receipt) => {
 };
 import { verifyBundle } from './verify-bundle.mjs';
 import { CORPUS_GENERATION_FIELD, evaluateCorpusPromotion } from './corpus-promotion.mjs';
+import { bindCoverageToReceipt, writeCoverageAssets } from './corpus-coverage-sidecar.mjs';
+import { degradedPublication } from './corpus-store-failure.mjs';
+import { assertNoNewerCorpusGeneration } from './code-release-corpus.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLISH = process.argv.includes('--publish');
@@ -135,13 +138,15 @@ export async function runProtectedCorpusSeed({
   const tag = cliArg(argv, '--corpus-tag');
   const bundleFile = cliArg(argv, '--corpus-bundle');
   const receiptFile = cliArg(argv, '--corpus-receipt');
+  // ADR-0091 D6.2: the generation's sealed coverage (the prepared artifact's source-coverage.json).
+  const coverageFile = cliArg(argv, '--corpus-coverage');
   const target = cliArg(argv, '--target');
   const repo = cliArg(argv, '--repo') || env.GITHUB_REPOSITORY;
   const digestMatch = String(tag || '').match(/^corpus-sha256-([a-f0-9]{64})$/);
   if (!digestMatch) corpusFailure('corpus tag must be corpus-sha256- followed by 64 lowercase hex characters');
   if (repo !== env.GITHUB_REPOSITORY || repo !== 'stuinfla/ruvnet-brain') corpusFailure('repository does not match the protected workflow');
 
-  for (const [label, file] of [['bundle', bundleFile], ['receipt', receiptFile]]) {
+  for (const [label, file] of [['bundle', bundleFile], ['receipt', receiptFile], ['coverage', coverageFile]]) {
     if (!file || !path.isAbsolute(file)) corpusFailure(`${label} must be an absolute regular file`);
     try {
       const stat = fs.lstatSync(file);
@@ -286,6 +291,33 @@ export async function runProtectedCorpusSeed({
     corpusFailure(`corpus receipt does not verify against the sealed archive (${error.message})`);
   }
 
+  // ADR-0091 D6.2 + D10. The archive carries no coverage and the schema-3 receipt binds none, so this
+  // is the one place the publisher can SEE whether the generation is degraded. The coverage must be
+  // the coverage of THIS archive (bound store by store to the receipt), it is published beside the
+  // archive as CORPUS-COVERAGE.json + coverage-receipt.json (no receipt schema bump), and a
+  // generation with any carried or missing store is refused while D10 has recorded no soaked
+  // tolerant-validator transition -- installed clients would reject it. Local, before any network.
+  let coverageAssets;
+  try {
+    coverageAssets = writeCoverageAssets({
+      dir: fs.mkdtempSync(path.join(os.tmpdir(), 'corpus-coverage-assets-')),
+      coverageFile, generationTag: tag, archiveSha256, archiveBytes: archiveIdentity.bytes,
+    });
+    const degraded = bindCoverageToReceipt({
+      coverage: JSON.parse(fs.readFileSync(coverageAssets.coverageFile, 'utf8')), receipt,
+    });
+    if (degraded.carried.length + degraded.missing.length > 0) {
+      const decision = degradedPublication();
+      if (!decision.allowed) {
+        corpusFailure(`degraded generation (${degraded.carried.length} carried, ${degraded.missing.length} missing) `
+          + `must not be published: ${decision.reason}`);
+      }
+    }
+  } catch (error) {
+    if (String(error.message).startsWith('[corpus-seed]')) throw error;
+    corpusFailure(`the generation's sealed coverage does not bind this archive (${error.message})`);
+  }
+
   // EVERY local proof happens before the first network call. `gh` must never be reached by a
   // candidate that is already known to be unpublishable — that is the same discipline the deep
   // verifyCorpusReceipt above follows, and a customer release with an unusable signature is exactly
@@ -344,6 +376,7 @@ export async function runProtectedCorpusSeed({
       '--title', `Immutable corpus seed ${archiveSha256.slice(0, 16)}`,
       '--notes', notes,
       bundleFile, receiptFile, accuracyReportFile, recallReportFile,
+      coverageAssets.coverageFile, coverageAssets.receiptFile,
     ];
     const create = gh(createArgs);
     if (create.error || create.status !== 0) {
@@ -395,7 +428,8 @@ export async function runProtectedCorpusSeed({
   // (or the next night's dispatcher) that downloads the archive must be able to reverify it against
   // the identity it was actually measured under — the blocking recall gate AND the C3 diagnostic it
   // scored 59.0% on, so nobody has to take either number on trust.
-  const assetFiles = [bundleFile, signatureFile, digestFile, receiptFile, accuracyReportFile, recallReportFile];
+  const assetFiles = [bundleFile, signatureFile, digestFile, receiptFile, accuracyReportFile, recallReportFile,
+    coverageAssets.coverageFile, coverageAssets.receiptFile];
   const create = gh([
     'release', 'create', tag,
     '--draft',
@@ -555,6 +589,22 @@ if (PUBLISH) {
       console.error(`\n${c.r('✗ GATE FAILED: signed release asset missing')} ${c.dim(asset)}`);
       process.exit(1);
     }
+  }
+  // ADR-0091 D6.6 — THE BACKWARD-MOVE RACE. Release QE sealed the corpus generation this bundle was
+  // built from; publication happens later, after owner approval. Clients always accept a code release
+  // and drop their corpusGeneration marker when they install one (kb/forge-update.mjs), so publishing
+  // a bundle built from generation G after G+1 already shipped rolls every user back one night.
+  // Re-resolve with the SAME resolver, before any asset upload, and refuse on any difference -- or on
+  // any answer that could not prove there is no newer generation.
+  try {
+    const guard = await assertNoNewerCorpusGeneration({
+      sealedFile: assets.corpusSeedPath, repo: 'stuinfla/ruvnet-brain', runtimeRoot: ROOT,
+    });
+    console.log(`  corpus seed still current at publish time: ${guard.origin} ${guard.tag}`);
+  } catch (error) {
+    console.error(`\n${c.r('✗ GATE FAILED: corpus generation moved after release QE')} ${c.dim(error.message)}`);
+    console.error(`${c.r('  NOT shipped. Re-run release QE so this release is built from the newest generation.')}\n`);
+    process.exit(1);
   }
   const bundleSha256 = fs.readFileSync(assets.bundleDigestPath, 'utf8').trim().split(/\s+/)[0];
   if (!/^[a-f0-9]{64}$/i.test(bundleSha256)) {

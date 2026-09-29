@@ -846,6 +846,7 @@ jobs:
           test -s "$staged/ruvnet-brain.zip"
           test -s "$staged/corpus-receipt.json"
           test -s "$staged/corpus-preparation.identity"
+          test -s "$staged/source-coverage.json"
           archive_sha256="$(sha256sum "$staged/ruvnet-brain.zip" | cut -d' ' -f1)"
           receipt_sha256="$(sha256sum "$staged/corpus-receipt.json" | cut -d' ' -f1)"
           test "$archive_sha256" = "$EXPECTED_ARCHIVE_SHA256"
@@ -853,6 +854,8 @@ jobs:
           grep -Fxq "candidate_sha=$CANDIDATE_SHA" "$staged/corpus-preparation.identity"
           grep -Fxq "archive_sha256=$archive_sha256" "$staged/corpus-preparation.identity"
           grep -Fxq "receipt_sha256=$receipt_sha256" "$staged/corpus-preparation.identity"
+          # ADR-0091 D6.2: the sealed coverage preparation staged beside the archive is published with it
+          # (CORPUS-COVERAGE.json + coverage-receipt.json); release.mjs binds it to this receipt first.
           # Re-derive the whole candidate from the archive's own bytes. A forged per-store digest
           # passes every identity check above and dies here.
           node scripts/corpus-candidate.mjs --verify \
@@ -911,6 +914,7 @@ jobs:
             --corpus-tag "corpus-sha256-$EXPECTED_ARCHIVE_SHA256" \
             --corpus-bundle "$staged/ruvnet-brain.zip" \
             --corpus-receipt "$staged/corpus-receipt.json" \
+            --corpus-coverage "$staged/source-coverage.json" \
             --target "$CANDIDATE_SHA" \
             --repo "$GITHUB_REPOSITORY"
           test -z "$(git status --porcelain)"

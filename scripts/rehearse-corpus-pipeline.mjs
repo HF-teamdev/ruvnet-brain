@@ -44,7 +44,8 @@
 // Usage:
 //   node scripts/rehearse-corpus-pipeline.mjs [--repos 2] [--gists 3] [--generations 2]
 //        [--accuracy-sample <n>|full] [--receipt <file>] [--seed <local ruvnet-brain.zip>] [--keep] [--tamper <mode>]
-//        [--no-seed-selection] [--no-code-release-between] [--inject-store-failure transient|qa] [--inject-generation <n>]
+//        [--no-seed-selection] [--no-code-release-between] [--no-code-release-consumption]
+//        [--inject-store-failure transient|qa] [--inject-generation <n>]
 //
 // ADR-0091 D4 (V4): from generation 2 on, the seed is chosen by the REAL scripts/corpus-next-seed.mjs
 // resolver from a local registry holding generation N (exactly the files release.mjs tried to upload)
@@ -894,8 +895,13 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
     GH_TOKEN: 'rehearsal-invalid-token-do-not-use',
     GITHUB_TOKEN: 'rehearsal-invalid-token-do-not-use',
   };
+  // ADR-0091 D6.2: the sealed coverage travels to the publisher the way corpus-seed.yml stages it
+  // (a copy of <checkout>/data/source-coverage.json beside the archive), and is published with it.
+  const stagedCoverage = path.join(path.dirname(bundleFile), 'source-coverage.json');
+  fs.copyFileSync(path.join(checkoutRoot, 'data', 'source-coverage.json'), stagedCoverage);
   const publish = run(process.execPath, [path.join(checkoutRoot, 'scripts', 'release.mjs'), '--corpus-seed',
     '--corpus-tag', corpusTag, '--corpus-bundle', bundleFile, '--corpus-receipt', candidate.receiptFile,
+    '--corpus-coverage', stagedCoverage,
     '--target', bounds.builderSha, '--repo', 'stuinfla/ruvnet-brain'], { cwd: checkoutRoot, env: publishEnv });
   const recordedNow = recorder.recorded().filter((row) => row.classification === 'publication-mutation');
   generation.publication = {
@@ -954,7 +960,8 @@ async function runGeneration({ index, api, checkoutRoot, workRoot, seed, bounds,
 function publishLocally({ selectionMod, registryDir, published, workRoot, index }) {
   const files = selectionMod.uploadedFilesOf(published.createArgs);
   const names = files.map((file) => path.basename(file)).sort();
-  const expectedNames = ['corpus-receipt.json', 'ruvnet-brain.zip', 'ruvnet-brain.zip.accuracy.json', 'ruvnet-brain.zip.recall.json'];
+  const expectedNames = ['CORPUS-COVERAGE.json', 'corpus-receipt.json', 'coverage-receipt.json', 'ruvnet-brain.zip',
+    'ruvnet-brain.zip.accuracy.json', 'ruvnet-brain.zip.recall.json'];
   if (JSON.stringify(names) !== JSON.stringify(expectedNames)) {
     fail(`release.mjs's recorded upload for generation ${index} is [${names.join(', ')}], expected [${expectedNames.join(', ')}]`);
   }
@@ -1037,6 +1044,106 @@ async function selectPublishedSeed({ index, api, selectionMod, checkoutRoot, wor
 }
 
 // ---------------------------------------------------------------------------------------------
+// ADR-0091 D6 (V6a/V6c): a CODE RELEASE consumes the published generation
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * What ci.yml's release-qe does after D6, against the local registry: resolve in code-release mode
+ * (the real resolver, --require-coverage: decoys without a coverage sidecar are skipped), download the
+ * generation plus its sidecar, and assemble through the REAL orchestrator on the single-pass path --
+ * a real build-bundle run with the generation's sealed coverage and seed identity, which had never
+ * been exercised against a generation before. V6a: the generation directory is byte-unchanged and the
+ * archive's store bytes equal the generation's. D6.4: the frozen fixture is judged against the live
+ * eligible set by the shared denominator.
+ */
+async function rehearseCodeRelease({ index, api, selectionMod, checkoutRoot, workRoot, registryDir, repoSlug, expected, receipt, phase, log }) {
+  const name = `code-release-from-generation-${index}`;
+  const gh = selectionMod.registryGh(registryDir);
+  const selection = await api.resolveNextCorpusSeed({ repo: repoSlug, root: checkoutRoot, run: gh.run, runtimeRoot: checkoutRoot,
+    requireCoverage: true });
+  const record = { generation: index, selected: { origin: selection.seed.origin, tag: selection.seed.tag },
+    rejected: selection.rejected, archiveDownloadAttempts: gh.archiveDownloadAttempts().length };
+  receipt.codeReleaseConsumption = [...(receipt.codeReleaseConsumption || []), record];
+  if (selection.seed.origin !== 'published-generation' || selection.seed.tag !== expected.tag || !selection.seed.coverage) {
+    phase(name, 'FAIL', { reason: `code-release resolution chose ${selection.seed.origin} ${selection.seed.tag}, expected ${expected.tag} with its coverage` });
+    fail(`${name}: the code-release resolver did not choose the published generation`);
+  }
+  const dir = path.join(workRoot, `code-release-gen${index}`);
+  const evidence = path.join(dir, 'release-evidence');
+  const extracted = path.join(dir, 'extracted');
+  fs.mkdirSync(evidence, { recursive: true });
+  for (const asset of ['ruvnet-brain.zip', 'CORPUS-COVERAGE.json', 'coverage-receipt.json']) {
+    fs.copyFileSync(path.join(registryDir, selection.seed.tag, 'assets', asset), path.join(dir, asset), fs.constants.COPYFILE_FICLONE);
+  }
+  const zip = path.join(dir, 'ruvnet-brain.zip');
+  if (sha256File(zip) !== selection.seed.sha256) fail(`${name}: downloaded generation does not match its descriptor`);
+  await api.extractZip(zip, extracted);
+  const descriptorFile = path.join(evidence, 'corpus-seed.json');
+  fs.writeFileSync(descriptorFile, `${JSON.stringify(selection.seed, null, 2)}\n`);
+  const outputs = [];
+  const capture = (command, args, options = {}) => {
+    const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...options });
+    outputs.push({ script: path.basename(String(args?.[0] || command)), exit: result.status,
+      tail: result.status === 0 ? undefined : String(result.stderr || result.stdout || '').trim().slice(-800) });
+    return result;
+  };
+  const started = Date.now();
+  let assembled;
+  try {
+    assembled = api.assembleCodeReleaseCorpus({ root: checkoutRoot, descriptor: selection.seed, seedBundle: zip, assetsDir: extracted,
+      evidenceDir: evidence, coverageFile: path.join(dir, 'CORPUS-COVERAGE.json'),
+      coverageReceiptFile: path.join(dir, 'coverage-receipt.json'), run: capture, env: { ...process.env } });
+  } catch (error) {
+    record.steps = outputs;
+    phase(name, 'FAIL', { reason: error.message, steps: outputs });
+    throw error;
+  }
+  record.assembly = { mode: assembled.mode, durationMs: Date.now() - started, steps: outputs, unmutated: assembled.unmutated,
+    seedTree: assembled.seedTree };
+  const releaseCoverage = JSON.parse(fs.readFileSync(path.join(checkoutRoot, 'dist', 'ruvnet-brain', 'COVERAGE.json'), 'utf8'));
+  const fixture = JSON.parse(fs.readFileSync(path.join(checkoutRoot, 'data', 'retrieval-query-evidence.json'), 'utf8'));
+  const denominator = api.fixtureDenominator({ coverage: releaseCoverage, fixtureStores: Object.keys(fixture.queries) });
+  record.canaryDenominator = { fixture: denominator.fixture.length, questioned: denominator.questioned.length,
+    retired: denominator.retired, blocking: denominator.blocking, unfixturedEligible: denominator.unfixturedEligible.length,
+    corpusSeed: releaseCoverage.corpusSeed };
+  if (assembled.mode !== 'single-pass' || denominator.blocking.length || releaseCoverage.corpusSeed?.tag !== selection.seed.tag) {
+    phase(name, 'FAIL', { reason: `mode=${assembled.mode}, blocking=${JSON.stringify(denominator.blocking)}, coverage seed=${releaseCoverage.corpusSeed?.tag}` });
+    fail(`${name}: the code release did not assemble single-pass from the generation with an admissible canary denominator`);
+  }
+  const guard = api.checkNoNewerCorpusGeneration({ sealed: selection.seed,
+    resolution: await api.resolveNextCorpusSeed({ repo: repoSlug, root: checkoutRoot, run: selectionMod.registryGh(registryDir).run,
+      runtimeRoot: checkoutRoot, requireCoverage: true }) });
+  record.publishGuardBeforeNextGeneration = guard;
+  phase(name, 'PASS', { mode: assembled.mode, durationMs: record.assembly.durationMs, unmutated: assembled.unmutated,
+    canary: `${denominator.questioned.length}/${denominator.fixture.length} fixture stores questioned, ${denominator.retired.length} retired, `
+      + `${denominator.unfixturedEligible.length} unfixtured eligible recorded`,
+    reason: `release built single-pass from ${selection.seed.tag.slice(0, 26)}...: ${assembled.unmutated.files} store files byte-equal to the generation, `
+      + 'generation directory unchanged, no capability-only refresh or index repair; the publish guard passes while no newer generation exists' });
+  log(`[${name}] single-pass code release assembled in ${record.assembly.durationMs} ms`);
+  return { sealed: selection.seed, record };
+}
+
+/** V6c: once generation N+1 is published, a release QE'd from generation N must be refused at publish. */
+async function rehearsePublishGuard({ sealed, index, api, selectionMod, checkoutRoot, registryDir, repoSlug, record, phase }) {
+  const name = `publish-guard-after-generation-${index}`;
+  const resolution = await api.resolveNextCorpusSeed({ repo: repoSlug, root: checkoutRoot, run: selectionMod.registryGh(registryDir).run,
+    runtimeRoot: checkoutRoot, requireCoverage: true });
+  try {
+    api.checkNoNewerCorpusGeneration({ sealed, resolution });
+  } catch (error) {
+    record.publishGuardAfterNextGeneration = { refused: true, reason: error.message, newest: resolution.seed.tag };
+    if (!/re-run release QE/.test(error.message)) {
+      phase(name, 'FAIL', { reason: `refused for the wrong reason: ${error.message}` });
+      fail(`${name}: the guard refused for the wrong reason`);
+    }
+    phase(name, 'PASS', { reason: `publication of the release QE'd from ${sealed.tag.slice(0, 26)}... was REFUSED: ${error.message}` });
+    return;
+  }
+  phase(name, 'FAIL', { reason: `generation ${index} was published after QE, yet the publish guard allowed the older release` });
+  fail(`${name}: the backward-move guard did not refuse`);
+}
+
+// ---------------------------------------------------------------------------------------------
 // The rehearsal
 // ---------------------------------------------------------------------------------------------
 
@@ -1059,6 +1166,9 @@ export async function rehearseCorpusPipeline({
   // so the chosen seed was built under an OLDER runtime than the one consuming it.
   seedSelection = true,
   codeReleaseBetween = true,
+  // ADR-0091 D6: after generation N is published locally, a code release consumes it (single-pass,
+  // real build) and, once generation N+1 is published, the publish-time guard must refuse that release.
+  codeReleaseConsumption = true,
   // null = the checkout's own C3_DIAGNOSTIC_SAMPLE_QUESTIONS (what CI runs); 'full' = no sample.
   accuracySample = null,
   keep = false,
@@ -1079,7 +1189,7 @@ export async function rehearseCorpusPipeline({
     startedAt,
     host: { node: process.version, platform: `${process.platform}/${process.arch}` },
     bounds: { repos, gists, generations, maxRounds, owner, forceRebuild, tamper, tamperGeneration, accuracySample,
-      seedSelection, codeReleaseBetween, injectStoreFailure, injectGeneration },
+      seedSelection, codeReleaseBetween, codeReleaseConsumption, injectStoreFailure, injectGeneration },
     phases: [],
     generations: [],
     seedSelection: [],
@@ -1160,6 +1270,8 @@ export async function rehearseCorpusPipeline({
       load('scripts/corpus-next-seed.mjs'), load('scripts/approved-runtime.mjs'), load('scripts/oracle/repo-recall.mjs'),
       load('scripts/rehearse-seed-selection.mjs'), load('scripts/corpus-store-failure.mjs'),
     ]);
+    const [codeReleaseMod, denominatorMod] = await Promise.all([
+      load('scripts/code-release-corpus.mjs'), load('scripts/fixture-denominator.mjs')]);
     // The same C3 question sample CI runs (ADR-0091 D2), unless the caller asked for the full audit.
     const accuracyQuestions = accuracySample === 'full' ? null
       : accuracySample == null ? accuracyMod.C3_DIAGNOSTIC_SAMPLE_QUESTIONS : Number(accuracySample);
@@ -1192,6 +1304,9 @@ export async function rehearseCorpusPipeline({
       readRecallReport: recallMod.readRecallReport,
       loadFixture: recallMod.loadFixture,
       readDiagnosticAccuracyReport: accuracyMod.readDiagnosticAccuracyReport,
+      assembleCodeReleaseCorpus: codeReleaseMod.assembleCodeReleaseCorpus,
+      checkNoNewerCorpusGeneration: codeReleaseMod.checkNoNewerCorpusGeneration,
+      fixtureDenominator: denominatorMod.fixtureDenominator,
     };
     for (const [name, value] of Object.entries(api)) {
       if (typeof value !== 'function') fail(`the disposable checkout does not export ${name}`);
@@ -1228,6 +1343,7 @@ export async function rehearseCorpusPipeline({
     const registryDir = path.join(workRoot, 'release-registry');
     fs.mkdirSync(registryDir, { recursive: true });
     let lastPublished = null;
+    let codeRelease = null;
     for (let index = 1; index <= generations; index += 1) {
       if (index > 1 && codeReleaseBetween) {
         const release = selectionMod.simulateCodeRelease({ checkoutRoot });
@@ -1289,8 +1405,17 @@ export async function rehearseCorpusPipeline({
         }
         break;
       }
-      if (seedSelection && index < generations) {
+      const consumeNow = seedSelection && codeReleaseConsumption && !codeRelease;
+      if (seedSelection && (index < generations || codeRelease)) {
         lastPublished = publishLocally({ selectionMod, registryDir, published: result.published, workRoot, index });
+      }
+      if (codeRelease) {
+        await rehearsePublishGuard({ sealed: codeRelease.sealed, index, api, selectionMod, checkoutRoot, registryDir, repoSlug,
+          record: codeRelease.record, phase });
+        codeRelease = null;
+      } else if (consumeNow && index < generations) {
+        codeRelease = await rehearseCodeRelease({ index, api, selectionMod, checkoutRoot, workRoot, registryDir, repoSlug,
+          expected: lastPublished, receipt, phase, log });
       }
       seed = result.nextSeed;
     }
@@ -1384,6 +1509,7 @@ export async function main(argv = process.argv.slice(2)) {
     seedOverride: arg(argv, '--seed', null),
     seedSelection: !argv.includes('--no-seed-selection'),
     codeReleaseBetween: !argv.includes('--no-code-release-between'),
+    codeReleaseConsumption: !argv.includes('--no-code-release-consumption'),
     accuracySample: arg(argv, '--accuracy-sample', null),
     keep: argv.includes('--keep'),
     workRootParent: arg(argv, '--work-root', null),

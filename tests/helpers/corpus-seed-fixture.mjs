@@ -338,3 +338,38 @@ export function fixtureReleaseRoot(root, { oracleBody = null } = {}) {
     generatorSha256: sha256(path.join(repoRoot, 'scripts/oracle/retrieval-accuracy.mjs')),
   };
 }
+
+/**
+ * ADR-0091 D6.2: the generation's sealed coverage, bound store by store to `receipt` (the fixture's
+ * one repository store, alpha). `carried: true` records alpha as STALE + carry -- a degraded
+ * generation the publisher must refuse while ADR-0091 D10 records no soaked validator transition.
+ */
+export async function writeCoverageFor(receipt, file, { carried = false, rvfSha256 = null } = {}) {
+  const { coverageGenerationFor, digest } = await import('../../scripts/coverage-integrity.mjs');
+  const alpha = receipt.stores.find((store) => store.name === 'alpha');
+  const rvf = alpha.files.find((entry) => entry.file === 'alpha.big.rvf');
+  const missed = 'e'.repeat(40);
+  const row = {
+    key: 'repo:1', kind: 'repository', name: 'alpha', url: 'https://github.com/ruvnet/alpha',
+    disposition: 'eligible', reasons: [],
+    upstream: { sha: carried ? missed : alpha.sourceCommit, committedAt: '2026-08-21T00:00:00Z' },
+    artifact: { store: 'alpha', sourceCommit: alpha.sourceCommit, rvfSha256: rvfSha256 || rvf.sha256,
+      bytesVerified: true, passagesPresent: true },
+    status: carried ? 'STALE' : 'CURRENT',
+    ...(carried ? { carry: { reason: 'qa: forge-refresh failed', carriedSourceCommit: alpha.sourceCommit,
+      missedUpstream: missed, attempts: 1, carriedCommittedAt: null } } : {}),
+  };
+  const enumerationReceipt = { schemaVersion: 1, owner: 'ruvnet', observedAt: '2026-08-22T00:00:00Z',
+    requestParameters: {}, repositories: { expected: 1, pages: [] }, gists: { expected: 0, pages: [] },
+    duplicateKeys: 0, terminal: true };
+  const base = { schemaVersion: 1, kind: 'ruvnet-brain-corpus-coverage', owner: 'ruvnet',
+    observedAt: '2026-08-22T00:00:00Z', generatorSourceSha: digest('generator'),
+    sourceObservationSha256: digest('observation'), snapshotRoot: digest('snapshot'),
+    policy: { policyDispositionDigests: [], exemptionDigests: [] }, enumerationReceipt, rows: [row],
+    totals: { repositories: 1, gists: 0, rows: 1, byStatus: { [row.status]: 1 } } };
+  const coverage = { ...base, coverageGeneration: coverageGenerationFor({ generatorSourceSha: base.generatorSourceSha,
+    snapshotRoot: base.snapshotRoot, sourceObservationSha256: base.sourceObservationSha256, rows: [row],
+    enumerationReceipt, policyDispositionDigests: [], exemptionDigests: [] }) };
+  fs.writeFileSync(file, `${JSON.stringify(coverage, null, 2)}\n`);
+  return coverage;
+}
