@@ -2750,10 +2750,12 @@ async function doctor() {
     ok(`nightly scheduler: ${nightlyHealth.evidence}`);
     if (nightlyHealth.runHealth?.state === 'ok' || nightlyHealth.runHealth?.state === 'running') {
       ok(`nightly execution: ${nightlyHealth.runHealth.evidence}`);
+    } else if (nightlyHealth.runHealth?.state === 'failed') {
+      warn(`nightly refresh FAILED — the brain is not updating: ${nightlyHealth.runHealth.evidence}`);
     } else warn(`nightly execution unproven: ${nightlyHealth.runHealth?.evidence || 'no run receipt'}`);
   }
   else if (nightlyHealth.state === 'degraded') warn(`nightly scheduler degraded: ${nightlyHealth.evidence}`);
-  else if (nightlyHealth.state === 'off') info('nightly scheduler is off (optional; enable with --enable-nightly)');
+  else if (nightlyHealth.state === 'off') warn('nightly scheduler is OFF — knowledge updates only when a session starts (SessionStart retries at most every 6h); for nightly updates run  npx ruvnet-brain --enable-nightly  (skip if agentic-kit manages this machine)');
   else info(`nightly scheduler status unavailable: ${nightlyHealth.evidence}`);
   have('node') ? ok('node present') : warn('node missing');
   have('npm') ? ok('npm present') : warn('npm missing');

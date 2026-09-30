@@ -10,7 +10,7 @@
 // worded for the user — never gated behind the maintainer entitlement file.
 import fs from 'node:fs';
 import path from 'node:path';
-import { json, exists, mtimeMs } from './session-start-fsutil.mjs';
+import { json, exists, mtimeMs, read } from './session-start-fsutil.mjs';
 import {
   describeFailedRefreshRun, readNightlyRegistration, refreshHistory, updateOwnedByAgenticKit,
 } from './nightly-scheduler.mjs';
@@ -63,21 +63,62 @@ export const health = (home, off) => {
  * inside 48h; anything unreadable stays UNKNOWN in the words, never "current".
  */
 export const KNOWLEDGE_LINE_PREFIX = '[RuvNet Brain — KNOWLEDGE ';
-export const knowledgeCurrency = ({ env = process.env, home, now = Date.now(), windowHours = 48 } = {}) => {
+
+// The SessionStart knowledge auto-update's own per-machine state (session-start-update-plane.mjs
+// writes it, host-update.mjs --knowledge records the outcome). Deliberately NOT inside refresh-runs/:
+// kb/lifecycle-evidence-retention.mjs scanRefresh() marks any non-receipt entry there "unsafe" and
+// then refuses to prune, so a sidecar file would silently stop receipt retention.
+export const autoUpdatePaths = (brainHome) => ({
+  attemptFile: path.join(brainHome, 'auto-update.json'),
+  lockFile: path.join(brainHome, 'auto-update.lock'),
+  logFile: path.join(brainHome, '.last-auto-update-knowledge.log'),
+});
+export const AUTO_UPDATE_LOCK_STALE_MS = 35 * 60_000; // detach TTL (30 min) + slack
+
+/** The inputs every currency decision reads — one reader, shared by the line and the auto-update. */
+export const knowledgeFacts = ({ env = process.env, home, now = Date.now() } = {}) => {
   const brainHome = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain');
   const kbDir = env.RUVNET_BRAIN_KB || path.join(brainHome, 'kb');
   const hours = (ms) => (now - ms) / 3_600_000;
-  const day = (ms) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
-  const age = (ms) => { const h = hours(ms); return h < 48 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`; };
   const source = json(path.join(kbDir, 'SOURCE.json'));
   const builtMs = Date.parse(source?.builtUtc || source?.generatedAt || '');
   const history = refreshHistory({ brainHome });
   const check = json(path.join(brainHome, '.last-kb-check-result.json'));
   const checkMs = Date.parse(check?.recordedAt || '');
-  const proven = (history.lastSuccess && hours(history.lastSuccess.at) <= windowHours)
-    || (check?.currencyVerdict === 'CURRENT' && Number.isFinite(checkMs) && hours(checkMs) <= windowHours);
+  const auto = autoUpdatePaths(brainHome);
+  const provenWithin = (h) => Boolean((history.lastSuccess && hours(history.lastSuccess.at) <= h)
+    || (check?.currencyVerdict === 'CURRENT' && Number.isFinite(checkMs) && hours(checkMs) <= h));
+  return { brainHome, kbDir, source, builtMs, history, hours, provenWithin, auto,
+    attempt: json(auto.attemptFile),
+    lockMs: Date.parse(json(auto.lockFile)?.at || '') || mtimeMs(auto.lockFile) };
+};
+
+/** Why the SessionStart knowledge auto-update may NEVER run on this machine ('' = it may). */
+export const autoUpdateOptOut = ({ env = process.env, home, facts }) => {
+  const flag = String(env.RUVNET_AUTO_UPDATE || '').toLowerCase();
+  if (flag === 'off') return 'RUVNET_AUTO_UPDATE=off';
+  if (env.RUVNET_BRAIN_TEST === '1' && flag !== 'on') return 'test mode';
+  if (read(path.join(facts.brainHome, '.auto-update-pref')).trim() === 'no') return 'you answered no to background auto-update';
+  if (updateOwnedByAgenticKit(home)) return 'agentic-kit owns updates: ak sync';
+  if (!exists(path.join(facts.kbDir, 'forge-update.mjs'))) return 'this install predates the self-updater';
+  return '';
+};
+
+export const knowledgeCurrency = ({ env = process.env, home, now = Date.now(), windowHours = 48 } = {}) => {
+  const facts = knowledgeFacts({ env, home, now });
+  const { brainHome, builtMs, history, hours, attempt } = facts;
+  const day = (ms) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+  const age = (ms) => { const h = hours(ms); return h < 48 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`; };
+  const proven = facts.provenWithin(windowHours);
   const latest = history.latest?.receipt;
-  const failing = latest?.status === 'FAILED';
+  // An automatic update that ended without a refresh receipt of its own (npx could not fetch the
+  // package, the lock was held, it was killed at its TTL) is a failure the receipts cannot show.
+  const launchedMs = Date.parse(attempt?.launchedAt || '');
+  const autoRunning = facts.lockMs > 0 && now - facts.lockMs < AUTO_UPDATE_LOCK_STALE_MS;
+  const autoAbandoned = attempt?.outcome === 'launched' && !autoRunning;
+  const autoFailed = Number.isFinite(launchedMs) && (attempt.outcome === 'failed' || autoAbandoned)
+    && !(history.latest && history.latest.at >= launchedMs);
+  const failing = latest?.status === 'FAILED' || autoFailed;
   const ageKnown = Number.isFinite(builtMs);
   if (!failing && proven) return '';
   if (!failing && ageKnown && hours(builtMs) <= windowHours) return '';
@@ -85,10 +126,15 @@ export const knowledgeCurrency = ({ env = process.env, home, now = Date.now(), w
   const scheduled = agentKit || readNightlyRegistration({ brainHome }).ok;
   const parts = [ageKnown ? `knowledge base built ${day(builtMs)} (${age(builtMs)})`
     : 'knowledge base age UNKNOWN (SOURCE.json missing or unreadable)'];
-  if (failing) {
+  if (autoFailed) {
+    const why = autoAbandoned ? 'it never recorded an outcome (killed at its 30-minute limit, or the machine slept)'
+      : `exit ${attempt.code ?? 'unknown'}: ${attempt.reason || 'no reason recorded'}`;
+    parts.push(`automatic update launched ${age(launchedMs)} FAILED — ${why}`);
+  } else if (latest?.status === 'FAILED') {
     const why = describeFailedRefreshRun(latest) || 'failed';
     parts.push(`last refresh (${latest.action || 'unknown'}) FAILED ${age(history.latest.at)}: ${why}`);
   }
+  if (autoRunning) parts.push(`an automatic update is running now (started ${age(facts.lockMs)})`);
   parts.push(history.receipts
     ? `${history.failuresSinceSuccess} failed run(s) since the last success (${history.lastSuccess ? day(history.lastSuccess.at) : 'none recorded'})`
     : 'no refresh has ever run on this machine');
@@ -96,6 +142,9 @@ export const knowledgeCurrency = ({ env = process.env, home, now = Date.now(), w
   if (history.unreadable) parts.push(`${history.unreadable} unreadable receipt(s)`);
   const fix = agentKit ? 'ak sync' : scheduled ? 'npx ruvnet-brain@latest --update'
     : 'npx ruvnet-brain@latest --update && npx ruvnet-brain --enable-nightly';
+  const optOut = autoUpdateOptOut({ env, home, facts });
+  if (optOut) parts.push(`automatic update is off (${optOut})`);
+  else if (!autoRunning) parts.push('SessionStart retries the update automatically at most every 6h');
   const head = failing ? 'UPDATE FAILING' : ageKnown ? 'STALE' : 'CURRENCY UNKNOWN';
   return `${KNOWLEDGE_LINE_PREFIX}${head}] ${parts.join('; ')}. Fix: ${fix} (verify: npx ruvnet-brain --doctor).`;
 };
