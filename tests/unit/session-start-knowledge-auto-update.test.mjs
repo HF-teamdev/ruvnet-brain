@@ -30,7 +30,7 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 
 const built = (msAgo, extra = {}) => fs.writeFileSync(path.join(kb, 'SOURCE.json'),
-  JSON.stringify({ builtUtc: new Date(NOW - msAgo).toISOString(), releaseTag: 'v4.3.38', ...extra }));
+  JSON.stringify({ builtUtc: new Date(NOW - msAgo).toISOString(), releaseTag: 'v4.0.1', ...extra }));
 const attemptFile = () => path.join(brain, 'auto-update.json');
 const lockFile = () => path.join(brain, 'auto-update.lock');
 const writeAttempt = (value) => fs.writeFileSync(attemptFile(), JSON.stringify(value));
@@ -160,7 +160,7 @@ describe('SessionStart knowledge auto-update — the next session reports the re
     built(3 * H);
     writeAttempt({ launchedAt: iso(2 * H), outcome: 'succeeded', code: 0, reason: '', finishedAt: iso(H) });
     const first = run();
-    expect(first.emitted).toEqual([`${KNOWLEDGE_LINE_PREFIX}UPDATED] automatic update finished 1h ago: corpus v4.3.38, knowledge base built 3h ago.`]);
+    expect(first.emitted).toEqual([`${KNOWLEDGE_LINE_PREFIX}UPDATED] automatic update finished 1h ago: corpus v4.0.1, knowledge base built 3h ago.`]);
     expect(run().emitted).toEqual([]);
   });
 });
@@ -192,7 +192,7 @@ describe('SessionStart knowledge auto-update — end to end through runSessionSt
     return false;
   };
   const realBuilt = (msAgo) => fs.writeFileSync(path.join(kb, 'SOURCE.json'),
-    JSON.stringify({ builtUtc: new Date(Date.now() - msAgo).toISOString(), releaseTag: 'v4.3.38' }));
+    JSON.stringify({ builtUtc: new Date(Date.now() - msAgo).toISOString(), releaseTag: 'v4.0.1' }));
   const envFor = (bin, probe) => ({ HOME: home, XDG_CACHE_HOME: path.join(home, '.cache'), PATH: `${bin}:${process.env.PATH}`,
     RUVNET_AUTO_UPDATE_PROBE_URL: probe, RUVNET_BRAIN_METER: '0', CLAUDE_PLUGIN_ROOT: path.join(home, 'no-plugin') });
 
