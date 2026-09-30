@@ -116,8 +116,12 @@ function checkName(segment) {
 const READ_ONLY_AGENTS = /^(?:explore|plan|claude-code-guide|statusline-setup)$/i;
 const MCP_MUTATING = /__(?:create|update|delete|remove|publish|deploy|push|write|send|set|merge|upload|patch|put|post|add|rename|move|approve|promote|rollback|cancel|buy|store|edit|import|reset|stop|terminate|spawn|execute)[a-z_-]*$/i;
 
-/** Ordered events for the current turn of a Claude JSONL transcript. */
-export function claudeTurnEvents(lines) {
+/**
+ * The current turn of a Claude JSONL transcript: every main-thread record after the last genuine
+ * user message, plus that message's text. Shared by claudeTurnEvents() and grounding-turn-evidence.mjs
+ * so both gates agree on where a turn starts.
+ */
+export function currentTurnRecords(lines) {
   const recs = [];
   for (const l of lines || []) { try { const o = JSON.parse(l); if (!o?.isSidechain) recs.push(o); } catch { /* torn line */ } }
   let start = -1;
@@ -126,8 +130,14 @@ export function claudeTurnEvents(lines) {
     const isToolResult = Array.isArray(c) && c.some((x) => x?.type === 'tool_result');
     if (o?.type === 'user' && (o.message?.role || 'user') === 'user' && !isToolResult && !o.isMeta && textOf(c).trim()) start = i;
   });
+  return { boundaryFound: start >= 0, prompt: start >= 0 ? textOf(recs[start].message?.content) : '', recs: recs.slice(start + 1) };
+}
+
+/** Ordered events for the current turn of a Claude JSONL transcript. */
+export function claudeTurnEvents(lines) {
+  const { boundaryFound, recs: turnRecs } = currentTurnRecords(lines);
   const results = new Map();
-  for (const o of recs.slice(start + 1)) {
+  for (const o of turnRecs) {
     const c = o?.message?.content;
     if (!Array.isArray(c)) continue;
     for (const r of c) {
@@ -138,7 +148,7 @@ export function claudeTurnEvents(lines) {
     }
   }
   const events = [];
-  for (const o of recs.slice(start + 1)) {
+  for (const o of turnRecs) {
     const c = o?.message?.content;
     if (o?.type !== 'assistant' || !Array.isArray(c)) continue;
     for (const u of c) {
@@ -160,7 +170,7 @@ export function claudeTurnEvents(lines) {
       }
     }
   }
-  return { boundaryFound: start >= 0, events };
+  return { boundaryFound, events };
 }
 
 /** Verification that ran AFTER the last state change this turn, with a present, non-error result. */

@@ -41,7 +41,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { readStdinBounded } from './hook-input.mjs';
+import { readStopHookInput } from './hook-input.mjs';
 import {
   auditCapabilityClaims,
   buildCapabilityInventoryReceipt,
@@ -317,21 +317,7 @@ if (has('--clear')) { save({ items: [] }); console.log('ledger cleared'); proces
  * Never block waiting for stdin: the CLI paths (--commit-to / --done) are invoked from a terminal
  * with no piped input, and a gate that hangs is worse than a gate that is silent.
  */
-async function readHookInput() {
-  // Three cases, treated DIFFERENTLY (ADR-043, Fable red-team #1):
-  //  - 'tty'        : run bare in a terminal, not as a hook → never force.
-  //  - 'unreadable' : stdin present but read/parse FAILED. `fs.readFileSync(0)` throws EAGAIN
-  //                   intermittently on macOS — a real footgun. The old code returned {} here, which
-  //                   under a forcing gate LAUNDERS a read error into a fresh-stop verdict → a forced
-  //                   loop. We must not force when we could not confirm the payload.
-  //  - 'stdin'      : a payload we actually parsed → the only case allowed to force.
-  if (process.stdin.isTTY) return { __source: 'tty' };
-  try {
-    const raw = (await readStdinBounded()).toString('utf8');
-    return { ...JSON.parse(raw || '{}'), __source: 'stdin' };
-  } catch { return { __source: 'unreadable' }; }
-}
-const hookInput = await readHookInput();
+const hookInput = await readStopHookInput(); // shared with grounding-turn-gate: hook-input.mjs (ADR-043)
 
 // LOOP-SAFETY 1 (ADR-043 / Fable #1) — only an affirmatively-parsed hook payload may force. A 'tty' or
 // 'unreadable' source cannot be confirmed a fresh stop, so it never forces.
