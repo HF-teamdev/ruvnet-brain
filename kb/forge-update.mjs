@@ -1083,8 +1083,11 @@ export function describeGuardFailure(error) {
   const text = (value) => (value == null ? '' : Buffer.isBuffer(value) ? value.toString('utf8') : String(value));
   const fails = `${text(error?.stdout)}\n${text(error?.stderr)}`.split('\n')
     .map((line) => line.trim()).filter((line) => /\[FAIL\]|Error:/.test(line));
-  const cause = fails.length ? ` -- ${fails.join(' | ').slice(0, 800)}` : '';
-  return `${String(error?.message || error).split('\n')[0]}${cause}`;
+  // Keep the WHOLE message: execFileSync appends the child's stderr on the lines after the command line.
+  const message = String(error?.message || error);
+  const extra = fails.filter((line) => !message.includes(line));
+  const cause = extra.length ? ` -- ${extra.join(' | ').slice(0, 800)}` : '';
+  return `${message.slice(0, 1600)}${cause}`;
 }
 
 export function reclaimBackups({
