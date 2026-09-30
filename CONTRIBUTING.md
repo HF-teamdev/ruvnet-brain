@@ -1,6 +1,6 @@
 # Contributing to RuvNet Brain — the one rulebook
 
-Updated: 2026-09-28
+Updated: 2026-09-30
 Created: 2026-07-07
 
 This file is the **only** place that says how to version, release, update the knowledge corpus,
@@ -162,7 +162,13 @@ Project-level hooks are empty. The installed plugin registers exactly the hooks 
 `plugin/scripts/hook-shim.mjs`: SessionStart restore; UserPromptSubmit grounding + advisories;
 PreToolUse `decision-gate` on file writes (the only hook that may refuse, for rUv-product code
 without a fresh `search_ruvnet`); PostToolUse grounding stamp; Stop continuation and grounding
-check; snapshot capture on Stop/PreCompact/SessionEnd. The same snapshot capture records each
+check; snapshot capture on Stop/PreCompact/SessionEnd. The Stop continuation body also asks for ONE
+correction when a final answer claims work is done without a check run after the last change this
+turn, a named check, and a NOT-verified disclosure, and it records first-person promises ("I'll do X
+next") in the project's work ledger until a later evidenced completion claim closes them (Claude
+only; `npm run completion-claim:replay` measures both on real transcripts). SessionStart prints one
+`[RuvNet Brain — KNOWLEDGE …]` line when the installed knowledge cannot be proven current (older than
+48h, or the latest refresh receipt FAILED) and names the fix. The same snapshot capture records each
 turn's outcome at Stop (final assistant text, files changed, command descriptions — never user
 text) to AgentDB namespace `turns` — the project's `.swarm/memory.db` if it exists, otherwise
 `~/.claude/global-memory/.swarm/memory.db`; `.swarm` is never created in a repository — and at

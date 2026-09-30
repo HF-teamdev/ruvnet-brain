@@ -30,7 +30,7 @@
         "claude",
         "codex"
       ],
-      "responsibility": "May request one continuation for one explicitly authorized, project-scoped objective read from the user's own work ledger (ADR-043). Never a refusal, never a second task store."
+      "responsibility": "May request one continuation for one explicitly authorized, project-scoped objective read from the user's own work ledger (ADR-043). Never a refusal, never a second task store. Amended 2026-09-30 (ADR-074 class `completion`, no new registration): the same Stop body also requests ONE correction when the final answer claims work is done without a verification command run after the last state change this turn (Claude transcript), a named check, and a NOT-verified disclosure — on Codex, whose rollout format is not parsed, only the answer-side half is enforced and the transcript half is reported UNKNOWN. It also records first-person promises from the final answer into the SAME per-project ledger (Claude only; capped; closed only by a later evidence-passing completion claim, never by --done) and requests continuation on them under the same loop guards and cooldown."
     },
     {
       "event": "Stop",
