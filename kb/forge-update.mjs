@@ -1073,6 +1073,20 @@ function writeSnapshotReceipt(backupPath, { state, reason = null, recoveryComman
  *
  * @returns {{removed: string[], kept: [string, string][], freed: number}}
  */
+/**
+ * WHY a guard run failed. forge-guard prints its `[FAIL] ...` lines to STDOUT, and execFileSync puts only
+ * STDERR in error.message, so a refused store used to read "Command failed: node .../forge-guard.mjs --name X"
+ * with the cause dropped (measured 2026-09-30: the customer canary refused a generation and its log did not
+ * say why). Keep the command line, then append the guard's own FAIL lines.
+ */
+export function describeGuardFailure(error) {
+  const text = (value) => (value == null ? '' : Buffer.isBuffer(value) ? value.toString('utf8') : String(value));
+  const fails = `${text(error?.stdout)}\n${text(error?.stderr)}`.split('\n')
+    .map((line) => line.trim()).filter((line) => /\[FAIL\]|Error:/.test(line));
+  const cause = fails.length ? ` -- ${fails.join(' | ').slice(0, 800)}` : '';
+  return `${String(error?.message || error).split('\n')[0]}${cause}`;
+}
+
 export function reclaimBackups({
   kbDir,
   backupsMade = [],
@@ -1694,7 +1708,7 @@ async function main() {
         if (phase === 'live') finalVerificationByStore.set(local.kbName, verified);
       }
       return { valid: true, failures: [] };
-    } catch (error) { return { valid: false, failures: [`forge-guard failed: ${error.message}`] }; }
+    } catch (error) { return { valid: false, failures: [`forge-guard failed: ${describeGuardFailure(error)}`] }; }
   };
   let transaction;
   try {
