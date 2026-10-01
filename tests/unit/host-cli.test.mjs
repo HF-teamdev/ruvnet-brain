@@ -81,9 +81,40 @@ describe.skipIf(!posix)('runHostCli — a host CLI that vanishes mid self-update
     install();
     runHostCli('fakeclaude', [], { env: env(), resolve, stdio: 'pipe' }); // seen
     install('echo "/Users/x/.npm-global/bin/claude: No such file or directory" >&2; exit 127');
-    const r = runHostCli('fakeclaude', ['x'], { env: env(), resolve, sleep: recordSleep(() => install()), echoStderr: () => {} });
+    let targetGone = true; // the wrapper's real target is gone until the self-update lands
+    const r = runHostCli('fakeclaude', ['x'], { env: env(), resolve: () => (targetGone ? null : bin),
+      sleep: recordSleep(() => { install(); targetGone = false; }), echoStderr: () => {} });
     expect(r.status).toBe(0);
     expect(r.attempts).toBe(2);
+  });
+
+  it('a CLI that resolves and itself exits 127 ran — no retry, its own error is shown', () => {
+    install();
+    runHostCli('fakeclaude', [], { env: env(), resolve, stdio: 'pipe' }); // seen: a missing attempt WOULD be retried
+    install('echo "plugin helper: command not found" >&2; exit 127');
+    const echoed = [];
+    const r = runHostCli('fakeclaude', ['x'], { env: env(), resolve, sleep: recordSleep(), echoStderr: (t) => echoed.push(t) });
+    expect(r.status).toBe(127);
+    expect(r.attempts).toBe(1);
+    expect(r.missingBinary).toBeUndefined();
+    expect(sleeps).toEqual([]);
+    expect(echoed.join('')).toContain('plugin helper: command not found');
+  });
+
+  it('a permanently dangling link costs ONE bounded wait per process, not one per call', () => {
+    const first = runHostCli('fakeclaude', ['a'], { env: env(), resolve, onPath: () => true, sleep: recordSleep() });
+    expect(first).toMatchObject({ attempts: 3, missingBinary: true });
+    expect(sleeps).toEqual([5_000, 15_000]);
+    for (const arg of ['b', 'c']) {
+      const later = runHostCli('fakeclaude', [arg], { env: env(), resolve, onPath: () => true, sleep: recordSleep() });
+      expect(later).toMatchObject({ attempts: 1, missingBinary: true });
+      expect(later.message).toMatch(/still not available/);
+    }
+    expect(sleeps).toEqual([5_000, 15_000]); // no further waiting
+    expect(waitForHostCli('fakeclaude', { resolve, onPath: () => true, sleep: recordSleep() })).toMatchObject({ present: false, waited: false });
+    expect(sleeps).toEqual([5_000, 15_000]);
+    install(); // it came back: the next call runs normally
+    expect(runHostCli('fakeclaude', ['d'], { env: env(), resolve, stdio: 'pipe', sleep: recordSleep() })).toMatchObject({ status: 0, attempts: 1 });
   });
 });
 
