@@ -59,6 +59,26 @@ const meter = ({ env, cwd, stateDir, output }) => {
   } catch { /* metering never blocks */ }
 };
 
+/**
+ * ground-ruvnet.sh sends each long block once per session and a one-line form after that (4.5). A
+ * SessionStart — startup, resume, clear, or compact — is exactly when the earlier full text may have
+ * left the model's context, so touching injected/.reset makes every block go out in full once more.
+ * No session id reaches this hook, so the reset is global: another window re-receives its blocks once,
+ * which errs toward delivering. Per-session marker dirs older than 3 days are pruned. Never throws.
+ */
+export function resetInjectionDedupe(stateDir, now = Date.now()) {
+  const base = path.join(stateDir, 'injected');
+  try {
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(path.join(base, '.reset'), `${new Date(now).toISOString()}\n`);
+    for (const name of fs.readdirSync(base)) {
+      if (name.startsWith('.')) continue;
+      const dir = path.join(base, name);
+      try { if (now - fs.statSync(dir).mtimeMs > 3 * 86_400_000) fs.rmSync(dir, { recursive: true, force: true }); } catch { /* raced */ }
+    }
+  } catch { /* an unwritable cache only costs dedupe, never the session */ }
+}
+
 export async function runSessionStart({
   env = process.env,
   cwd = process.cwd(),
@@ -132,6 +152,7 @@ export async function runSessionStart({
   };
   const home = env.HOME || env.USERPROFILE || os.homedir();
   const stateDir = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain');
+  resetInjectionDedupe(stateDir, Date.now());
   const hookDir = path.dirname(fileURLToPath(import.meta.url));
   const now = Date.now();
   const consoleInvoke = env.RUVNET_HOOK_HOST === 'codex' ? '$ruvnet-brain:rvbc' : '/rvbc';
