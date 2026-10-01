@@ -39,8 +39,29 @@ export const sameIdentity = (left, right) => IDENTITY_KEYS.every((key) => left?.
 
 const MONTHS = 'JanFebMarAprMayJunJulAugSepOctNovDec';
 /** When process `pid` started (epoch ms, UTC, 1 s resolution), or null when it cannot be read. */
-export function processStartMs(pid, { spawn = spawnSync } = {}) {
+let clockTicks = null;
+/**
+ * Linux: boot-relative start (/proc/<pid>/stat field 22, clock ticks since boot) anchored at the kernel's
+ * boot time (/proc/stat btime) — not `ps lstart`, which a forward wall-clock jump would push later.
+ */
+export function linuxProcessStartMs(pid, { readFile = fs.readFileSync, spawn = spawnSync } = {}) {
+  try {
+    const stat = String(readFile(`/proc/${pid}/stat`, 'utf8'));
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' '); // field 3 onward (comm may hold spaces)
+    const startTicks = Number(fields[22 - 3]);
+    const btime = Number(String(readFile('/proc/stat', 'utf8')).match(/^btime\s+(\d+)/m)?.[1]);
+    if (clockTicks === null) clockTicks = Number(String(spawn('getconf', ['CLK_TCK'], { encoding: 'utf8' })?.stdout || '').trim()) || 100;
+    if (!Number.isFinite(startTicks) || !Number.isFinite(btime)) return null;
+    return btime * 1000 + Math.round((startTicks * 1000) / clockTicks);
+  } catch { return null; }
+}
+
+export function processStartMs(pid, { spawn = spawnSync, platform = process.platform, readFile } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (platform === 'linux') {
+    const linux = linuxProcessStartMs(pid, { spawn, ...(readFile ? { readFile } : {}) });
+    if (linux !== null) return linux;
+  }
   const run = process.platform === 'win32'
     ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       `$p=Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToString('ddd MMM d HH:mm:ss yyyy',[Globalization.CultureInfo]::InvariantCulture)`],
