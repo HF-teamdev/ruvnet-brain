@@ -3662,13 +3662,12 @@ export function openSessionsNotice(hosts, version) {
   return `new ${names} sessions use ${version}; already-open windows keep the old hook definitions until they are reopened`;
 }
 
-/** A moved brain whose volume is unplugged (dangling ~/.cache/ruvnet-brain link) is never reinstalled,
- * updated or cleaned beside the dead link (ADR-098): stop and say which drive to reconnect. */
+/** A moved brain whose disk is unplugged (plugin/scripts/brain-location.mjs state 'unmounted') is never
+ * reinstalled, updated or cleaned beside the dead link (ADR-098): stop with that module's one line. */
 function refuseUnmountedBrain() {
   const roots = footprintRoots();
   if (!roots.dangling) return;
-  die(`the brain lives at ${roots.location.linkTarget || 'a link target'}, which is not mounted (${roots.location.spelled} is a dangling link).`,
-    'Reconnect that drive, then re-run. Nothing was installed, updated or removed.');
+  die(roots.location.message, 'Nothing was installed, updated or removed.');
 }
 
 async function runUpdate() {

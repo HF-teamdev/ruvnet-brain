@@ -139,7 +139,7 @@ describe('inventory: everything the Brain owns is classified', () => {
     write(path.join(m.brainHome, 'evidence.jsonl'), 'x'.repeat(FOOTPRINT_POLICY.logCapBytes + 10));
     write(path.join(m.brainHome, 'token-ledger.jsonl'), '{"ok":1}\n');
     write(path.join(m.brainHome, '.last-kb-check.log'), `${'y'.repeat(FOOTPRINT_POLICY.textLogCapBytes)}\ntail-line\n`);
-    for (const [hash, v] of [['a1', '4.3.39'], ['b2', '4.3.40'], ['c3', '4.4.1']]) {
+    for (const [hash, v] of [['a1', '4.3.39'], ['b2', '4.3.40'], ['c3', '4.9.9']]) {
       json(path.join(m.home, '.npm', '_npx', hash, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
       json(path.join(m.home, '.npm', '_npx', hash, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
     }
@@ -175,7 +175,7 @@ describe('inventory: everything the Brain owns is classified', () => {
     expect(item(fp, path.join(m.brainHome, 'token-ledger.jsonl'))).toMatchObject({ class: 'may-exist', action: 'keep' });
     expect(item(fp, path.join(m.brainHome, '.last-kb-check.log'))).toMatchObject({ action: 'truncate' });
     const npx = fp.items.filter((i) => i.kind === 'npx-copy');
-    expect(npx.map((i) => [i.version, i.class]).sort()).toEqual([['4.3.39', 'must-not-exist'], ['4.3.40', 'must-not-exist'], ['4.4.1', 'may-exist']]);
+    expect(npx.map((i) => [i.version, i.class]).sort()).toEqual([['4.3.39', 'must-not-exist'], ['4.3.40', 'must-not-exist'], ['4.9.9', 'may-exist']]);
     expect(fp.items.some((i) => i.path.startsWith(m.outsideCache))).toBe(false); // npm_config_cache outside HOME ignored
     expect(item(fp, path.join(m.home, '.npm', '_npx', 'dev'))).toMatchObject({ class: 'unowned', action: 'report' });
     expect(item(fp, path.join(m.home, '.npm', '_npx', 'other'))).toBeUndefined();
@@ -257,11 +257,11 @@ describe('inventory: everything the Brain owns is classified', () => {
   it('plugin generations are only ever handed to the lease-aware collector, with the CLAUDE_CONFIG_DIR registry', () => {
     const m = machine(); live(m);
     const cache = path.join(m.home, '.claude', 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain');
-    for (const v of ['4.3.37', '4.4.1']) json(path.join(cache, v, '.claude-plugin', 'plugin.json'), { version: v });
+    for (const v of ['4.3.37', '4.2.9']) json(path.join(cache, v, '.claude-plugin', 'plugin.json'), { version: v });
     write(path.join(cache, '4.3.37', '.in_use', 'lease-1.json'), '{}');
-    json(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'ruvnet-brain@ruvnet-brain': [{ installPath: path.join(cache, '4.4.1') }] } });
+    json(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'ruvnet-brain@ruvnet-brain': [{ installPath: path.join(cache, '4.2.9') }] } });
     const fp = inventoryFootprint(opts(m));
-    expect(item(fp, path.join(cache, '4.4.1'))).toMatchObject({ class: 'must-exist' });
+    expect(item(fp, path.join(cache, '4.2.9'))).toMatchObject({ class: 'must-exist' });
     expect(item(fp, path.join(cache, '4.3.37'))).toMatchObject({ class: 'may-exist', action: 'collect' });
     const calls = [];
     sweepFootprint(opts(m, { apply: true, collectPluginGenerations: (args) => { calls.push(args); return { removed: [] }; } }));
@@ -341,9 +341,10 @@ describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain i
     const fp = inventoryFootprint({ env: m.env, home: m.home, now: NOW });
     expect(fp.kbCopies).toBe(2);
     expect(fp.liveKb.path).toBe(path.join(m.disk, 'kb'));
-    expect(fp.roots.location).toMatchObject({ viaSymlink: true, dangling: false, real: path.join(m.disk, 'kb') });
+    expect(fp.roots.location).toMatchObject({ state: 'linked', real: m.disk }); // plugin/scripts/brain-location.mjs
+    expect(fp.roots.kbDir).toBe(path.join(m.disk, 'kb'));
     const r = confirm({ footprint: fp, env: m.env, home: m.home, now: NOW, readiness: [] });
-    expect(r.lines.find((l) => l.id === 'knowledge').detail).toContain(`at ${path.join(m.disk, 'kb')} (moved; mounted on `);
+    expect(r.lines.find((l) => l.id === 'knowledge').detail).toContain(`at ${path.join(m.disk, 'kb')} (moved to `);
     sweepFootprint({ env: m.env, home: m.home, now: NOW, apply: true });
     expect(inventoryFootprint({ env: m.env, home: m.home, now: NOW }).kbCopies).toBe(1);
   });
@@ -359,10 +360,10 @@ describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain i
     expect(fs.lstatSync(m.link).isSymbolicLink()).toBe(true);
     expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'z'))).toBe(true);
     const r = confirm({ footprint: result.after, env: m.env, home: m.home, now: NOW, readiness: [] });
-    expect(r.lines.find((l) => l.id === 'knowledge')).toMatchObject({ state: 'fail', fix: expect.stringMatching(/^reconnect the volume holding .*SanDisk/) });
+    expect(r.lines.find((l) => l.id === 'knowledge')).toMatchObject({ state: 'fail', fix: expect.stringMatching(/^mount .*, then: npx ruvnet-brain --doctor/), detail: expect.stringMatching(/is not mounted/) });
     expect(footprintAlarm(r)).toMatch(/BRAIN VOLUME NOT MOUNTED/);
     const { health } = await import('../../plugin/scripts/session-start-health.mjs');
-    expect(health(m.home, false).problem).toMatch(/NOT MOUNTED .*do NOT reinstall/);
+    expect(health(m.home, false).problem).toMatch(/is not mounted .*Do NOT reinstall\./);
   });
 });
 
@@ -406,7 +407,7 @@ describe('SessionStart footprint line', () => {
 async function mutant(replacements) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-mutant-'));
   dirs.push(dir);
-  for (const f of ['brain-footprint.mjs', 'kb-copy-proof.mjs', 'brain-confirmation.mjs', 'mcp-readiness.mjs']) {
+  for (const f of ['brain-footprint.mjs', 'kb-copy-proof.mjs', 'brain-confirmation.mjs', 'mcp-readiness.mjs', 'brain-location.mjs']) {
     let src = fs.readFileSync(path.join(ROOT, 'plugin', 'scripts', f), 'utf8');
     for (const [file, from, to] of replacements) if (file === f) {
       expect(src.includes(from), `mutation anchor missing in ${f}: ${from}`).toBe(true);
