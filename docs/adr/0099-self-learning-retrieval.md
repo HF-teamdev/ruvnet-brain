@@ -12,8 +12,10 @@ relates: [ADR-060, ADR-090, ADR-092]
 
 # ADR-099 — Self-learning newcomer retrieval
 
-**Status**: Proposed (2026-10-01). Nothing here ships until the ship-gate below passes. Every arm runs
-behind its own flag, and the flags default to off.
+**Status**: Proposed (2026-10-01)
+
+Nothing here ships until the ship-gate below passes. Every arm runs behind its own flag, and the flags
+default to off.
 
 ## Why (measured, `evals/runs/2026-10-01-retrieval-4.5/`)
 
