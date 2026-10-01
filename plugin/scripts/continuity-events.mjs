@@ -68,9 +68,26 @@ function redactKeyTails(value) {
 }
 /** Redact the WHOLE text first; only then may it be shortened (review S2: truncate-first cut off the END
  * marker, so the key regex never matched and the BEGIN line plus key body survived). */
+// Shapes the shared progression list misses (re-review S3) — gate commands and output tails carry them.
+// Linear: a name is matched by ONE character class anchored at a word boundary and judged in a callback
+// (a `[\w]*(?:KEY|…)[\w]*` pattern backtracks quadratically — measured 1.6 s on 60 KB).
+const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH/i;
+const CONTINUITY_SECRETS = [
+  // ENV-style assignments: NPM_TOKEN=…, AWS_SECRET_ACCESS_KEY=…, DB_PASSWORD="…", GH_API_KEY=…
+  [/\b([A-Za-z0-9_]+)(\s*=\s*)("[^"\n]*"|'[^'\n]*'|[^\s;,&|]+)/g, (m, name, eq) => (SECRET_NAME.test(name) ? `${name}${eq}[REDACTED:secret]` : m)],
+  // JSON values: "password": "…", "apiKey":"…", "client_secret": "…"
+  [/"([A-Za-z0-9_-]+)"(\s*:\s*)"(?:[^"\\\n]|\\.)*"/g, (m, name, colon) => (SECRET_NAME.test(name) ? `"${name}"${colon}"[REDACTED:secret]"` : m)],
+  // URL userinfo: scheme://user:pass@host
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[REDACTED:userinfo]@'],
+  // Authorization headers of any scheme
+  [/\b(Authorization\s*:\s*)(?:Basic|Bearer|Token|Digest)?\s*[^\s"']+/gi, '$1[REDACTED:authorization]'],
+  // Well-known token shapes
+  [/\b(?:npm_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16})\b/g, '[REDACTED:token]'],
+];
 export function redactText(text) {
   let value = String(text ?? '').slice(0, MAX_SCAN);
   if (value.includes('PRIVATE KEY-----')) value = redactKeyTails(value.replace(KEY_BLOCK, '[REDACTED:private-key]'));
+  for (const [pattern, replacement] of CONTINUITY_SECRETS) value = value.replace(pattern, replacement);
   return redactProgression(value).value;
 }
 /** Redact, then collapse whitespace, then bound. The ONLY way event text is shortened. */

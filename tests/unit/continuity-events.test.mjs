@@ -167,6 +167,54 @@ describe('redaction happens BEFORE truncation (review S2)', () => {
   });
 });
 
+// Re-review S3: gate summaries land in .swarm and are quoted in the SessionStart brief, and these shapes
+// survived redaction. Each secret is synthetic (EXAMPLE-style), never a real credential.
+describe('secrets in commands, outputs and findings are redacted (re-review S3)', () => {
+  const SECRETS = [
+    ['env token', 'NPM_TOKEN=npm' + '_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789', 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'],
+    ['aws secret', 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY', 'wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'],
+    ['env password quoted', 'DB_PASSWORD="correct horse battery"', 'correct horse battery'],
+    ['json password', '{"password": "hunter2-is-not-a-password"}', 'hunter2-is-not-a-password'],
+    ['json api key', '{"apiKey":"ak-1234567890abcdef"}', 'ak-1234567890abcdef'],
+    ['url userinfo', 'git clone https://alice:s3cretpassw0rd@git.example.com/repo.git', 's3cretpassw0rd'],
+    ['basic auth header', 'Authorization: Basic YWxhZGRpbjpvcGVuc2VzYW1l', 'YWxhZGRpbjpvcGVuc2VzYW1l'],
+    ['bearer header', 'curl -H "Authorization: Bearer abc.def.ghi-jkl"', 'abc.def.ghi-jkl'],
+    ['bare npm token', 'token in log: npm' + '_ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210', 'npm' + '_ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210'],
+    ['github token', 'using gho' + '_16C7e42F292c6912E7710c838347Ae178B4a here', 'gho' + '_16C7e42F292c6912E7710c838347Ae178B4a'],
+    ['github pat', 'git' + 'hub_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz', 'abcdefghijklmnopqrstuvwxyz'],
+    ['openai key', `export key ${['sk', 'proj', 'AbCdEfGhIjKlMnOpQrStUvWx'].join('-')}`, 'AbCdEfGhIjKlMnOpQrStUvWx'],
+    ['aws key id', 'aws_access_key_id AKI' + 'AIOSFODNN7EXAMPLE', 'AKI' + 'AIOSFODNN7EXAMPLE'],
+    ['slack token', 'SLACK xox' + 'b-123456789012-abcdefghijklmnop', 'xox' + 'b-123456789012-abcdefghijklmnop'],
+  ];
+  it.each(SECRETS)('%s is not stored', (_label, text, secret) => {
+    const e = makeEvent({ kind: 'finding', source: 'agent-result', authoritative: false, summary: `Found: ${text} (rotate it)` });
+    expect(JSON.stringify(e)).not.toContain(secret);
+    expect(e.summary).toMatch(/REDACTED/);
+  });
+
+  it('a gate command and its output tail, read from a real transcript, keep no secret', () => {
+    const dir = tmp('cont-turn-');
+    const file = transcript(dir, { user: 'publish it', tools: [{ name: 'Bash',
+      input: { command: 'NPM_TOKEN=npm' + '_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 npm run release:check', description: 'Run release check' },
+      result: 'checked https://bot:pa55w0rd-example@registry.example.com\nExit code 1', isError: true }] });
+    const [gate] = collectTurnEvents({ lines: read(file), host: 'claude', session: 's', project: 'x', env: {} });
+    expect(gate.kind).toBe('gate');
+    const all = JSON.stringify(gate);
+    expect(all).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(all).not.toContain('pa55w0rd-example');
+  });
+
+  it('stays linear on adversarial input for every new pattern', () => {
+    // The last two backtracked quadratically with a `[\w]*(?:KEY|…)[\w]*` name pattern (1.6 s and 2.0 s, measured).
+    for (const text of [`NPM_TOKEN=${'a'.repeat(60_000)}`, `{"password": "${'\\\\'.repeat(30_000)}`, `https://${'u'.repeat(30_000)}:${'p'.repeat(30_000)}`,
+      'KEY'.repeat(20_000), `"${'token'.repeat(12_000)}`]) {
+      const started = Date.now();
+      makeEvent({ kind: 'finding', source: 'agent-result', authoritative: false, summary: text });
+      expect(Date.now() - started).toBeLessThan(250);
+    }
+  });
+});
+
 describe('user-level hook detection (read-only)', () => {
   it('detects the owner turn-capture / autocapture / ensure hooks from settings.json and never writes it', () => {
     const home = tmp('cont-home-');
