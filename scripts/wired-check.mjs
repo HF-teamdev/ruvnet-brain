@@ -97,8 +97,9 @@ const STANDALONE = [
   ['lesson-ratify', 'the human control surface — a CLI is its entire purpose'],
   ['lesson-migrate-agentdb', 'one-time reconciliation between the two AgentDB lesson stores and the '
     + 'one plugin lesson store, run deliberately by a human/model, never scheduled. Completion is '
-    + 'proven and kept honest by tests/unit/lesson-migrate-agentdb.test.mjs (0 pending rows), a drift '
-    + 'canary rather than automated invocation — the same shape as lesson-seed/lesson-ratify above.'],
+    + 'checked by tests/diagnostics/lesson-migrate-agentdb.test.mjs (0 pending rows), a machine drift '
+    + 'canary over the developer\'s own AgentDB stores (outside the hermetic suite; run it by hand) rather '
+    + 'than automated invocation — the same shape as lesson-seed/lesson-ratify above.'],
   ['stamp-sweep', 'ADR-056 §2 — the ONE-TIME backfill half of the stamp rule. A human runs it once '
     + '(--apply) to reach the files nobody is editing; the ongoing half is the md-stamp PostToolUse '
     + 'hook, which IS wired. Deliberately not in a gate: it WRITES to documents, and a writer that '

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "purpose": "TRANSITIONAL quarantine for scripts/full-suite-gate.mjs; a release ships with an empty `tests` list. Every entry is a test KNOWN to be red with its owning branch. Any red test NOT listed fails the gate; any listed test that PASSES fails the gate until its entry is removed. Never add an entry to make a gate green without a class, a reason with evidence, and an owner.",
+  "tests": [
+    {
+      "file": "tests/integration/project-progression-store.test.mjs",
+      "test": "managed ProjectProgression append and readback stores, exact-retrieves, and strictly deduplicates through a temp real AgentDB",
+      "class": "external-dependency",
+      "reason": "Product capture/dedupe/restoreLatest assertions pass; the trailing `ruflo memory export` capability probe (ruflo 3.49.0) returns count 0, not 2. Measured on a disposable store: rows written by `ruflo memory store --path` export 2 from the plain cwd invocation and 0 with the test's CLAUDE_FLOW_DB_PATH/MEMORY_PATH/DISABLE_BRIDGE overrides; rows written by ProjectProgressionStore export 0 either way. Not root-caused. Skips where ruflo is absent (CI).",
+      "owner": "testgates-4.4 (open; needs the continuity owner's call)"
+    }
+  ],
+  "excludedFiles": [
+    {
+      "file": "tests/diagnostics/release-source-shape.test.mjs",
+      "reason": "Historical source-shape diagnostics (tests/diagnostics/vitest.config.mjs). Measured 2026-10-01: 1 of its checks is red against current architecture. Delete or rewrite as behaviour tests; never release authority."
+    },
+    {
+      "file": "tests/diagnostics/retired-hook-release.test.mjs",
+      "reason": "Historical source-shape diagnostics (tests/diagnostics/vitest.config.mjs). Measured 2026-10-01: 3 of its checks are red against current architecture. Delete or rewrite as behaviour tests; never release authority."
+    },
+    {
+      "file": "tests/diagnostics/lesson-migrate-agentdb.test.mjs",
+      "reason": "Machine diagnostic: asserts the reconciliation state of the developer's own AgentDB stores through the real ruflo CLI. Red in every environment but the owner's (no ruflo / clean HOME), and timed out at 60s on the owner's machine under load. Moved out of tests/unit 2026-10-01."
+    },
+    {
+      "file": "tests/experience/report.test.mjs",
+      "reason": "node:test format, not vitest; the canonical-qa full-suite job runs it with `node --test` (8/8 green 2026-10-01)."
+    }
+  ]
+}
