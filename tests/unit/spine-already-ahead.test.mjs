@@ -72,6 +72,23 @@ describe('issue #126 — already-ahead is converged, not a failed sync', () => {
     expect(r.status).toBe(0);
   }, 70_000);
 
+  it('a machine with NO host (no active spine, nothing staged by any host cache) has nothing to converge', () => {
+    // MEASURED 2026-09-30 (scripts/customer-state-matrix.mjs, baseline: a real 4.3.38 install updated by the
+    // real 4.3.39 `--update`): a customer whose shell has no `claude`/`codex` CLI — the desktop-app and
+    // VS Code-extension users the installer itself tells "that's normal" — got all 197 stores applied and
+    // then exit 1 "host synchronization is incomplete", refresh receipt FAILED, on EVERY update. Nothing was
+    // ever seeded, so nothing can be behind; failing here only makes a good update report failure forever.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-nohost-'));
+    temps.push(home);
+    const r = run(home, '9.9.8');
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(0);
+    expect(`${r.stdout}`).toMatch(/no host has staged a payload and no spine is active/);
+    expect(fs.existsSync(path.join(home, '.cache', 'ruvnet-brain', 'active.json'))).toBe(false);
+    // TEETH: a damaged spine (unreadable active.json) is not "no host" and still fails closed.
+    fs.writeFileSync(path.join(home, '.cache', 'ruvnet-brain', 'active.json'), '{ not json');
+    expect(run(home, '9.9.8').status).toBe(1);
+  }, 70_000);
+
   it('the PAYLOAD SELECTOR stays exact — issue #64 must not regress', () => {
     // Asserted against the source, because the behavioural proof lives in
     // tests/qe/release/issue-64-host-convergence.test.mjs and this file must fail loudly if someone

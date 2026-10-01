@@ -425,6 +425,15 @@ function main() {
           console.log(`already on ${activeNow.version}, at or above requested ${expectedVersion} — nothing to apply.`);
           return 0;
         }
+        // NO HOST AT ALL is not a stale spine. With no active spine and no payload of ANY version in
+        // any host cache, nothing was ever seeded, so nothing can be behind (a desktop-app/IDE-extension
+        // customer whose shell has no host CLI). A host cache holding some OTHER version still fails
+        // closed below — issue #64's exact-selection guard is untouched.
+        // Existence, not a parse: a corrupt active.json is a damaged spine and still fails closed below.
+        if (!fs.existsSync(ACTIVE) && !newestStagedCC()) {
+          console.log(`no host has staged a payload and no spine is active — nothing to converge for ${expectedVersion}.`);
+          return 0;
+        }
         console.error(`✗ no staged host payload exactly matches expected version ${expectedVersion} — spine unchanged`);
         return 1;
       }

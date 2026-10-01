@@ -21,9 +21,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import crypto from 'node:crypto';
 import { applyBrainProfile, readBrainProfile } from '../kb/brain-profile.mjs';
-import { acquireRefreshLock, finishRefreshReceipt, openRefreshReceipt, recordRefreshAdvisory,
+import { acquireRefreshLock, finishRefreshReceipt, openRefreshReceipt, physicalPath, recordRefreshAdvisory,
   recordRefreshPhase, settleRefreshRun, UPDATE_REFRESH_PHASES } from '../kb/refresh-run.mjs';
 import { pruneLifecycleEvidence } from '../kb/lifecycle-evidence-retention.mjs';
+import { recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
 import {
   requiredEmbedderModels,
   missingEmbedderModels,
@@ -3293,6 +3294,18 @@ export function classifyUpdaterExit(status, { fallbackAllowed = true, result = n
     if (!requireResult) return { verdict: 'legacy-success', fallback: false, exitCode: 0 };
     return { verdict: 'invalid-result', fallback: false, exitCode: 1 };
   }
+  // The updater refused BECAUSE full-KB copies already sit beside the brain ("refusing to create another
+  // full-KB copy"). A fresh install is exactly another full copy (it preserves the prior generation), so
+  // the fallback would turn the refusal into +1 copy per run (measured: 2 -> 3, +1.3 GB). Report instead.
+  if (/^unresolved rollback state exists/.test(String(result?.reason || ''))) {
+    return { verdict: 'refused-retained-copies', fallback: false, exitCode: status || 1 };
+  }
+  // Exit 2 is "manifest unreachable, nothing touched". The fallback exists for a DEAD manifest URL (an old
+  // bundle polling a path that 404s); a rate limit, a 5xx or no network is transient, and a full fresh
+  // reinstall over it re-downloads the brain and preserves another full copy each time. Retry later instead.
+  if (status === 2 && /returned HTTP (?:403|408|429|5\d\d)\b|network failure/.test(String(result?.reason || ''))) {
+    return { verdict: 'transient-network', fallback: false, exitCode: 2 };
+  }
   return { verdict: 'failed', fallback: fallbackAllowed, exitCode: status || 1 };
 }
 
@@ -3633,6 +3646,20 @@ async function runUpdate() {
   };
   process.once('exit', exitGuard);
   info(`brain dir: ${c.bold(kbDir)}`);
+  // An update killed between its two directory renames leaves no usable kb/ (no updater in it) — the
+  // brain sits in a receipted kb.rollback-<id>, and the recovery that renames it back lives inside the
+  // updater that is now missing. Run that same recovery (the package's own copy) under this refresh lock
+  // first, so the check below sees the restored brain instead of telling the user to reinstall over it.
+  // Receipts hold the REAL paths the updater knew, so recovery is addressed by the physical path.
+  if (!fs.existsSync(path.join(kbDir, 'forge-update.mjs'))
+    && fs.existsSync(path.join(path.dirname(kbDir), `.${path.basename(kbDir)}.update-transactions`))) {
+    try {
+      const recovered = recoverIncompleteStorageTransactions(physicalPath(kbDir));
+      if (recovered.length) ok(`restored the brain from an interrupted update (${recovered.map((r) => `${r.transactionId}: ${r.from}`).join(', ')})`);
+    } catch (error) {
+      warn(`an interrupted update could not be recovered automatically: ${error.message}`);
+    }
+  }
   let updateStatus = 1;
   // NO updater at all = no brain installed here (or a pre-self-updater bundle). That is a USER
   // message, not a fallback trigger: fail LOUD with the re-run-installer help and exit — never
@@ -3691,6 +3718,10 @@ async function runUpdate() {
     result: updaterResult,
     requireResult: supportsResultReceipt,
   });
+  if (outcome.verdict === 'refused-retained-copies') {
+    warn('nothing was changed: full copies of earlier brain generations already sit beside this one (listed above).');
+    info('Check that you no longer need them, remove them, then re-run  npx ruvnet-brain --update');
+  }
   if (outcome.fallback && FLAG_HOST_SYNC_ONLY) {
     // Host synchronization has a narrower contract than a full update: it must converge the
     // executable plugin/spine to the published package even when an optional large KB asset is

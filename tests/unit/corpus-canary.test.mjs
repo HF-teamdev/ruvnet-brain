@@ -268,10 +268,11 @@ describe('the customer canary applies the staged candidate through a real custom
 
   it('BREAK IT (node_modules dropped): an updater that no longer carries the reader deps applies "successfully" -> FAIL', async () => {
     stage(nightly.zip);
-    const carry = "if (fs.existsSync(liveModules) && !fs.existsSync(path.join(candidateDir, 'node_modules'))) {";
+    // kb/forge-update.mjs carryLiveNodeModules() is the one carrier; the guard line is its early return.
+    const carry = "if (!fs.existsSync(liveModules) || fs.existsSync(path.join(candidateDir, 'node_modules'))) return false;";
     const customer = customerInstall({ updaterPatch: (source) => {
       expect(source).toContain(carry); // the regression is re-created exactly, or the test is void
-      return source.replace(carry, 'if (false) {');
+      return source.replace(carry, 'return false;');
     } });
     const { verdict } = await canary(customer);
     // The updater itself exits 0 — only the consumer-side check catches this.
@@ -309,6 +310,44 @@ describe('the customer canary applies the staged candidate through a real custom
     expect(verdict.updater).toMatchObject({ exitCode: 0, attempts: 2 });
     expect(verdict.verdict).toBe('PASS');
   }, 180_000);
+});
+
+describe('the canary asks more than one customer state (--cases)', () => {
+  beforeAll(async () => { await buildNightly(); }, 180_000);
+  const casesCanary = (makeCustomer, cases) => runCanary({ repo: REPO, tag: served.tag, approvedVersion: VERSION,
+    work: tempDir(dirs, 'canary-cases'), apiBase: origin, env: { GITHUB_RUN_ID: '4242', GITHUB_RUN_ATTEMPT: '1' },
+    now: () => NOW, retryDelayMs: 0, cases, install: () => makeCustomer() });
+
+  it('runs the private-overlay case as its own fresh install, prefixes its checks, and measures the private bytes', async () => {
+    stage(nightly.zip);
+    const verdict = await casesCanary(() => customerInstall(), ['clean', 'private-overlay']);
+    const names = verdict.checks.map((entry) => entry.name);
+    for (const name of REQUIRED_CANARY_CHECKS) {
+      expect(names).toContain(name);
+      expect(names).toContain(`private-overlay:${name}`);
+    }
+    expect(names).toContain('private-overlay:private-store-preserved');
+    expect(verdict.checks.filter((entry) => !entry.name.includes(':')).every((entry) => entry.ok)).toBe(true);
+    expect(verdict.verdict).toBe(verdict.checks.every((entry) => entry.ok) ? 'PASS' : 'FAIL');
+  }, 300_000);
+
+  it('BREAK IT (overlay dropped): an updater that stops restoring private files passes clean but FAILS the overlay case', async () => {
+    stage(nightly.zip);
+    const restore = 'restorePrivateFilesIntoCandidate({ candidateDir, sourceDir: liveDir, overlay: privateOverlay });';
+    const verdict = await casesCanary(() => customerInstall({ updaterPatch: (source) => {
+      expect(source).toContain(restore);
+      return source.replace(restore, '');
+    } }), ['clean', 'private-overlay']);
+    expect(verdict.checks.filter((entry) => !entry.name.includes(':')).every((entry) => entry.ok)).toBe(true);
+    expect(verdict.checks.filter((entry) => entry.name.startsWith('private-overlay:') && !entry.ok).length).toBeGreaterThan(0);
+    expect(verdict.verdict).toBe('FAIL');
+    expect(promotable(verdict).allowed).toBe(false);
+  }, 300_000);
+
+  it('refuses a case list that does not start with the clean case or names an unknown case', async () => {
+    await expect(casesCanary(() => customerInstall(), ['private-overlay'])).rejects.toThrow(/must start with clean/);
+    await expect(casesCanary(() => customerInstall(), ['clean', 'nope'])).rejects.toThrow(/must start with clean/);
+  });
 });
 
 describe('the one change the canary makes to a customer install', () => {
