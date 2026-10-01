@@ -3656,10 +3656,20 @@ async function searchAllPrimary({
         cands = cands.concat(inventory);
       }
       {
-        const seen = new Set(cands.map((candidate) => candidate.path));
-        const claims = quotedClaimCandidates(dir, name, query)
-          .filter((candidate) => !seen.has(candidate.path));
-        cands = cands.concat(claims);
+        // A file that carries every quoted claim earns the quoted-claim boost whether or not dense
+        // retrieval already pooled it. This used to ADD only the files dense missed and DROP the
+        // flag on files dense found, so the claim-bearing file dense ranked HIGHER lost the +10
+        // that a lower-ranked copy would have earned -- an inversion. Merge the flag onto the
+        // existing candidate, exactly as the ADR lane below does (E3, need-baseline 2026-10-01).
+        const byPath = new Map(cands.map((candidate) => [candidate.path, candidate]));
+        for (const claim of quotedClaimCandidates(dir, name, query)) {
+          const existing = byPath.get(claim.path);
+          if (existing) existing._quotedClaims = true;
+          else {
+            cands.push(claim);
+            byPath.set(claim.path, claim);
+          }
+        }
       }
       {
         const byPath = new Map(cands.map((candidate) => [candidate.path, candidate]));

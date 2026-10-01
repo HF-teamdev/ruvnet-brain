@@ -3548,6 +3548,31 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
     expect(out.results[0]).toMatchObject({ path: 'README.md', _lane: 'rescue' });
   });
 
+  it('gives the quoted-claim boost to a claim-bearing file that dense retrieval ALREADY pooled (E3)', async () => {
+    // THE DEFECT. The lane added only files dense missed, so when dense already held the claim file
+    // the flag (and its +10) was dropped -- the file dense ranked higher lost to any other.
+    const d = mkdirWith(['agentdb.rvf']);
+    fs.writeFileSync(path.join(d, 'agentdb.passages.jsonl'), [
+      JSON.stringify({ id: 'decoy', path: 'docs/perf.md', title: 'Performance', text: 'General benchmark discussion.' }),
+      JSON.stringify({ id: 'readme', path: 'README.md', title: 'AgentDB',
+        text: '150× faster than SQLite. Up to +36% search quality from feedback. Run the benchmark harness.' }),
+    ].join('\n'));
+    vi.mocked(searchKb).mockResolvedValue([
+      hit({ path: 'docs/perf.md', fullText: 'General benchmark discussion.' }),
+      hit({ path: 'README.md', fullText: '150× faster than SQLite. Up to +36% search quality from feedback.' }),
+    ]);
+    vi.mocked(rerankPairs).mockImplementation(async (_q, cands) =>
+      cands.map((candidate) => ({ ...candidate, ceScore: candidate.path === 'README.md' ? 1 : 5 }))
+        .sort((a, b) => b.ceScore - a.ceScore));
+    const out = await searchAll({
+      dir: d,
+      repos: ['agentdb'],
+      query: "How does AgentDB validate '150x faster than SQLite' and '+36% search quality from feedback'?",
+    });
+    expect(out.results[0]).toMatchObject({ path: 'README.md', quotedClaimsBoosted: true });
+    expect(out.results.filter((r) => r.path === 'README.md')).toHaveLength(1);
+  });
+
   it('rescues the exact ADR instead of a different ADR that merely cites it', async () => {
     const d = mkdirWith(['ruvector.rvf']);
     fs.writeFileSync(path.join(d, 'ruvector.passages.jsonl'), [
