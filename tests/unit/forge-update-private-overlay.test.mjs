@@ -18,8 +18,8 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function registryFixture() {
-  const kbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-update-private-'));
+function registryFixture(parent = os.tmpdir()) {
+  const kbDir = fs.mkdtempSync(path.join(parent, 'forge-update-private-'));
   const privateStore = {
     kbName: 'makerkit-source',
     updateManaged: false,
@@ -359,7 +359,9 @@ describe('S1/S5 — single apply path regression guards', () => {
   });
 
   it('rolls the WHOLE live tree back, byte for byte, when restorePrivateFilesIntoCandidate collides mid-transaction', () => {
-    const { kbDir, privateStore } = registryFixture();
+    // Its OWN parent: the transaction inventories every sibling of the live tree, and a shared
+    // os.tmpdir() is full of other tests' directories appearing and vanishing mid-scan.
+    const { kbDir, privateStore } = registryFixture(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-update-rollback-parent-')));
     const overlay = capturePrivateOverlayState({ kbDir, allStores: [privateStore] });
     const before = Object.fromEntries(fs.readdirSync(kbDir).map((name) => [name, fs.readFileSync(path.join(kbDir, name))]));
 
@@ -376,8 +378,7 @@ describe('S1/S5 — single apply path regression guards', () => {
 
     const after = Object.fromEntries(fs.readdirSync(kbDir).map((name) => [name, fs.readFileSync(path.join(kbDir, name))]));
     expect(after).toEqual(before);
-    // Scoped to THIS kbDir's own basename — os.tmpdir() is shared with every other test running
-    // concurrently, so a blanket scan for the transaction-directory pattern would be flaky.
+    // Scoped to THIS kbDir's own basename and private parent.
     const parent = path.dirname(kbDir);
     const base = path.basename(kbDir);
     const stray = fs.readdirSync(parent).filter((name) => name.startsWith(`${base}.next-`)
