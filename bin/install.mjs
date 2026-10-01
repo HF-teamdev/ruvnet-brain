@@ -3526,7 +3526,7 @@ export function syncHostsAfterUpdate(cacheDir = resolvedKbDir(), {
       try {
         const replaceArgs = { entry: runtimeTransaction.entry, identity: runtimeTransaction.identity, receiptDir: consoleReceiptDir };
         results.consoleReplacement = replaceConsoles ? replaceConsoles(replaceArgs) : replaceStaleConsoles(replaceArgs);
-        const failures = results.consoleReplacement.filter((item) => !item.replaced && !item.pruned);
+        const failures = results.consoleReplacement.filter((item) => !item.replaced);
         for (const item of results.consoleReplacement) {
           if (item.replaced) ok(`Console on port ${item.port} replaced with the current runtime (pid ${item.newPid})`);
         }

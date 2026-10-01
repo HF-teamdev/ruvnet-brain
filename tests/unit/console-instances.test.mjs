@@ -27,42 +27,50 @@ function receiptFixture(over = {}) {
 }
 
 describe('consoleEnv — the replacement Console is a user process', () => {
-  it('keeps identity, locale and brain location; drops installer and scheduler flags', () => {
-    const env = consoleEnv({ HOME: '/h', PATH: '/bin', LANG: 'en_US.UTF-8', LC_ALL: 'C', RUVNET_BRAIN_HOME: '/b',
-      RUVNET_NIGHTLY: '1', RUVNET_BRAIN_TEST: '1', RUVNET_REFRESH_RUN_TOKEN: 't', NODE_OPTIONS: '--inspect', npm_lifecycle_event: 'x' }, 7411);
-    expect(env).toEqual({ HOME: '/h', PATH: '/bin', LANG: 'en_US.UTF-8', LC_ALL: 'C', RUVNET_BRAIN_HOME: '/b', CONSOLE_PORT: '7411' });
+  it('keeps the user\'s keys, proxy and locale; drops installer, scheduler and test flags', () => {
+    const user = { HOME: '/h', PATH: '/bin', LANG: 'en_US.UTF-8', LC_ALL: 'C', RUVNET_BRAIN_HOME: '/b',
+      ANTHROPIC_API_KEY: 'sk-a', OPENAI_API_KEY: 'sk-o', OPENROUTER_API_KEY: 'sk-r', GEMINI_API_KEY: 'g', GOOGLE_API_KEY: 'g2',
+      XAI_API_KEY: 'x', HTTPS_PROXY: 'http://proxy:3128', HTTP_PROXY: 'http://proxy:3128', NO_PROXY: 'localhost',
+      NODE_EXTRA_CA_CERTS: '/etc/ca.pem' };
+    const run = { RUVNET_NIGHTLY: '1', RUVNET_NIGHTLY_IDENTITY: 'n', RUVNET_BRAIN_TEST: '1', RUVNET_REFRESH_RUN_TOKEN: 't',
+      RUVNET_BRAIN_NO_UPDATE_FALLBACK: '1', NODE_OPTIONS: '--inspect', npm_lifecycle_event: 'x', npm_config_cache: '/c',
+      VITEST_WORKER_ID: '1', CONSOLE_PORT: '9999' };
+    expect(consoleEnv({ ...user, ...run }, 7411)).toEqual({ ...user, CONSOLE_PORT: '7411' });
   });
 
-  it('replaceStaleConsoles launches the current Console with that clean env, never the caller\'s', () => {
+  it('replaceStaleConsoles launches the current Console with that env, never the run\'s flags', () => {
     const f = receiptFixture();
     const launched = [];
     replaceStaleConsoles({ entry: f.entry, identity: f.identity, receiptDir: f.receiptDir, timeoutMs: 300,
-      env: { HOME: '/h', PATH: '/bin', RUVNET_NIGHTLY: '1' }, probe: () => f.publicIdentity,
+      env: { HOME: '/h', PATH: '/bin', ANTHROPIC_API_KEY: 'sk-a', HTTPS_PROXY: 'http://p:1', RUVNET_NIGHTLY: '1' },
+      probe: () => f.publicIdentity,
       spawnFn: (cmd, args, opts) => { launched.push(opts); return { on() {}, unref() {} }; } });
     expect(launched).toHaveLength(1);
-    expect(launched[0].env).toEqual({ HOME: '/h', PATH: '/bin', CONSOLE_PORT: '7499' });
+    expect(launched[0].env).toEqual({ HOME: '/h', PATH: '/bin', ANTHROPIC_API_KEY: 'sk-a', HTTPS_PROXY: 'http://p:1', CONSOLE_PORT: '7499' });
     expect(launched[0].cwd).toBe(f.receipt.scope);
   });
 });
 
-describe('replaceStaleConsoles — a reused pid', () => {
-  it('a live pid whose port does not answer with the receipt identity is pruned at once, not waited on', () => {
-    const f = receiptFixture(); // pid = this test process: alive, but certainly not a Console on 7499
+describe('replaceStaleConsoles — a live pid whose port does not answer', () => {
+  it('is reported at once, never pruned: it may be a busy live Console (or a reused pid)', () => {
+    const f = receiptFixture(); // pid = this test process: alive, and no Console answers on 7499
     const launched = [];
     const started = Date.now();
     const results = replaceStaleConsoles({ entry: f.entry, identity: f.identity, receiptDir: f.receiptDir,
-      probe: () => ({ ...f.publicIdentity, pid: 1 }), spawnFn: () => { launched.push(1); return { on() {}, unref() {} }; } });
+      probe: () => null, spawnFn: () => { launched.push(1); return { on() {}, unref() {} }; } });
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(results).toEqual([expect.objectContaining({ replaced: false, pruned: true, pid: process.pid,
-      reason: expect.stringMatching(/is no longer that Console/) })]);
+    expect(results).toEqual([expect.objectContaining({ replaced: false, pid: process.pid,
+      reason: expect.stringMatching(/is alive but port 7499 does not answer with that Console's identity.*receipt was kept/) })]);
+    expect(results[0].pruned).toBeUndefined();
     expect(launched).toEqual([]);
-    expect(fs.existsSync(f.file)).toBe(false);
+    expect(fs.existsSync(f.file)).toBe(true); // the receipt of a possibly-live Console is never deleted
   });
 
-  it('a port that answers nothing at all is the same case', () => {
+  it('a port answering a DIFFERENT identity is the same: reported, receipt kept', () => {
     const f = receiptFixture();
-    const results = replaceStaleConsoles({ entry: f.entry, identity: f.identity, receiptDir: f.receiptDir, probe: () => null,
-      spawnFn: () => { throw new Error('must not launch'); } });
-    expect(results).toEqual([expect.objectContaining({ pruned: true })]);
+    const results = replaceStaleConsoles({ entry: f.entry, identity: f.identity, receiptDir: f.receiptDir,
+      probe: () => ({ ...f.publicIdentity, pid: 1 }), spawnFn: () => { throw new Error('must not launch'); } });
+    expect(results).toEqual([expect.objectContaining({ replaced: false })]);
+    expect(fs.existsSync(f.file)).toBe(true);
   });
 });
