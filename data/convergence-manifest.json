@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "ruvnet-brain-convergence-manifest",
   "version": "4.4.1",
-  "sourceIdentity": "33b3c733a5ec6ccd90cde9b40d7e0c3156ecd7800fced320da9bbb82ec3cad2b",
+  "sourceIdentity": "4cf0db30565a4f02c29e7e96e807ed0c0cc7080a0b40c93ce0b8215c242eccd8",
   "versionSurfaces": {
     "package.json": "4.4.1",
     "plugin/.claude-plugin/plugin.json": "4.4.1",
@@ -108,8 +108,8 @@
     "0100-guaranteed-agentdb-continuity.md",
     "README.md"
   ],
-  "trackedFileCount": 1753,
-  "trackedFilesSha256": "a9142302a06743db9a316071ad21bae6afa314eefc3aabc86b628b8ee5c01cea",
+  "trackedFileCount": 1755,
+  "trackedFilesSha256": "279ace95d43e2deee2ea90f2585f785eb0598ed86cf7fc168789da0b1b368fbd",
   "ownershipChecks": [
     "version:check",
     "doc:currency",
