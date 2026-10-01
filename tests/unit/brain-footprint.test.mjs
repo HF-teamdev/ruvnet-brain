@@ -283,7 +283,7 @@ describe('inventory: everything the Brain owns is classified', () => {
       // named by the installer's pid. Its contents are disposable, so only the in-progress guard keeps it.
       const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
       const bak = kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
-      npxCopy(m, 'old', '4.3.1'); npxCopy(m, 'new', '4.5.0');
+      npxCopy(m, 'old', '4.3.1'); npxCopy(m, 'new', '7.7.0');
       plant(m);
       const result = sweepFootprint(opts(m, { apply: true, now: Date.now() }));
       expect(fs.existsSync(prior), `${name}: install-prior removed mid-activation`).toBe(true);
@@ -299,7 +299,7 @@ describe('inventory: everything the Brain owns is classified', () => {
     const m = machine(); live(m);
     const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${2 ** 30}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
     json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 2 ** 30, at: NOW - 3_600_000 }); // its process is gone
-    for (const [hash, v, days] of [['older-recent', '4.3.1', 0], ['older-stale', '4.3.2', 3], ['newest', '4.5.0', 3]]) {
+    for (const [hash, v, days] of [['older-recent', '4.3.1', 0], ['older-stale', '4.3.2', 3], ['newest', '7.7.0', 3]]) {
       json(path.join(m.home, '.npm', '_npx', hash, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
       json(path.join(m.home, '.npm', '_npx', hash, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
       if (days) old(path.join(m.home, '.npm', '_npx', hash), days);
@@ -313,13 +313,13 @@ describe('inventory: everything the Brain owns is classified', () => {
 
   it('Stable Spine generations: active, previous and live-leased are kept; an unreferenced one is reported for the update GC', () => {
     const m = machine(); live(m);
-    json(path.join(m.brainHome, 'active.json'), { version: '4.5.0', codeRoot: 'versions/4.5.0', previous: { codeRoot: 'versions/4.2.7' } });
-    for (const v of ['4.3.0', '4.3.9', '4.2.7', '4.5.0']) json(path.join(m.brainHome, 'versions', v, 'x.json'), {});
+    json(path.join(m.brainHome, 'active.json'), { version: '7.7.0', codeRoot: 'versions/7.7.0', previous: { codeRoot: 'versions/4.2.7' } });
+    for (const v of ['4.3.0', '4.3.9', '4.2.7', '7.7.0']) json(path.join(m.brainHome, 'versions', v, 'x.json'), {});
     json(path.join(m.brainHome, 'leases', 'mcp-me.json'), { pid: process.pid, version: '4.3.9' });
     old(path.join(m.brainHome, 'leases', 'mcp-me.json'), 1); // older than 6h, but its process is alive
     const fp = inventoryFootprint(opts(m));
     const at = (v) => item(fp, path.join(m.brainHome, 'versions', v));
-    expect(at('4.5.0')).toMatchObject({ class: 'must-exist', action: 'keep' });
+    expect(at('7.7.0')).toMatchObject({ class: 'must-exist', action: 'keep' });
     expect(at('4.2.7')).toMatchObject({ class: 'may-exist', action: 'keep' });
     expect(at('4.3.9')).toMatchObject({ class: 'may-exist', action: 'keep' });
     expect(at('4.3.0')).toMatchObject({ class: 'must-not-exist', action: 'report', fix: 'npx ruvnet-brain@latest --update' });
@@ -361,9 +361,9 @@ describe('inventory: everything the Brain owns is classified', () => {
 describe('positive confirmation', () => {
   function clean() {
     const m = machine(); live(m);
-    json(path.join(m.brainHome, 'active.json'), { version: '4.5.0', codeRoot: 'versions/4.5.0' });
-    json(path.join(m.brainHome, 'versions', '4.5.0', 'x.json'), {});
-    write(path.join(m.brainHome, '.last-version-check.log'), '4.5.0\n');
+    json(path.join(m.brainHome, 'active.json'), { version: '7.7.0', codeRoot: 'versions/7.7.0' });
+    json(path.join(m.brainHome, 'versions', '7.7.0', 'x.json'), {});
+    write(path.join(m.brainHome, '.last-version-check.log'), '7.7.0\n');
     writeSignatureRecord({ brainHome: m.brainHome, kbDir: m.kbDir, bundleSha256: 'a'.repeat(64), source: 'update', now: NOW });
     write(path.join(m.brainHome, 'token-ledger.jsonl'), `${JSON.stringify({ ts: new Date(NOW - 7_200_000).toISOString(), source: 'mcp', tool: 'search_ruvnet', bytes: 9 })}\n`);
     return m;
@@ -383,7 +383,7 @@ describe('positive confirmation', () => {
     const m = clean();
     kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
     write(path.join(m.kbDir, 'COVERAGE.json'), '{"rows":[]}'); // bytes changed since the verified install
-    const r = run(m, { npmLatest: { version: '4.6.0', checkedAt: NOW }, now: NOW + 3 * 86_400_000,
+    const r = run(m, { npmLatest: { version: '7.8.0', checkedAt: NOW }, now: NOW + 3 * 86_400_000,
       readiness: [{ pid: 42, state: 'ready', kbDir: path.join(m.brainHome, 'kb.bak-1') }] });
     const by = Object.fromEntries(r.lines.map((l) => [l.id, l]));
     expect(by.software).toMatchObject({ state: 'warn', fix: 'npx ruvnet-brain@latest --update' }); // currency advises
@@ -401,13 +401,13 @@ describe('positive confirmation', () => {
   it('currency is advisory: a 72h-old KB, a host plugin one version behind and a newer npm give ! lines and exit 0', () => {
     const m = clean();
     const cache = path.join(m.home, '.claude', 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain');
-    json(path.join(cache, '4.4.9', '.claude-plugin', 'plugin.json'), { version: '4.4.9' });
-    json(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'ruvnet-brain@ruvnet-brain': [{ installPath: path.join(cache, '4.4.9') }] } });
-    const r = run(m, { now: NOW + 72 * 3_600_000, npmLatest: { version: '4.5.1', checkedAt: NOW } });
+    json(path.join(cache, '7.6.9', '.claude-plugin', 'plugin.json'), { version: '7.6.9' });
+    json(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'ruvnet-brain@ruvnet-brain': [{ installPath: path.join(cache, '7.6.9') }] } });
+    const r = run(m, { now: NOW + 72 * 3_600_000, npmLatest: { version: '7.7.1', checkedAt: NOW } });
     const by = Object.fromEntries(r.lines.map((l) => [l.id, l]));
     expect(by.knowledge).toMatchObject({ state: 'warn', fix: 'npx ruvnet-brain@latest --update' });
     expect(by.knowledge.detail).toMatch(/built 3d ago \(limit 48h\)/);
-    expect(by.hosts).toMatchObject({ state: 'warn', detail: expect.stringMatching(/Claude Code 4\.4\.9 ≠ runtime 4\.5\.0/) });
+    expect(by.hosts).toMatchObject({ state: 'warn', detail: expect.stringMatching(/Claude Code 7\.6\.9 ≠ runtime 7\.7\.0/) });
     expect(by.software).toMatchObject({ state: 'warn' });
     expect(r.ok).toBe(true);
     const verdict = doctorVerdict(r, [{ id: 'grounding', label: 'Grounding', state: 'ok', detail: 'proven' }]);
@@ -464,9 +464,9 @@ describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain i
     const meta = ['._kb', '._active.json', '.DS_Store', '._token-ledger.jsonl', '._open-issues.json.bak-20260808'];
     for (const n of meta) write(path.join(brain, n), 'AppleDouble');
     for (const d of ['.fseventsd', '.Spotlight-V100', '.Trashes', '.TemporaryItems']) write(path.join(brain, d, 'x'), 'volume');
-    json(path.join(brain, 'active.json'), { version: '4.5.0', codeRoot: 'versions/4.5.0' });
-    json(path.join(brain, 'versions', '4.5.0', 'x.json'), {});
-    write(path.join(brain, 'versions', '._4.5.0'), 'AppleDouble');
+    json(path.join(brain, 'active.json'), { version: '7.7.0', codeRoot: 'versions/7.7.0' });
+    json(path.join(brain, 'versions', '7.7.0', 'x.json'), {});
+    write(path.join(brain, 'versions', '._7.7.0'), 'AppleDouble');
     write(path.join(brain, 'leases', '._mcp-me.json'), 'AppleDouble'); old(path.join(brain, 'leases', '._mcp-me.json'), 2);
     write(path.join(brain, 'ruflo-cwd', '._p1'), 'AppleDouble');
     write(path.join(brain, 'kb', '._SOURCE.json'), 'AppleDouble');
@@ -474,7 +474,7 @@ describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain i
     const copy = kbTree(path.join(brain, 'kb.bak-1'), { publicStores: { alpha: 'old' }, privateStores: { secret: 's' } });
     write(path.join(copy, '._SOURCE.json'), 'AppleDouble'); write(path.join(copy, '._secret.big.rvf'), 'AppleDouble');
     write(path.join(copy, '.DS_Store'), 'Finder');
-    const metaPaths = [...meta.map((n) => path.join(brain, n)), path.join(brain, 'versions', '._4.5.0'), path.join(brain, 'leases', '._mcp-me.json'),
+    const metaPaths = [...meta.map((n) => path.join(brain, n)), path.join(brain, 'versions', '._7.7.0'), path.join(brain, 'leases', '._mcp-me.json'),
       path.join(brain, 'ruflo-cwd', '._p1'), ...['.fseventsd', '.Spotlight-V100', '.Trashes', '.TemporaryItems'].map((d) => path.join(brain, d))];
     const fp = inventoryFootprint({ env: m.env, home: m.home, now: NOW });
     for (const p of metaPaths) expect(item(fp, p), p).toBeUndefined();
@@ -674,7 +674,7 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
   it('recent-npx guard removed -> an installer copy fetched minutes ago is deleted', async () => {
     const mod = await mutant([['brain-footprint.mjs', "(recent ? 'fetched in the last 2h; it may be running now' : null)", 'null']]);
     const m = machine(); live(m);
-    for (const [h, v] of [['o', '4.3.1'], ['n', '4.5.0']]) {
+    for (const [h, v] of [['o', '4.3.1'], ['n', '7.7.0']]) {
       json(path.join(m.home, '.npm', '_npx', h, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
       json(path.join(m.home, '.npm', '_npx', h, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
     }
