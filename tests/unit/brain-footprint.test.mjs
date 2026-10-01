@@ -273,7 +273,7 @@ describe('inventory: everything the Brain owns is classified', () => {
       old(path.join(m.home, '.npm', '_npx', hash), days);
     };
     const scenarios = {
-      marker: (m) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: NOW }),
+      marker: (m) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: Date.now() }),
       stage: (m) => fs.mkdirSync(path.join(m.brainHome, '.kb.install-stage-young')), // mtime: now
       prior: () => {},
     };
@@ -281,7 +281,7 @@ describe('inventory: everything the Brain owns is classified', () => {
       const m = machine(); live(m);
       // The window between the renames: the NEW live KB is in place and the prior generation is beside it,
       // named by the installer's pid. Its contents are disposable, so only the in-progress guard keeps it.
-      const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+      const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${Date.now()}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
       const bak = kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
       npxCopy(m, 'old', '4.3.1'); npxCopy(m, 'new', '7.7.0');
       plant(m);
@@ -292,6 +292,25 @@ describe('inventory: everything the Brain owns is classified', () => {
         expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'old')), `${name}: an npx copy was removed during an install`).toBe(true);
         expect(result.kept.some((k) => /an install is activating/.test(k.reason))).toBe(true);
       }
+    }
+  });
+
+  // Re-review S5: a marker left by a crashed install whose pid was later reused (or a pid owned by another
+  // user: kill(pid, 0) → EPERM, read as alive) froze the sweep forever. Proof of life is bounded by time.
+  it('an activation marker or install-prior older than 2 h no longer freezes the sweep, whatever its pid says', () => {
+    const cases = [
+      ['marker, my pid, 3 h old', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: now - 3 * 3_600_000 }), false],
+      ['marker, another user\'s pid (EPERM), 3 h old', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 1, at: now - 3 * 3_600_000 }), false],
+      ['marker, another user\'s pid (EPERM), fresh', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 1, at: now }), true],
+      ['install-prior named 3 h ago with my pid', (m, now) => kbTree(path.join(m.brainHome, `kb.install-prior-${now - 3 * 3_600_000}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } }), false],
+    ];
+    for (const [label, plant, blocks] of cases) {
+      const m = machine(); live(m);
+      const now = Date.now();
+      const bak = kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+      plant(m, now);
+      sweepFootprint(opts(m, { apply: true, now }));
+      expect(fs.existsSync(bak), `${label}: ${blocks ? 'must still block' : 'must not block any more'}`).toBe(blocks);
     }
   });
 
@@ -696,7 +715,7 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
   it('install-in-progress guard removed -> the rollback copy is deleted between the installer\'s renames', async () => {
     const mod = await mutant([['brain-footprint.mjs', '    : installing ? \'an install is activating', '    : false ? \'an install is activating']]);
     const m = machine(); live(m);
-    const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+    const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${Date.now()}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
     sweepFootprint(opts(m, { apply: true, now: Date.now() }));
     expect(fs.existsSync(prior)).toBe(true); // real module: kept
     mod.sweepFootprint(opts(m, { apply: true, now: Date.now() }));
