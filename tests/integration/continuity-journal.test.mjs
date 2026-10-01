@@ -97,9 +97,10 @@ describe('1. contention → outbox → eventual commit', () => {
 });
 
 describe('2. never silent', () => {
-  it('a healthy journal prints the positive confirmation', () => {
+  it('a healthy journal prints the positive confirmation — and never before a committed read-back', () => {
     const p = adoptedProject();
     const journal = new ContinuityJournal({ projectRoot: p.dir });
+    expect(recordingLine(journal.status())).toMatch(/^AgentDB: recording not yet proven/);
     journal.record([lesson('Healthy.')]);
     drain(journal, { ruflo: fakeRuflo().bin, backoff: fastBackoff, sleep: noSleep });
     expect(recordingLine(journal.status())).toMatch(/^AgentDB: recording ✓ \(last write \d+s ago, 1 event\(s\) today, outbox 0 pending\)$/);
@@ -210,7 +211,9 @@ describe('4. Codex SessionEnd budget (3s cap, 2200ms handed down)', () => {
     expect(result.continuity.recorded).toBe(50);
     expect(launches).toHaveLength(1);
     expect(ruflo.calls()).toHaveLength(0);
-    expect(elapsed).toBeLessThan(1500);
+    // The whole boundary (continuity + the skipped progression path) inside the 1900ms the Codex wrapper
+    // hands SessionEnd. Measured 207ms on an idle machine; the bound is the real contract, not the idle figure.
+    expect(elapsed).toBeLessThan(1900);
     console.info(JSON.stringify({ proof: 'codex-sessionend-continuity-capture', commits: 50, elapsedMs: elapsed, budgetMs: 1900 }));
   });
 });

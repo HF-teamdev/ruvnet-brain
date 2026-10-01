@@ -3003,7 +3003,8 @@ async function doctor() {
     if (fs.existsSync(journal.swarm)) {
       const status = journal.status();
       const line = recordingLine(status);
-      console.log(`  ${status.stuck ? c.red('✗') : c.green('✓')} ${line}`);
+      const glyph = status.stuck ? c.red('✗') : status.lastCommitAt ? c.green('✓') : c.yellow('!');
+      console.log(`  ${glyph} ${line}`);
     }
   } catch (error) {
     console.log(`  ${c.yellow('!')} AgentDB recording status unavailable: ${error.message}`);

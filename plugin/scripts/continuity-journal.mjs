@@ -167,8 +167,9 @@ export function recordingLine(status, now = Date.now()) {
     return `AgentDB: recording ✗ — ${status.pending} event(s) pending${status.oldestPendingAt ? ` for ${ago(now - status.oldestPendingAt)}` : ''}, ${why}.`
       + ` They are durable in ${status.outbox} and retry at every capture boundary.`;
   }
-  const last = status.lastCommitAt ? `last write ${ago(now - status.lastCommitAt)} ago` : 'no write yet';
-  return `AgentDB: recording ✓ (${last}, ${status.eventsToday} event(s) today, outbox ${status.pending} pending)`;
+  // ✓ only on evidence: a committed, read-back event. "Nothing failed yet" is not proof of recording.
+  if (!status.lastCommitAt) return `AgentDB: recording not yet proven — no event committed and read back yet (outbox ${status.pending} pending)`;
+  return `AgentDB: recording ✓ (last write ${ago(now - status.lastCommitAt)} ago, ${status.eventsToday} event(s) today, outbox ${status.pending} pending)`;
 }
 
 function defaultStore({ ruflo, db, key, value }) {
