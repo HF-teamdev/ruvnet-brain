@@ -16,8 +16,11 @@
  *   --needs <file>    novice need set (data/need-set/need-set-v1.json shape: questions[].need, .repo)
  *   --heldout <file>  evals/held-out.json shape (questions[].query, .stratum, .expectRepo); the
  *                     named/described/scenario strata are scored, adversarial is reported as declined
+ *   --recall-fixture <file>  data/retrieval-query-evidence.json with each store's identity stripped
+ *                     (unnameRecallQuery): one described need per store, 180+ stores
  *
- *   node scripts/route-gold-rank.mjs --kb <kbDir> [--impl <forge-ask-all.mjs>] [--needs f] [--heldout f] [--out f]
+ *   node scripts/route-gold-rank.mjs --kb <kbDir> [--impl <forge-ask-all.mjs>] [--needs f] [--heldout f]
+ *     [--recall-fixture f] [--out f]
  *
  * --impl lets the SAME KB be routed by two code versions (a baseline checkout and this one).
  * Measurements only: it writes nothing but --out.
@@ -71,8 +74,25 @@ export function measureRouteRanks({ kbDir, questions, planSourceRoute, discoverR
   return { rows, msPerQuestion: questions.length ? +((performance.now() - t0) / questions.length).toFixed(1) : 0 };
 }
 
-export function loadQuestions({ needs, heldout }) {
-  const out = { needs: [], heldout: [], offTopic: [] };
+/**
+ * The recall fixture asks one question per store and NAMES the store ("In the agentdb repository,
+ * what is AgentDB ..."). With every spelling of the store key removed it becomes a described need
+ * for 180+ stores, so routing can be checked on far more than three repositories. Honest limit: a
+ * display name that is not the store key (e.g. "2 BoT Talk" for 2bottalk) can survive the strip.
+ */
+export function unnameRecallQuery(query, store) {
+  const words = String(store).toLowerCase().match(/[a-z0-9]+/g) || [];
+  const name = new RegExp(`(?<![a-z0-9])${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s._-]*')}(?![a-z0-9])`, 'gi');
+  return String(query).replace(/^in the \S+ repository,\s*/i, '').replace(name, 'this project').replace(/\s+/g, ' ').trim();
+}
+
+export function loadQuestions({ needs, heldout, recallFixture }) {
+  const out = { needs: [], heldout: [], offTopic: [], recallUnnamed: [] };
+  if (recallFixture) {
+    for (const [store, q] of Object.entries(JSON.parse(fs.readFileSync(recallFixture, 'utf8')).queries)) {
+      out.recallUnnamed.push({ id: store, group: 'recall', query: unnameRecallQuery(q.query, store), expected: [store] });
+    }
+  }
   if (needs) {
     for (const q of JSON.parse(fs.readFileSync(needs, 'utf8')).questions) {
       out.needs.push({ id: q.id, group: q.repo, query: q.need, expected: [q.repo] });
@@ -102,7 +122,7 @@ async function main() {
   if (typeof mod.planSourceRoute !== 'function') throw new Error(`${impl} does not export planSourceRoute`);
   let aliases = {};
   try { aliases = JSON.parse(fs.readFileSync(path.join(kbDir, 'repo-aliases.json'), 'utf8')); } catch { /* none */ }
-  const sets = loadQuestions({ needs: arg('--needs'), heldout: arg('--heldout') });
+  const sets = loadQuestions({ needs: arg('--needs'), heldout: arg('--heldout'), recallFixture: arg('--recall-fixture') });
   const report = { kind: 'ruvnet-brain-route-gold-rank', impl, kbDir, measuredAt: new Date().toISOString(), sets: {} };
   for (const [name, questions] of Object.entries(sets)) {
     if (!questions.length) continue;

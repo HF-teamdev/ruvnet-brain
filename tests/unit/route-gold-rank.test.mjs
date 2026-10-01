@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { goldRank, measureRouteRanks, summarizeRoutes } from '../../scripts/route-gold-rank.mjs';
+import { goldRank, measureRouteRanks, summarizeRoutes, unnameRecallQuery } from '../../scripts/route-gold-rank.mjs';
 import { discoverRepos, planSourceRoute } from '../../kb/forge-ask-all.mjs';
 
 describe('goldRank', () => {
@@ -20,6 +20,17 @@ describe('goldRank', () => {
     expect(goldRank(['ruflo', 'ruview'], ['RuView'])).toBe(2);
     expect(goldRank(['metaharness'], ['agent-harness-generator'], { 'agent-harness-generator': ['metaharness'] })).toBe(1);
     expect(goldRank(['ruview-pro'], ['RuView'])).toBeNull();
+  });
+});
+
+describe('unnameRecallQuery', () => {
+  it('removes the repository prefix and every spelling of the store key, but no other word', () => {
+    expect(unnameRecallQuery('In the agentdb repository, Which memory operations does the AgentDB CLI describe?', 'agentdb'))
+      .toBe('Which memory operations does the this project CLI describe?');
+    expect(unnameRecallQuery('In the ruv-fann repository, how does ruv fann / RUV_FANN train?', 'ruv-fann'))
+      .toBe('how does this project / this project train?');
+    expect(unnameRecallQuery('In the ruvector repository, compare ruvector-core and ruvectors.', 'ruvector'))
+      .toBe('compare this project-core and ruvectors.');
   });
 });
 
