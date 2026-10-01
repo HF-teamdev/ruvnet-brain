@@ -207,6 +207,16 @@ describe('layer 2 scanners: the real-host output parsers detect hook errors', ()
     expect(w.hooksLoaded).toBe(4);
     expect(w.pluginHasHooks).toBe(true);
     expect(w.pluginHooksRan).toBe(false);
+    // 4.5, measured on grok 1.0.13: discovered-with-hooks but never dispatched is a finding, never a pass.
+    expect(w.findings.join()).toMatch(/Brain plugin hooks discovered but never ran \(session loaded 4 hooks\)/);
+  });
+  it('grok: a Brain hook that completed counts as ran, and is not reported as not-loaded', () => {
+    const debug = 'plugin discovered name=ruvnet-brain scope=user root=/r skills=1 agents=0 has_hooks=true\n'
+      + '2026 INFO s: xai_grok_shell::session::acp_session::spawn: loaded hooks hook_count=20\n'
+      + '2026 INFO s: xai_grok_hooks::dispatcher: hook completed hook_name=plugin/ruvnet-brain:pre_tool_use[4].hooks[0] elapsed_ms=400';
+    const w = scanGrok({ stdout: '', stderr: '', debug });
+    expect(w.pluginHooksRan).toBe(true);
+    expect(w.findings).toEqual([]);
   });
 });
 
