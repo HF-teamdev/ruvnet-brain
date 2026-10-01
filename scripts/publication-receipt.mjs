@@ -48,6 +48,22 @@ export async function runMeasuredHostSearches(hosts, search, { warmup, after } =
   return results;
 }
 
+// One doctor at a time, for the same reason as the searches above. Each doctor is a fresh reader
+// that loads both models and cross-encodes its own pool; three at once on the 3-vCPU / 7 GB macOS
+// runner, beside the resident dual worker, is what timed out 4.4.1's probes in phase "rerank" at
+// 45s (run 36877770786: all three started within 0.25s) while the same probe alone is far inside
+// its deadline. A customer runs one doctor, so the concurrency was the harness's, not the product's.
+// Every host still runs, so one slow lane cannot hide another's result; the failure names them all.
+export async function runHostDoctors(hosts, doctor) {
+  const failures = [];
+  for (const host of hosts) {
+    try { await doctor(host); } catch (error) { failures.push({ mode: host.mode, error }); }
+  }
+  if (failures.length) {
+    throw new Error(`installed doctor failed for ${failures.map(({ mode }) => mode).join(', ')}: ${failures[0].error.message}`);
+  }
+}
+
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const receiptDigest = (candidate) => String(candidate?.artifact?.sha256 || '').replace(/^sha256:/, '');
@@ -588,11 +604,11 @@ export function livePublicationAdapter({ root = process.cwd(), candidateRoot = r
         },
       });
       for (const [mode, result] of measuredSearches) searched.set(mode, result);
-      await Promise.all(hostResults.map(async ({ context, installer }) => {
+      await runHostDoctors(hostResults, async ({ context, installer }) => {
         await commandAsync(process.execPath, [installer, '--doctor', '--hooks'], {
           env: context.env, cwd: packageRoot, timeout: 300_000, stdio: 'inherit',
         });
-      }));
+      });
 
       for (const { mode, verified, context } of hostResults) {
         const search = searched.get(mode);
