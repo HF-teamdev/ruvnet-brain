@@ -87,6 +87,9 @@ shouldn't be there isn't, nothing building up cruft" — confirmed positively, n
   the `kb-copy-proof` above (amended 2026-10-01 after review B1: an earlier rule deleted hand-made backups
   older than 7 days with no proof; `tests/unit/brain-footprint.test.mjs` "report-only guard" mutant).
 - An in-progress storage transaction's trees, a refresh-lock holder's siblings, and a live lease are kept.
+  So is everything beside the KB, and every npx copy, while a plain install activates (its
+  `.kb.install-activation.lock` names a live pid, its stage is younger than 2 h, or a
+  `kb.install-prior-<ts>-<pid>` names a live pid); an older npx copy fetched < 2 h ago is kept (review S6).
 
 ## Consequences
 

@@ -142,6 +142,7 @@ describe('inventory: everything the Brain owns is classified', () => {
     for (const [hash, v] of [['a1', '4.3.39'], ['b2', '4.3.40'], ['c3', '4.9.9']]) {
       json(path.join(m.home, '.npm', '_npx', hash, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
       json(path.join(m.home, '.npm', '_npx', hash, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
+      old(path.join(m.home, '.npm', '_npx', hash), 3);
     }
     json(path.join(m.home, '.npm', '_npx', 'dev', 'package.json'), { _npx: { packages: ['/Users/x/Code/ruvnet-brain'] } });
     json(path.join(m.home, '.npm', '_npx', 'dev', 'node_modules', 'ruvnet-brain', 'package.json'), { version: '4.3.28' });
@@ -259,6 +260,54 @@ describe('inventory: everything the Brain owns is classified', () => {
     expect(fs.existsSync(path.join(m.brainHome, 'kb.bak-1'))).toBe(true);
     sweepFootprint(opts(m, { apply: true, holdingRefreshLock: true }));
     expect(fs.existsSync(path.join(m.brainHome, 'kb.bak-1'))).toBe(false);
+  });
+
+  // Review S6: a plain `npx ruvnet-brain` install holds no refresh lock, so the detached SessionStart sweep
+  // could run between the installer's two activation renames and delete kb.install-prior-* (the rollback
+  // copy) — after which the installer's next rename fails and its rollback cannot restore anything.
+  it('an install mid-activation freezes every KB sibling and the npx copies (marker, young stage, or a live install-prior pid)', () => {
+    const npxCopy = (m, hash, v, days = 3) => {
+      json(path.join(m.home, '.npm', '_npx', hash, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
+      json(path.join(m.home, '.npm', '_npx', hash, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
+      old(path.join(m.home, '.npm', '_npx', hash), days);
+    };
+    const scenarios = {
+      marker: (m) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: NOW }),
+      stage: (m) => fs.mkdirSync(path.join(m.brainHome, '.kb.install-stage-young')), // mtime: now
+      prior: () => {},
+    };
+    for (const [name, plant] of Object.entries(scenarios)) {
+      const m = machine(); live(m);
+      // The window between the renames: the NEW live KB is in place and the prior generation is beside it,
+      // named by the installer's pid. Its contents are disposable, so only the in-progress guard keeps it.
+      const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+      const bak = kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+      npxCopy(m, 'old', '4.3.1'); npxCopy(m, 'new', '4.5.0');
+      plant(m);
+      const result = sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+      expect(fs.existsSync(prior), `${name}: install-prior removed mid-activation`).toBe(true);
+      if (name !== 'prior') {
+        expect(fs.existsSync(bak), `${name}: a KB sibling was touched while an install activates`).toBe(true);
+        expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'old')), `${name}: an npx copy was removed during an install`).toBe(true);
+        expect(result.kept.some((k) => /an install is activating/.test(k.reason))).toBe(true);
+      }
+    }
+  });
+
+  it('a finished activation (dead installer pid) leaves kb.install-prior-* to the normal proof; a recent npx copy is kept', () => {
+    const m = machine(); live(m);
+    const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${2 ** 30}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+    json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 2 ** 30, at: NOW - 3_600_000 }); // its process is gone
+    for (const [hash, v, days] of [['older-recent', '4.3.1', 0], ['older-stale', '4.3.2', 3], ['newest', '4.5.0', 3]]) {
+      json(path.join(m.home, '.npm', '_npx', hash, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
+      json(path.join(m.home, '.npm', '_npx', hash, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
+      if (days) old(path.join(m.home, '.npm', '_npx', hash), days);
+    }
+    sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+    expect(fs.existsSync(prior)).toBe(false);
+    expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'older-stale'))).toBe(false);
+    expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'older-recent'))).toBe(true); // may be running right now
+    expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'newest'))).toBe(true);
   });
 
   it('Stable Spine generations: active, previous and live-leased are kept; an unreferenced one is reported for the update GC', () => {
@@ -517,6 +566,27 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
     mod.sweepFootprint(opts(m, { apply: true }));
     expect(fs.existsSync(mine)).toBe(false); // mutant: deleted
   });
+  it('install-in-progress guard removed -> the rollback copy is deleted between the installer\'s renames', async () => {
+    const mod = await mutant([['brain-footprint.mjs', '    : installing ? \'an install is activating', '    : false ? \'an install is activating']]);
+    const m = machine(); live(m);
+    const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+    sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+    expect(fs.existsSync(prior)).toBe(true); // real module: kept
+    mod.sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+    expect(fs.existsSync(prior)).toBe(false); // mutant: the live installer's rollback copy is gone
+  });
+  it('recent-npx guard removed -> an installer copy fetched minutes ago is deleted', async () => {
+    const mod = await mutant([['brain-footprint.mjs', "(recent ? 'fetched in the last 2h; it may be running now' : null)", 'null']]);
+    const m = machine(); live(m);
+    for (const [h, v] of [['o', '4.3.1'], ['n', '4.5.0']]) {
+      json(path.join(m.home, '.npm', '_npx', h, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
+      json(path.join(m.home, '.npm', '_npx', h, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
+    }
+    sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+    expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'o'))).toBe(true);
+    mod.sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+    expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'o'))).toBe(false);
+  });
   it('live-lease guard removed -> a lease whose process is alive is deleted', async () => {
     const mod = await mutant([['brain-footprint.mjs', '&& !pidAlive(readJson(lp)?.pid)', '']]);
     const m = machine(); live(m);
@@ -527,9 +597,10 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
   it('live-brain-present guard removed -> install-prior is deleted while no live KB exists', async () => {
     const mod = await mutant([['kb-copy-proof.mjs', "return { disposable: false, unique: [], reason: 'the live brain is missing", "if (false) return { disposable: false, unique: [], reason: 'the live brain is missing"]]);
     const m = machine(); fs.mkdirSync(m.brainHome, { recursive: true });
-    kbTree(path.join(m.brainHome, 'kb.install-prior-1'), { publicStores: { alpha: 'a' } });
+    const prior = `kb.install-prior-1-${2 ** 30}`; // a finished (dead-pid) activation, so only the live-brain guard keeps it
+    kbTree(path.join(m.brainHome, prior), { publicStores: { alpha: 'a' } });
     mod.sweepFootprint(opts(m, { apply: true }));
-    expect(fs.existsSync(path.join(m.brainHome, 'kb.install-prior-1'))).toBe(false);
+    expect(fs.existsSync(path.join(m.brainHome, prior))).toBe(false);
   });
   it('refresh-lock guard removed -> a copy is deleted while another process updates', async () => {
     const mod = await mutant([['brain-footprint.mjs', "const lockHeld = !holdingRefreshLock && Boolean(lstat(refreshLock));", 'const lockHeld = false;']]);
@@ -545,6 +616,7 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
     for (const [h, v] of [['r1', '1.0.0'], ['r2', '2.0.0']]) {
       json(path.join(m.outsideCache, '_npx', h, 'package.json'), { _npx: { packages: [`ruvnet-brain@${v}`] } });
       json(path.join(m.outsideCache, '_npx', h, 'node_modules', 'ruvnet-brain', 'package.json'), { version: v });
+      old(path.join(m.outsideCache, '_npx', h), 3);
     }
     mod.sweepFootprint(opts(m, { apply: true }));
     expect(fs.existsSync(path.join(m.outsideCache, '_npx', 'r1'))).toBe(false);
@@ -559,6 +631,7 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
     for (const [h, v] of [['o', '1.0.0'], ['n', '2.0.0']]) {
       write(path.join(home, '.npm', '_npx', h, 'package.json'), JSON.stringify({ _npx: { packages: [`ruvnet-brain@${v}`] } }));
       write(path.join(home, '.npm', '_npx', h, 'node_modules', 'ruvnet-brain', 'package.json'), JSON.stringify({ version: v }));
+      old(path.join(home, '.npm', '_npx', h), 3);
     }
     sweepFootprint({ env: { HOME: home }, home, now: NOW, apply: true });
     expect(fs.existsSync(path.join(home, '.npm', '_npx', 'o'))).toBe(true); // real module: untouched

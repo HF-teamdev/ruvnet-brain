@@ -781,6 +781,15 @@ export async function unzipInto(zipPath, cacheDir, sourceDir = null, { releaseTa
     }
   }
   const parent = path.dirname(cacheDir);
+  // THE ACTIVATION IS IN PROGRESS from here until the prior generation is proven and released (review S6).
+  // A plain install holds no refresh lock, so this marker (with our pid) is what tells the detached
+  // SessionStart sweep (plugin/scripts/brain-footprint.mjs) to touch NOTHING beside the KB meanwhile — it
+  // used to be able to delete kb.install-prior-* between the two renames below, stranding the rollback.
+  // A die() leaves it naming a dead pid, which the sweep treats as finished.
+  const activationMarker = path.join(parent, `.${path.basename(cacheDir)}.install-activation.lock`);
+  const clearActivationMarker = () => { try { fs.rmSync(activationMarker, { force: true }); } catch { /* a dead pid reads as finished */ } };
+  fs.writeFileSync(activationMarker, `${JSON.stringify({ pid: process.pid, at: Date.now() })}\n`, { mode: 0o600 });
+  process.once('exit', clearActivationMarker);
   const priorPrefix = `${path.basename(cacheDir)}.install-prior-`;
   const unresolved = fs.readdirSync(parent).filter((name) => name.startsWith(priorPrefix));
   if (unresolved.length) {
@@ -858,6 +867,8 @@ export async function unzipInto(zipPath, cacheDir, sourceDir = null, { releaseTa
       priorGeneration = { status: 'PRESERVED_UNIQUE', path: preservedDir, unique: proof.unique, automaticCleanupEligible: false };
     }
   }
+  clearActivationMarker();
+  process.removeListener('exit', clearActivationMarker);
   ok(`brain unpacked to ${cacheDir}`);
   return { status: 'ACTIVATED', priorGeneration };
 }

@@ -159,7 +159,18 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   const base = path.basename(roots.kbDir);
   const refreshLock = path.join(roots.kbParent, `.${base}.refresh-run.lock`);
   const lockHeld = !holdingRefreshLock && Boolean(lstat(refreshLock));
-  const kbBlocked = lockHeld ? 'an update holds the refresh lock; KB copies are never touched while it runs' : null;
+  // A plain `npx ruvnet-brain` install holds no refresh lock (review S6). It is IN PROGRESS while its
+  // activation marker names a live pid, while its stage is young, or while a kb.install-prior-<ts>-<pid>
+  // rollback copy names a live pid (the window between its two renames). Then nothing beside the KB moves.
+  const installPid = (name) => Number(name.slice(`${base}.install-prior-`.length).split('-').pop());
+  const installing = (() => {
+    const marker = readJson(path.join(roots.kbParent, `.${base}.install-activation.lock`));
+    if (marker && pidAlive(Number(marker.pid))) return true;
+    return names(roots.kbParent).some((n) => (n.startsWith(`.${base}.install-stage-`) && now - (lstat(path.join(roots.kbParent, n))?.mtimeMs ?? 0) <= policy.staleStageMs)
+      || (n.startsWith(`${base}.install-prior-`) && pidAlive(installPid(n))));
+  })();
+  const kbBlocked = lockHeld ? 'an update holds the refresh lock; KB copies are never touched while it runs'
+    : installing ? 'an install is activating a new generation; KB copies and installer copies are never touched while it runs' : null;
 
   // ── a moved brain whose volume is not mounted: report it, touch NOTHING (no sweep, no reinstall) ─
   if (roots.dangling) {
@@ -360,8 +371,13 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   const keeper = npx.find((n) => n.running) || npx.filter((n) => n.version === keepVersion).sort((a, b) => b.mtime - a.mtime)[0];
   for (const n of npx) {
     const keep = n === keeper || n.running;
+    // An older copy fetched in the last 2h may be the installer another terminal is running right now, and
+    // none is removed while an update or an install is in progress (review S6).
+    const recent = now - n.mtime <= policy.staleStageMs;
+    const hold = !keep && (kbBlocked || (recent ? 'fetched in the last 2h; it may be running now' : null));
     add({ id: 'npx', path: n.dir, version: n.version, bytes: bytes(n.dir), class: keep ? 'may-exist' : 'must-not-exist', kind: 'npx-copy',
-      action: keep ? 'keep' : 'remove', reason: keep ? (n.running ? 'the installer running now' : 'the newest installer copy') : `an older installer copy (${n.version})` });
+      action: keep || hold ? (keep ? 'keep' : 'report') : 'remove', blocked: hold || null,
+      reason: keep ? (n.running ? 'the installer running now' : 'the newest installer copy') : `an older installer copy (${n.version})` });
   }
 
   // ── lifecycle evidence, judged by its own policy ────────────────────────────────────────────

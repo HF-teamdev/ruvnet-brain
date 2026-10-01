@@ -146,6 +146,8 @@ function plantCruft({ home, brainHome, kbDir, round }) {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ _npx: { packages: [`ruvnet-brain@${v}`] } }));
     fs.writeFileSync(path.join(dir, 'node_modules', 'ruvnet-brain', 'package.json'), JSON.stringify({ version: v }));
     fs.writeFileSync(path.join(dir, 'node_modules', 'ruvnet-brain', 'blob'), Buffer.alloc(MIB));
+    const fetched = new Date(Date.now() - 3 * 86_400_000); // stale copies (a copy fetched < 2h ago may be running)
+    fs.utimesSync(dir, fetched, fetched);
   }
   fs.writeFileSync(path.join(brainHome, 'evidence.jsonl'), Buffer.alloc(3 * MIB, 0x61));
   fs.mkdirSync(path.join(brainHome, 'ruflo-cwd', 'p', '.swarm'), { recursive: true });
@@ -305,6 +307,8 @@ describe('footprint guarantee: real install, forced reinstall, three updates', (
     expect(fresh.code, fresh.output.slice(-6000)).toBe(0);
     expect(fresh.output).toMatch(/signature valid \(sha256 /);
     expect(readJson(record)).toMatchObject({ source: 'install', bundleSha256: seed.sha256, coverageSha256: coverageSha() });
+    // The activation marker that froze the sweep while the generation swapped is gone once it finished (S6).
+    expect(fs.existsSync(path.join(brainHome, '.kb.install-activation.lock'))).toBe(false);
 
     const pointAtLocal = () => {
       const source = readJson(path.join(kbDir, 'SOURCE.json'));
