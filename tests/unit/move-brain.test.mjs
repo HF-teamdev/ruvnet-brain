@@ -112,9 +112,10 @@ describe('the Brain\'s disk is unplugged (dangling link)', () => {
     const { home, brain, dest } = unplug();
     const where = brainLocation({ home });
     expect(where).toMatchObject({ state: 'unmounted', target: dest });
-    expect(unmountedNotice({ home })).toBe(`RuvNet Brain's disk ${where.volume} is not mounted (${brain} -> ${dest}). Mount it, then retry; nothing was changed.`);
+    expect(unmountedNotice({ home })).toBe(`RuvNet Brain's disk ${where.volume} is not mounted (${brain} -> ${dest}). Mount it, then retry; nothing was changed. Do NOT reinstall.`);
     expect(health(home, false).problem).toBe(unmountedNotice({ home }));
-    expect(health(home, false).problem).not.toMatch(/reinstall/);
+    // never ADVISES a reinstall: the only mention allowed is the explicit warning not to
+    expect(health(home, false).problem.replace("Do NOT reinstall.", "")).not.toMatch(/reinstall/i);
     expect(volumeOf('/Volumes/SanDisk/ruvnet-brain')).toBe('/Volumes/SanDisk');
     expect(volumeOf('/media/stuart/SanDisk/ruvnet-brain')).toBe('/media/stuart/SanDisk');
   });

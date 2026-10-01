@@ -44,10 +44,6 @@ export const health = (home, off) => {
   catch { /* absent */ }
   const absentByChoice = off && (!exists(kb) || !rvf);
   if (absentByChoice) return { problem: '', absentByChoice };
-  // A brain moved to another disk (~/.cache/ruvnet-brain is a link) whose volume is unplugged is NOT
-  // missing: reinstalling would lay a second brain beside the dead link (ADR-098). Say what it is.
-  const notice = unmountedNotice({ home });
-  if (notice) return { problem: `${notice} Do NOT reinstall.`, absentByChoice };
   if (!exists(kb)) return { problem: `the brain cache directory is MISSING (${kb}) — reinstall: npx github:stuinfla/ruvnet-brain`, absentByChoice };
   if (!rvf) return { problem: `NO vector stores (.rvf) found in ${kb} — the brain is empty; reinstall: npx github:stuinfla/ruvnet-brain --force`, absentByChoice };
   if (!exists(path.join(kb, 'node_modules', '@xenova', 'transformers', 'package.json'))) {

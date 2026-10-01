@@ -37,7 +37,7 @@ export function brainLocation({ home = os.homedir(), brainHome = defaultBrainHom
   if (fs.existsSync(target)) return { path: brainHome, state: 'linked', real: fs.realpathSync(brainHome), target };
   const volume = volumeOf(target);
   return { path: brainHome, state: 'unmounted', target, volume,
-    message: `RuvNet Brain's disk ${volume} is not mounted (${brainHome} -> ${target}). Mount it, then retry; nothing was changed.` };
+    message: `RuvNet Brain's disk ${volume} is not mounted (${brainHome} -> ${target}). Mount it, then retry; nothing was changed. Do NOT reinstall.` };
 }
 
 /** One clear line when the Brain's disk is missing, '' otherwise. For hooks and readers. */
