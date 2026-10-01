@@ -69,7 +69,7 @@ describe('S3b: a real problem is surfaced, then clears itself (or with one comma
     drain(journal, { ruflo: ruflo.bin, backoff: fastBackoff, sleep: noSleep });
     const red = journal.status();
     expect(red).toMatchObject({ quarantined: [rec.key], stuck: true, problem: 'quarantined', pending: 0 });
-    expect(recordingLine(red)).toMatch(/recording ✗ .*quarantined.*clears itself .*--clear/);
+    expect(recordingLine(red)).toMatch(/recording stuck .*quarantined.*clears itself .*--clear/);
     const later = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin, now: () => Date.now() + QUARANTINE_REPORT_MS + DAY });
     expect(later.status()).toMatchObject({ stuck: false, problem: null, pending: 0 });
     // …and the one command clears it now.
@@ -133,10 +133,10 @@ describe('S3d: the Stop line is shown at most once per session per condition', (
     const live = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin });
     const status = live.status();
     expect(status.problem).toBe('stuck-pending');
-    expect(stopNotice({ journal: live, status, session: 's1' })).toMatch(/recording ✗/);
+    expect(stopNotice({ journal: live, status, session: 's1' })).toMatch(/recording stuck/);
     expect(stopNotice({ journal: live, status, session: 's1' })).toBe('');
-    expect(stopNotice({ journal: live, status, session: 's2' })).toMatch(/recording ✗/);
-    expect(stopNotice({ journal: live, status: { ...status, problem: 'corrupt', corrupt: 1 }, session: 's1' })).toMatch(/recording ✗/);
+    expect(stopNotice({ journal: live, status, session: 's2' })).toMatch(/recording stuck/);
+    expect(stopNotice({ journal: live, status: { ...status, problem: 'corrupt', corrupt: 1 }, session: 's1' })).toMatch(/recording stuck/);
     expect(stopNotice({ journal: live, status: { ...status, stuck: false, problem: null }, session: 's3' })).toBe('');
   });
 });
@@ -243,6 +243,32 @@ describe.skipIf(!canChmod)('a read-only .swarm never hangs a capture boundary (r
       expect(r.signal, 'killed by the timeout: the lock loop spun').toBeNull();
       expect(r.stdout.trim()).toBe('THREW EACCES');
       expect(Date.now() - started).toBeLessThan(5_000);
+    } finally { restore(p); }
+  });
+
+  // Re-review a6 NIT: a STALE append lock that cannot be removed (read-only .swarm) was retried with no pause —
+  // a CPU-bound second until the deadline. The wait must sleep, not spin.
+  it('an unremovable stale lock is waited out with backoff (little CPU), then the append proceeds', () => {
+    const p = adoptedProject();
+    const swarm = path.join(p.dir, '.swarm');
+    fs.writeFileSync(path.join(swarm, 'continuity-events-outbox.jsonl'), '', { mode: 0o600 });
+    const lock = path.join(swarm, '.continuity-events-outbox.lock');
+    fs.writeFileSync(lock, '1 1\n');
+    const old = new Date(Date.now() - 10 * 60_000); fs.utimesSync(lock, old, old);
+    fs.chmodSync(swarm, 0o555);
+    try {
+      const r = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        const { ContinuityJournal } = await import(${JSON.stringify(`file://${JOURNAL}`)});
+        const j = new ContinuityJournal({ projectRoot: ${JSON.stringify(p.dir)}, ruflo: null });
+        const cpu = process.cpuUsage(); const t = Date.now();
+        j.appendRecords([{ type: 'event', key: 'k', digest: 'd', event: {} }]);
+        const used = process.cpuUsage(cpu);
+        console.log(JSON.stringify({ wallMs: Date.now() - t, cpuMs: (used.user + used.system) / 1000 }));`], { encoding: 'utf8', timeout: 8_000 });
+      expect(r.signal).toBeNull();
+      const { wallMs, cpuMs } = JSON.parse(r.stdout.trim());
+      expect(wallMs).toBeGreaterThanOrEqual(900);   // it did wait for the lock's deadline …
+      expect(cpuMs).toBeLessThan(400);               // … asleep, not spinning (a busy loop burns ~the whole second)
+      expect(fs.readFileSync(path.join(swarm, 'continuity-events-outbox.jsonl'), 'utf8')).toContain('"key":"k"');
     } finally { restore(p); }
   });
 

@@ -95,11 +95,11 @@ export class ContinuityJournal {
       }
       let stale = false;
       try { stale = Date.now() - fs.statSync(lock).mtimeMs > APPEND_LOCK_STALE_MS; } catch { /* vanished: retry once more below */ }
-      if (stale) { try { fs.rmSync(lock, { force: true }); } catch { /* not ours to remove: wait it out */ } }
-      // Waited long enough: append anyway (durability first). The compactor re-checks the file size
-      // before its rename and abandons the rewrite if anything landed, so the append is never lost.
+      let removed = false; // a stale lock we cannot remove is waited out ASLEEP, never spun on (re-review a6 NIT)
+      if (stale) { try { fs.rmSync(lock, { force: true }); removed = true; } catch { /* not ours to remove: wait it out */ } }
+      // Waited long enough: append anyway (durability first); the compactor's size re-check keeps it from being lost.
       if (Date.now() >= deadline) break;
-      if (!stale) pause(5);
+      if (!removed) pause(5);
     }
     try { return fn(); } finally { if (held) fs.rmSync(lock, { force: true }); }
   }
@@ -295,14 +295,14 @@ const ago = (t) => (t < 90_000 ? `${Math.max(0, Math.round(t / 1000))}s` : t < 5
 
 /** The one-line positive (or loud) confirmation, shared by the brief, --doctor and the Stop line. */
 export function recordingLine(status, now = Date.now()) {
-  if (!status) return 'AgentDB: recording ✗ — status unavailable';
+  if (!status) return 'AgentDB: recording unknown — status unavailable';
   if (status.stuck) {
     const clears = `clears itself in ${Math.round(QUARANTINE_REPORT_MS / 86_400_000)}d, or now: ${CLEAR_COMMAND}`;
     const why = status.problem === 'quarantined' ? `${status.quarantined.length} quarantined (a different row holds its key; never retried — ${clears})`
       : status.problem === 'corrupt' ? `${status.corrupt} corrupt outbox line(s) removed (${clears})`
         : status.problem === 'dropped' ? `${status.dropped} uncommitted event(s) dropped at the outbox cap (${clears})`
           : status.lastFailure ? `last error: ${status.lastFailure.reason || status.lastFailure.error}` : 'not committing';
-    return `AgentDB: recording ✗ — ${status.pending} event(s) pending${status.oldestPendingAt && status.problem === 'stuck-pending' ? ` for ${ago(now - status.oldestPendingAt)}` : ''}, ${why}.`
+    return `AgentDB: recording stuck — ${status.pending} event(s) pending${status.oldestPendingAt && status.problem === 'stuck-pending' ? ` for ${ago(now - status.oldestPendingAt)}` : ''}, ${why}.`
       + ` Pending events are durable in ${status.outbox} and retry at every capture boundary.`;
   }
   if (status.notApplicable) {
