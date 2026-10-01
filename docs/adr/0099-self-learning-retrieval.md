@@ -76,7 +76,9 @@ the reranker abstained.
 
 ## Decision (proposed)
 
-Four arms, each behind its own flag. E2 (keyword lane) and E3 (quoted-claim merge) stay in.
+Four arms, each behind its own flag. E3 (quoted-claim merge) stays in. E2 (keyword lane) ships off
+in 4.5 behind `RUVNET_BRAIN_KEYWORD_LANE=1`, because its query-time index build costs +2.1 s median
+per question (ADR-090 §9). The pool-reach numbers below that use E2 describe the flag-on reader.
 
 **A. Self-supervised entry points ("doc2query"), built once in CI, never on customer machines.**
 - For each document, generate N newcomer-style questions and index them as extra vectors that point

@@ -3567,7 +3567,8 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
     expect(out.results.every((r) => r.repo === 'ruvector')).toBe(true);
   });
 
-  it('pools a keyword-matched file that dense retrieval missed, judged by the same cross-encoder', async () => {
+  it.each([['off', undefined], ['on', '1']])('pools a keyword-matched file dense missed only when RUVNET_BRAIN_KEYWORD_LANE=1 (%s)', async (mode, flag) => {
+    // 4.5 ships the lane OFF: its query-time index build cost +2.1 s median paired (keyword-lane.mjs).
     const d = mkdirWith(['ruflo.rvf']);
     fs.writeFileSync(path.join(d, 'ruflo.passages.jsonl'), [
       JSON.stringify({ path: 'docs/dense.md', title: 'Dense', text: 'Unrelated overview.' }),
@@ -3576,11 +3577,15 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
     vi.mocked(searchKb).mockResolvedValue([hit({ path: 'docs/dense.md', fullText: 'Unrelated overview.' })]);
     vi.mocked(rerankPairs).mockImplementation(async (_q, cands) =>
       cands.map((c) => ({ ...c, ceScore: c._lane === 'bm25' ? 3 : -2 })).sort((a, b) => b.ceScore - a.ceScore));
-    const out = await searchAll({ dir: d, repos: ['ruflo'],
-      query: 'How should each helper report status and share artifacts so nothing gets lost?' });
+    if (flag) process.env.RUVNET_BRAIN_KEYWORD_LANE = flag;
+    try {
+      await searchAll({ dir: d, repos: ['ruflo'],
+        query: 'How should each helper report status and share artifacts so nothing gets lost?' });
+    } finally { delete process.env.RUVNET_BRAIN_KEYWORD_LANE; }
     const pooled = vi.mocked(rerankPairs).mock.calls[0][1];
-    expect(pooled.filter((c) => c._lane === 'bm25').map((c) => c.path)).toEqual(['.agents/skills/swarm/SKILL.md']);
-    expect(out.results[0]).toMatchObject({ path: '.agents/skills/swarm/SKILL.md', _lane: 'bm25' });
+    expect(pooled.filter((c) => c._lane === 'bm25').map((c) => c.path))
+      .toEqual(mode === 'on' ? ['.agents/skills/swarm/SKILL.md'] : []);
+    expect(pooled.map((c) => c.path)).toContain('docs/dense.md');
   });
 
   it.each([['off', undefined], ['on', '1']])('applies the learned judge only when RUVNET_BRAIN_JUDGE=1 and weights exist (%s)', async (mode, flag) => {
@@ -3596,11 +3601,12 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
     vi.mocked(rerankPairs).mockImplementation(async (_q, cands) =>
       cands.map((c) => ({ ...c, ceScore: c._lane === 'bm25' ? -3 : 2 })).sort((a, b) => b.ceScore - a.ceScore));
     if (flag) process.env.RUVNET_BRAIN_JUDGE = flag;
+    process.env.RUVNET_BRAIN_KEYWORD_LANE = '1'; // the judge re-scores the keyword lane's candidate
     try {
       const out = await searchAll({ dir: d, repos: ['ruflo'], query: 'how should helpers report status and share artifacts' });
       if (mode === 'off') expect(out.results[0]).toMatchObject({ path: 'dense.md', ceScore: 2 });
       else expect(out.results[0]).toMatchObject({ path: 'skill.md', ceRaw: -3, ceScore: 4, judged: true });
-    } finally { delete process.env.RUVNET_BRAIN_JUDGE; }
+    } finally { delete process.env.RUVNET_BRAIN_JUDGE; delete process.env.RUVNET_BRAIN_KEYWORD_LANE; }
   });
 
   it('gives the quoted-claim boost to a claim-bearing file that dense retrieval ALREADY pooled (E3)', async () => {

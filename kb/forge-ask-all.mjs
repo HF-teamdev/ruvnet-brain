@@ -20,7 +20,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { searchKb } from './forge-ask.mjs';
 import { kbBuildIdentity } from './kb-build-identity.mjs';
-import { keywordCandidates } from './keyword-lane.mjs';
+import { keywordCandidates, keywordLaneEnabled } from './keyword-lane.mjs';
 import { applyJudge, loadJudge } from './judge-rank.mjs';
 import { describeSearchFailure } from './search-outcome.mjs';
 import { prepareRelatedSources, renderRelatedSources } from './grounded-response.mjs';
@@ -3720,10 +3720,11 @@ async function searchAllPrimary({
           .filter((candidate) => !seen.has(candidate.path));
         cands = cands.concat(byIdentifier);
       }
-      // THE KEYWORD LANE (kb/keyword-lane.mjs; ADR-090 §9 amended 2026-10-01). Repository stores
-      // add up to REPO_KEYWORD_TOPN keyword-matched files dense did not pool; transcript stores keep
-      // their own deeper BM25 lane below.
-      if (!isTranscriptStore(name)) {
+      // THE KEYWORD LANE (kb/keyword-lane.mjs; ADR-090 §9 amended 2026-10-01). Off unless
+      // RUVNET_BRAIN_KEYWORD_LANE=1, because its query-time index build cost +2.1 s median (see
+      // keyword-lane.mjs). When on, repository stores add up to REPO_KEYWORD_TOPN keyword-matched
+      // files that dense did not pool; transcript stores keep their own deeper BM25 lane below.
+      if (!isTranscriptStore(name) && keywordLaneEnabled()) {
         cands = cands.concat(keywordCandidates(dir, name, query, { exclude: new Set(cands.map((c) => c.path)) }));
       }
       if (isTranscriptStore(name)) {

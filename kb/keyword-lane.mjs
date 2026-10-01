@@ -22,9 +22,25 @@
 // Indexes are keyed by the sidecar's (dev, inode, mtime, size), so an update or overlay is never
 // served from an old index, and residency is bounded by KEYWORD_INDEX_STORES_MAX stores and a
 // KEYWORD_INDEX_BUDGET_MB sidecar budget (least recently used out).
+//
+// OFF BY DEFAULT (4.5 decision, 2026-10-01). Paired warm latency on 69 need questions: +2.1 s median
+// [1.4-2.9], p90 +5.9 s. Nearly all of that is building this index at query time: replaying the same
+// questions' store accesses, the lane's own time is p50 1.5 s and p90 5.1 s, and over 1 s on 41 of
+// 65 questions. A 4000 MB budget barely changes that, because the index is built per store per
+// process. The extra cross-encoder pairs are only ~17 of ~224 per question. Neither a "dense is
+// weak" gate nor a read cap buys the time back. Dense is weak on 167/196 need questions, so such a
+// gate still fires on 57/65 latency questions, and the recall-gate wins came on questions where
+// dense was strong (top dense CE 1.9-5.2). A read cap leaves the build untouched. The lane needs an
+// index built with the corpus rather than at query time; until then RUVNET_BRAIN_KEYWORD_LANE=1
+// turns it on.
 import fs from 'node:fs';
 import path from 'node:path';
 import { tokenize } from './forge-hybrid.mjs';
+
+/** The keyword lane runs only when RUVNET_BRAIN_KEYWORD_LANE=1 (read per call, like the judge flag). */
+export function keywordLaneEnabled() {
+  return process.env.RUVNET_BRAIN_KEYWORD_LANE === '1';
+}
 
 export const REPO_KEYWORD_TOPN = 8;
 export const KEYWORD_INDEX_STORES_MAX = 8;
