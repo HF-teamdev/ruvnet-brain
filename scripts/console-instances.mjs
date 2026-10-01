@@ -66,15 +66,18 @@ export function readConsoleReceipts(receiptDir, { alive = pidAlive, probe = prob
   return { live, pruned };
 }
 
-// The replacement Console is a user-facing process, not part of the installer run: it gets a clean
-// environment (identity, locale, the brain's own location overrides), never the installer's flags such as
-// RUVNET_NIGHTLY=1 from the scheduler or RUVNET_BRAIN_TEST from a test harness.
-const CONSOLE_ENV_KEYS = new Set(['HOME', 'USER', 'LOGNAME', 'PATH', 'SHELL', 'TMPDIR', 'TEMP', 'TMP', 'LANG', 'TERM',
-  'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'ComSpec', 'PATHEXT', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME',
-  'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'RUVNET_BRAIN_HOME', 'RUVNET_BRAIN_KB', 'RUVNET_CONSOLE_ROOT', 'RUVNET_SETTINGS_FILE']);
+// The replacement Console is a user-facing process, not part of the installer run. It inherits the
+// user's environment — provider API keys (ANTHROPIC/OPENAI/OPENROUTER/GEMINI/GOOGLE/XAI) the Console reads,
+// HTTP(S)_PROXY / NO_PROXY / NODE_EXTRA_CA_CERTS its release fetch needs — minus the flags that describe
+// THIS run: the scheduler's nightly identity, test-harness switches, the refresh-run lock token, Node/npm
+// process plumbing. A denylist, so nothing the Console legitimately reads is silently lost.
+const CONSOLE_ENV_DENY = new Set(['RUVNET_NIGHTLY', 'RUVNET_BRAIN_TEST', 'RUVNET_BRAIN_TEST_LATEST_TAG', 'RUVNET_BRAIN_SCHEDULER_TEST',
+  'RUVNET_BRAIN_IMPORT_ONLY', 'RUVNET_BRAIN_NO_UPDATE_FALLBACK', 'RUVNET_STRICT_INSTALL', 'RUVNET_REFRESH_RUN_TOKEN',
+  'RUVNET_REFRESH_RECEIPT', 'RUVNET_UPGRADE_NOTICE_FILE', 'NODE_OPTIONS', 'NODE_TEST_CONTEXT', 'INIT_CWD', 'CONSOLE_PORT']);
+const CONSOLE_ENV_DENY_PREFIX = /^(?:RUVNET_NIGHTLY_|npm_|VITEST)/;
 export function consoleEnv(env = process.env, port) {
   const clean = Object.fromEntries(Object.entries(env).filter(([key, value]) => value != null
-    && (CONSOLE_ENV_KEYS.has(key) || /^LC_[A-Z_]+$/.test(key))));
+    && !CONSOLE_ENV_DENY.has(key) && !CONSOLE_ENV_DENY_PREFIX.test(key)));
   return { ...clean, CONSOLE_PORT: String(port) };
 }
 
@@ -104,14 +107,13 @@ export function replaceStaleConsoles({ entry, identity, receiptDir, env = proces
     }
     if (!fs.existsSync(entry)) { refuse(`the activated Console runtime is missing (${entry})`); continue; }
     if (!fs.existsSync(receipt.scope)) { refuse(`its project directory no longer exists (${receipt.scope})`); continue; }
-    // The pid is alive, but is it STILL this Console? A reused pid (reboot, long uptime) with a port that
-    // does not answer this receipt's identity is a dead Console's receipt: remove it now instead of
-    // waiting 20s for a process that will never release anything and reporting a false failure.
+    // The pid is alive (dead ones were pruned by readConsoleReceipts). If its port does not answer with
+    // this receipt's identity, it is either a busy Console or a reused pid — we cannot tell which, so we
+    // never delete the receipt (that could orphan a live stale Console). Report it at once instead of
+    // launching and waiting 20s for a process that may never release anything.
     const answer = probe(receipt.port) || probe(receipt.port);
     if (!answer || !sameIdentity(answer, receipt)) {
-      try { fs.unlinkSync(file); } catch { /* raced */ }
-      results.push({ ...where, replaced: false, pruned: true,
-        reason: `pid ${receipt.pid} is no longer that Console (port ${receipt.port} does not answer with its identity); its receipt was removed` });
+      refuse(`pid ${receipt.pid} is alive but port ${receipt.port} does not answer with that Console's identity (busy, or the pid was reused); its receipt was kept — restart Console`);
       continue;
     }
     try {
