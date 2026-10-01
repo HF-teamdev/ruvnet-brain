@@ -54,8 +54,7 @@ export const STUCK_AFTER_MS = 10 * 60_000;
 export const QUARANTINE_REPORT_MS = 7 * 86_400_000;
 export const RETAIN_COMMITTED_MS = 7 * 86_400_000;
 export const MAX_EVENT_RECORDS = 2_000;
-const COMPACT_AT_BYTES = 256 * 1024;
-const [LOCK_STALE_MS, APPEND_LOCK_WAIT_MS, APPEND_LOCK_STALE_MS] = [3 * 60_000, 1_000, 30_000];
+const [COMPACT_AT_BYTES, LOCK_STALE_MS, APPEND_LOCK_WAIT_MS, APPEND_LOCK_STALE_MS] = [256 * 1024, 3 * 60_000, 1_000, 30_000];
 const WAL_REFUSAL = /refusing an unsafe sql\.js|active native WAL|database is locked|SQLITE_BUSY/i;
 export const CLEAR_COMMAND = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'continuity-brief.mjs')}" --clear`;
 
