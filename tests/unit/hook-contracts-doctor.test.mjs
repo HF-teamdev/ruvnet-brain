@@ -118,7 +118,24 @@ describe('--doctor emits exactly one verdict', () => {
   // counted only footprint lines (it could print "Not green" and then "✓ Healthy." with exit 0) while --json
   // printed only the confirmation and exited on its own rule. Now both must report the SAME failing lines,
   // and the exit code must be that verdict's.
-  it('text, --json and the exit code agree on a machine whose Knowledge line is ✗', () => {
+  //
+  // CI Linux (run 36915686695, ruflo installed globally) then failed it: text said `ruflo` was failing,
+  // --json said it was fine. Not two verdicts but two DIFFERENT INPUTS: the doctor's "read-only" Ruflo probe
+  // ran `ruflo status memory` in the user's directory, which (measured, ruflo 3.49.0) writes .swarm/,
+  // .claude-flow/ and ruvector.db there. Run 1 saw an uninitialized directory ("not initialized" → read as
+  // degraded learning); run 2 saw the directory run 1 had initialized ("[STOPPED]" → direct mode, healthy).
+  // macOS passed only because ruflo was not on the fixture PATH. So the test now runs BOTH outputs, in BOTH
+  // orders, with a stub ruflo that behaves like the real one (including that write) and with none at all.
+  const STUB_RUFLO = `const fs = require('node:fs'); const path = require('node:path');
+const a = process.argv.slice(2).join(' '); const cwd = process.cwd();
+const initialized = fs.existsSync(path.join(cwd, '.claude-flow'));
+const plant = () => { for (const d of ['.claude-flow', '.swarm']) fs.mkdirSync(path.join(cwd, d), { recursive: true }); fs.writeFileSync(path.join(cwd, 'ruvector.db'), ''); };
+if (a === 'status') { console.log(initialized ? 'RuFlo V3 [STOPPED]\\n[INFO]   Swarm not running\\n| Backend | none |\\n| Entries | 0 |' : '[ERROR] RuFlo is not initialized in this directory\\n[INFO] Run "ruflo init" to initialize'); process.exit(initialized ? 0 : 1); }
+if (a === 'status memory') { plant(); console.log('| Backend | sqlite |\\n| Total Entries | 0 |'); process.exit(0); }
+if (a === 'hooks metrics --v3-dashboard') { fs.mkdirSync(path.join(cwd, '.claude-flow'), { recursive: true }); console.log('| Total Patterns | 0 |\\n| Total Routes | 0 |\\n| Total Executed | 0 |'); process.exit(0); }
+process.exit(0);
+`;
+  const doctorTwice = ({ ruflo, order }) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-one-verdict-'));
     try {
       const kb = path.join(home, '.cache', 'ruvnet-brain', 'kb');
@@ -126,32 +143,52 @@ describe('--doctor emits exactly one verdict', () => {
       fs.writeFileSync(path.join(kb, 'forge-mcp-all.mjs'), '// fixture: never executed\n');
       fs.writeFileSync(path.join(kb, 'SOURCE.json'), JSON.stringify({ builtUtc: new Date().toISOString(), releaseTag: `v${VERSION}` }));
       fs.writeFileSync(path.join(kb, 'COVERAGE.json'), '{"rows":[]}');
+      const project = path.join(home, 'project'); // where the user runs --doctor: never written by it
+      fs.mkdirSync(project);
+      const stubBin = path.join(home, 'stub-bin');
+      fs.mkdirSync(stubBin);
+      if (ruflo) fs.writeFileSync(path.join(stubBin, 'ruflo'), `#!${process.execPath}\n${STUB_RUFLO}`, { mode: 0o755 });
       const emptyGit = path.join(home, 'empty-gitconfig');
       fs.writeFileSync(emptyGit, '');
-      const env = { PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: home,
+      const env = { PATH: [stubBin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: home,
         CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), npm_config_cache: path.join(home, '.npm'),
         RUVNET_BRAIN_TEST: '1', RUVNET_BRAIN_TEST_NPM_LATEST: VERSION, RUVNET_NO_TELEMETRY: '1', RUFLO_DAEMON_AUTOSTART: '0',
         GIT_CONFIG_GLOBAL: emptyGit, GIT_CONFIG_NOSYSTEM: '1' };
       const run = (args) => spawnSync(process.execPath, [path.join(ROOT, 'bin', 'install.mjs'), ...args],
-        { cwd: home, env, encoding: 'utf8', timeout: 120_000 });
-      const raw = run(['--doctor']);
-      // eslint-disable-next-line no-control-regex
-      const text = { ...raw, stdout: String(raw.stdout).replace(/\u001b\[[0-9;]*m/g, '') };
-      const json = run(['--doctor', '--json']);
-      const verdictLines = text.stdout.split('\n').filter((l) => /✓ Healthy\.|✗ FAILING/.test(l));
-      expect(verdictLines, text.stdout.slice(-3000)).toHaveLength(1);
-      expect(verdictLines[0]).toMatch(/✗ FAILING — /);
-      expect(text.stdout).not.toMatch(/✓ Healthy\./);
-      expect(text.stdout).toMatch(/✗ Knowledge .*no signature verification recorded/);
-      const textFailing = verdictLines[0].replace(/^.*✗ FAILING — /, '').replace(/:.*$/, '').split(', ');
-      const verdict = JSON.parse(json.stdout); // stdout is ONLY the verdict object; narration went to stderr
-      expect(verdict).toMatchObject({ kind: 'ruvnet-brain-doctor', ok: false, exitCode: 1 });
-      expect(verdict.failing).toContain('knowledge');
-      expect([...verdict.failing].sort()).toEqual([...textFailing].sort());
-      expect(text.status).toBe(1);
-      expect(json.status).toBe(verdict.exitCode);
+        { cwd: project, env, encoding: 'utf8', timeout: 120_000 });
+      const runText = () => { const raw = run(['--doctor']); return { ...raw, stdout: String(raw.stdout).replace(/\u001b\[[0-9;]*m/g, '') }; }; // eslint-disable-line no-control-regex
+      let text; let json;
+      if (order === 'text-first') { text = runText(); json = run(['--doctor', '--json']); } else { json = run(['--doctor', '--json']); text = runText(); }
+      return { text, json, projectEntries: fs.readdirSync(project).sort() };
     } finally { fs.rmSync(home, { recursive: true, force: true }); }
-  }, 300_000);
+  };
+  for (const ruflo of [true, false]) {
+    for (const order of ['text-first', 'json-first']) {
+      it(`text, --json and the exit code agree on a Knowledge ✗ machine (ruflo ${ruflo ? 'on PATH' : 'absent'}, ${order})`, () => {
+        const { text, json, projectEntries } = doctorTwice({ ruflo, order });
+        const verdictLines = text.stdout.split('\n').filter((l) => /✓ Healthy\.|✗ FAILING/.test(l));
+        expect(verdictLines, text.stdout.slice(-3000)).toHaveLength(1);
+        expect(verdictLines[0]).toMatch(/✗ FAILING — /);
+        expect(text.stdout).not.toMatch(/✓ Healthy\./);
+        expect(text.stdout).toMatch(/✗ Knowledge .*no signature verification recorded/);
+        const textFailing = verdictLines[0].replace(/^.*✗ FAILING — /, '').replace(/:.*$/, '').split(', ');
+        const verdict = JSON.parse(json.stdout); // stdout is ONLY the verdict object; narration went to stderr
+        expect(verdict).toMatchObject({ kind: 'ruvnet-brain-doctor', ok: false, exitCode: 1 });
+        expect(verdict.failing).toContain('knowledge');
+        expect([...verdict.failing].sort()).toEqual([...textFailing].sort());
+        // The Ruflo line itself is the same in both outputs: present (and not failing) only when ruflo is.
+        // The confirmation-block line (label padded to 10), not the narration's "! Ruflo not found" sentence.
+        const rufloText = text.stdout.split('\n').find((l) => /^\s+[✓✗!○] Ruflo {6}\S/.test(l)) || null;
+        const rufloJson = verdict.lines.find((l) => l.id === 'ruflo') || null;
+        expect(Boolean(rufloText)).toBe(Boolean(rufloJson));
+        expect(Boolean(rufloJson)).toBe(ruflo);
+        if (rufloJson) expect(rufloJson.state).not.toBe('fail'); // an uninitialized directory is not degraded learning
+        expect(projectEntries, 'the doctor wrote into the user\'s directory').toEqual([]);
+        expect(text.status).toBe(1);
+        expect(json.status).toBe(verdict.exitCode);
+      }, 300_000);
+    }
+  }
 
   it('keeps the narrow install reading from calling itself a verdict', () => {
     // Two lines both labelled "verdict" that answer different questions can disagree in public.

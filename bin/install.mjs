@@ -3023,7 +3023,9 @@ async function doctorRun({ json }) {
   let rufloOperational = null;
   if (env.ruflo) {
     rufloOperational = probeRufloOperationalHealth();
-    if (rufloOperational.healthy) {
+    if (rufloOperational.notInitialized) {
+      info('Ruflo CLI present; this directory has not run `ruflo init`, so there is no project learning to judge here (not a failure)');
+    } else if (rufloOperational.healthy) {
       ok(rufloOperational.directMode
         ? 'Ruflo direct mode ready — daemon/swarm is stopped by design; AgentDB remains CLI-backed'
         : 'Ruflo operational — runtime, memory, and learning signals agree');
@@ -3240,7 +3242,7 @@ async function doctorRun({ json }) {
     check('nightly', 'Nightly', nightlyFailed, `${nightlyHealth.state}${nightlyHealth.runHealth?.state ? `, last run ${nightlyHealth.runHealth.state}` : ''}`,
       nightlyHealth.state === 'degraded' ? 'npx ruvnet-brain --enable-nightly' : 'npx ruvnet-brain --update'),
     check('host-convergence', 'Hosts sync', !hostConvergence.healthy, hostConvergence.state, 'npx ruvnet-brain --update'),
-    ...(rufloOperational ? [check('ruflo', 'Ruflo', !rufloOperational.healthy, rufloOperational.healthy ? 'operational' : 'operational learning DEGRADED', 'ruflo doctor --fix')] : []),
+    ...(rufloOperational ? [rufloCheckLine(rufloOperational)] : []),
   ];
   // THE ONE VERDICT. Text, --json and the exit code are all read from this object; nothing else decides.
   const verdict = doctorVerdict(confirmation, checks);
@@ -5254,20 +5256,44 @@ export function classifyRufloOperationalHealth({ status = '', memory = '', metri
   };
 }
 
-function probeRufloOperationalHealth() {
-  const run = (args) => {
-    // Every `ruflo` invocation auto-starts a project background daemon unless this is set
-    // (verified live: ~/.npm-global/lib/node_modules/ruflo/node_modules/@claude-flow/cli/dist/src/
-    // services/daemon-autostart.js:85) — a read-only health probe must not leave one running.
-    const result = spawnSync('ruflo', args, { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000,
-      env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' } });
-    return `${result.stdout || ''}\n${result.stderr || ''}`;
-  };
+const RUFLO_NOT_INITIALIZED = /not initialized in this directory/i;
+const rufloProbeRun = (args) => {
+  // Every `ruflo` invocation auto-starts a project background daemon unless this is set
+  // (verified live: ~/.npm-global/lib/node_modules/ruflo/node_modules/@claude-flow/cli/dist/src/
+  // services/daemon-autostart.js:85) — a read-only health probe must not leave one running.
+  const result = spawnSync('ruflo', args, { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' } });
+  return `${result.stdout || ''}\n${result.stderr || ''}`;
+};
+
+/**
+ * The Ruflo probe, READ-ONLY and therefore the same on every run. Measured on ruflo 3.49.0: in a directory
+ * that has not run `ruflo init`, `ruflo status` only reports "not initialized", but `ruflo status memory`
+ * WRITES .swarm/, .claude-flow/ and ruvector.db into it and `hooks metrics` writes .claude-flow/. So the old
+ * probe initialized the user's directory itself: the first --doctor read "not initialized" as degraded
+ * learning (✗), every later one saw "[STOPPED]" (direct mode, ✓) — text and --json disagreed on CI Linux,
+ * run 36915686695. An uninitialized directory is now "not applicable" and the writing commands never run.
+ */
+export function probeRufloOperationalHealth({ run = rufloProbeRun } = {}) {
+  const status = run(['status']);
+  if (RUFLO_NOT_INITIALIZED.test(status)) {
+    return { healthy: true, notInitialized: true, directMode: false, stopped: false, zeroLearning: false, memoryContradiction: false, memoryEntries: 0 };
+  }
   return classifyRufloOperationalHealth({
-    status: run(['status']),
+    status,
     memory: run(['status', 'memory']),
     metrics: run(['hooks', 'metrics', '--v3-dashboard']),
   });
+}
+
+/** THE Ruflo line of the doctor's one verdict: derived only from the probe result, for text and --json alike. */
+export function rufloCheckLine(health) {
+  if (health.notInitialized) {
+    return { id: 'ruflo', label: 'Ruflo', state: 'unknown', detail: 'CLI present; not initialized in this directory (no project learning to judge)', fix: null };
+  }
+  return health.healthy
+    ? { id: 'ruflo', label: 'Ruflo', state: 'ok', detail: health.directMode ? 'direct mode (daemon stopped by design)' : 'operational', fix: null }
+    : { id: 'ruflo', label: 'Ruflo', state: 'fail', detail: 'operational learning DEGRADED', fix: 'ruflo doctor --fix' };
 }
 
 // ── issue #39: the ruvector MCP server's own native VectorDb defaults ITS storage to
