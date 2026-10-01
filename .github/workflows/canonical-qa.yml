@@ -53,6 +53,14 @@ jobs:
           node-version: '22'
       - run: npm ci --no-audit --no-fund
       - run: npm ci --prefix kb --no-audit --no-fund
+      # The continuity and managed-CLI tests drive the REAL global ruflo and refuse to skip vacuously
+      # without it (probe PR #357: 13 reds, "global Ruflo is required"). Install it the way customers
+      # do: the global package, latest, never pinned, never via npx; prove which one runs.
+      - name: Install the global ruflo customers run
+        run: |
+          npm install -g ruflo@latest --no-audit --no-fund
+          command -v ruflo
+          ruflo --version
       - run: node scripts/full-suite-gate.mjs
       - run: node --test tests/experience/report.test.mjs
 

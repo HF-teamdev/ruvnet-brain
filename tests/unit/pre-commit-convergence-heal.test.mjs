@@ -40,7 +40,11 @@ it('the pre-commit hook self-heals a manifest left stale by a same-commit source
   expect(() => execFileSync('node', ['scripts/convergence-manifest.mjs'], { cwd: dir, stdio: 'pipe' }))
     .toThrow(); // sanity: the manifest really is stale at this point, or the fixture proves nothing
 
-  git('commit', '-qm', 'fixture: stale-manifest commit the hook must heal');
+  // Bind THIS checkout's hook explicitly. Relying on ambient `core.hooksPath` made the test pass only on
+  // a developer machine whose global config points at some checkout's hooks (here: the main checkout,
+  // not the code under test) and fail on a clean CI runner, where no hook ran at all (2026-10-01,
+  // canonical-qa full-suite on ubuntu: "manifest is stale").
+  git('-c', `core.hooksPath=${path.join(dir, 'scripts', 'git-hooks')}`, 'commit', '-qm', 'fixture: stale-manifest commit the hook must heal');
 
   // The hook must have re-generated and re-staged the manifest as part of that commit, not left it
   // for CI to catch.

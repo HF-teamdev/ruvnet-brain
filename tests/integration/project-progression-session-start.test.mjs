@@ -295,7 +295,10 @@ describe('ADR-073 Slice F SessionStart restore bridge', () => {
     expect(flag(list, '--path')).toBe(resolveProjectStore({ projectDir: project }).canonicalAgentDbPath);
     expect(cli.calls.filter((args) => args[1] === 'retrieve')).toHaveLength(2);
     expect(cli.calls.some((args) => args[1] === 'search')).toBe(false);
-    expect(cli.invocations.every(({ options }) => options.cwd === path.join(project, '.swarm'))).toBe(true);
+    // bf674b4d: ruflo runs from the project root (the default store's own parent), never from inside
+    // `.swarm`, where it left a nested `.swarm/.swarm/` store.
+    const { projectRoot } = resolveProjectStore({ projectDir: project });
+    expect(cli.invocations.map(({ options }) => options.cwd)).toEqual(cli.invocations.map(() => projectRoot));
   });
 
   it.each([
