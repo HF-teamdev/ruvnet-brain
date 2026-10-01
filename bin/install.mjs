@@ -1313,8 +1313,10 @@ export function reportLegacyRufloDebris({ projectDir = process.cwd(), dryRun = f
     if (dryRun) info(`legacy ruflo debris from 4.3.40 in ${entry} (removed by the next --update or capture)`);
     else ok(`removed legacy ruflo debris from 4.3.40: ${entry}`);
   }
-  for (const { path: entry, reason } of result.refused) {
-    warn(`left legacy ruflo debris in place — ${entry}: ${reason}. Inspect it; remove it yourself if it is ruflo's.`);
+  for (const { path: entry, reason, kept } of result.refused) {
+    // A KEPT nested AgentDB holds rows (or may still be written): never suggest deleting it by hand.
+    if (kept) warn(`left 4.3.40's nested ruflo store in place — ${entry}: ${reason}. It is checked again on every update.`);
+    else warn(`left legacy ruflo debris in place — ${entry}: ${reason}. Inspect it; remove it yourself if it is ruflo's.`);
   }
   return result;
 }

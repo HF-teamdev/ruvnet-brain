@@ -171,6 +171,36 @@ describe('issue #77 installed host convergence boundary', () => {
     expect(text.match(/left legacy ruflo debris in place — .*\.swarm\/\.swarm: unexpected entries: user-notes\.md/g)).toHaveLength(2);
   });
 
+  it('--update/--doctor say "kept: N rows not in memory.db" for a nested store that is not mirrored', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'brain-legacy-kept-')));
+    temps.push(project);
+    const storeDir = path.join(project, '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    const store = (file, rows) => {
+      const db = new DatabaseSync(file);
+      db.exec(`CREATE TABLE memory_entries (id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT, content TEXT, type TEXT,
+        embedding TEXT, embedding_model TEXT, embedding_dimensions INTEGER, tags TEXT, metadata TEXT, owner_id TEXT, created_at INTEGER,
+        updated_at INTEGER, expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER, status TEXT, provenance_type TEXT)`);
+      for (const [ns, key, content] of rows) db.prepare('INSERT INTO memory_entries (id, namespace, key, content, status) VALUES (?, ?, ?, ?, ?)').run(`${ns}:${key}`, ns, key, content, 'active');
+      db.close();
+      const old = new Date(Date.now() - 3_600_000);
+      fs.utimesSync(file, old, old);
+    };
+    store(path.join(storeDir, 'memory.db'), [['ns', 'a', '1']]);
+    store(path.join(storeDir, '.swarm', 'agentdb-memory.db'), [['ns', 'a', '1'], ['ns', 'b', '2'], ['ns', 'c', '3']]);
+    const lines = [];
+    const original = console.log;
+    console.log = (line) => lines.push(String(line));
+    try {
+      install.reportLegacyRufloDebris({ projectDir: project, dryRun: true });
+      install.reportLegacyRufloDebris({ projectDir: project });
+    } finally { console.log = original; }
+    expect(lines.filter((line) => line.includes(`left 4.3.40's nested ruflo store in place — ${path.join(storeDir, '.swarm')}: kept: 2 of 3 rows not in memory.db`))).toHaveLength(2);
+    expect(lines.join('\n')).not.toMatch(/remove it yourself/);
+    expect(fs.existsSync(path.join(storeDir, '.swarm', 'agentdb-memory.db'))).toBe(true);
+  });
+
   it('keeps a native Codex update explicitly non-converged until Codex restarts', () => {
     const receipt = {
       desiredVersion: VERSION,
