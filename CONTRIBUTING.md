@@ -161,7 +161,9 @@ than the one installed; no download, live untouched, clean exit). `--check`, `--
 recorded verdict rather than each re-deriving their own comparison. Schedule it with
 `npx ruvnet-brain --enable-nightly` (launchd, cron or Task Scheduler — the same command on every OS).
 Machines managed by agentic-kit are updated by `ak sync` instead, which disables the Brain's own
-scheduler on purpose; do not run both. `--host-sync-only` repairs host wiring and **never** updates
+scheduler on purpose; do not run both. That ownership (`kit.json` `ruvnetBrain:true`) is honoured only
+while an update is proven within 36h (a successful refresh receipt or a CURRENT `--check` verdict); past
+that, the SessionStart self-heal runs the Brain's own update anyway, so no machine exceeds 48h. `--host-sync-only` repairs host wiring and **never** updates
 knowledge — do not use it as an update command.
 
 **Provenance (one ledger, one projection).** `kb/RVF-GENERATIONS.json` is the one per-store
