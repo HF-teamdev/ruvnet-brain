@@ -1310,7 +1310,9 @@ export function reportLegacyRufloDebris({ projectDir = process.cwd(), dryRun = f
   if (!fs.existsSync(storeDir)) return null;
   const result = cleanLegacyRufloDebris(storeDir, { dryRun });
   for (const entry of result.removed) {
-    if (dryRun) info(`legacy ruflo debris from 4.3.40 in ${entry} (removed by the next --update or capture)`);
+    // Dry run applies the same checks (allowlist, mirror proof, in-use window); only the final
+    // unchanged-since-proof comparison can still keep it at --update time.
+    if (dryRun) info(`legacy ruflo debris from 4.3.40 in ${entry}: passes every check; --update removes it unless it is written to before then`);
     else ok(`removed legacy ruflo debris from 4.3.40: ${entry}`);
   }
   for (const { path: entry, reason, kept } of result.refused) {

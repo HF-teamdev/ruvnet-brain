@@ -638,6 +638,36 @@ describe('managed ProjectProgression append and readback', () => {
     } finally { writer.close(); }
   });
 
+  // Final 4.4.1 review: on real data the store was never removed. A real 4.3.40 nested store carries a
+  // WAL and an -shm, and the proof's own read-only open rewrites -shm, so a fingerprint that included -shm
+  // never matched ("changed while it was being checked") and the next run saw a fresh -shm ("in use").
+  it('removes a mirrored nested store that has a REAL WAL and SHM, and a dry run first does not block it', () => {
+    const storeDir = path.join(temporaryProject(), '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    const rows = [['patterns', 'a', 'one'], ['turns', 't', 'two']];
+    memoryStore(path.join(storeDir, 'memory.db'), rows);
+    // Build a WAL-mode store whose rows live in the WAL, and snapshot db + -wal + -shm while the writer is
+    // still open (closing would checkpoint and delete them) — exactly a copy of a live 4.3.40 store.
+    const live = path.join(temporaryProject(), 'agentdb-memory.db');
+    memoryStore(live, []);
+    const writer = new DatabaseSync(live);
+    writer.exec('PRAGMA journal_mode = WAL');
+    writer.exec('PRAGMA wal_autocheckpoint = 0');
+    const insert = writer.prepare('INSERT INTO memory_entries (id, namespace, key, content, status) VALUES (?, ?, ?, ?, ?)');
+    rows.forEach(([ns, key, content], i) => insert.run(`${ns}:${key}:${i}`, ns, key, content, 'active'));
+    const nested = path.join(storeDir, '.swarm', 'agentdb-memory.db');
+    try { for (const suffix of ['', '-wal', '-shm']) fs.copyFileSync(`${live}${suffix}`, `${nested}${suffix}`); }
+    finally { writer.close(); }
+    expect(fs.statSync(`${nested}-wal`).size).toBeGreaterThan(0);
+    expect(fs.existsSync(`${nested}-shm`)).toBe(true);
+    const old = new Date(Date.now() - 3_600_000);
+    for (const suffix of ['', '-wal', '-shm']) fs.utimesSync(`${nested}${suffix}`, old, old);
+
+    expect(cleanLegacyRufloDebris(storeDir, { dryRun: true })).toEqual({ removed: [path.join(storeDir, '.swarm')], refused: [] });
+    expect(cleanLegacyRufloDebris(storeDir)).toEqual({ removed: [path.join(storeDir, '.swarm')], refused: [] });
+    expect(fs.existsSync(path.join(storeDir, '.swarm'))).toBe(false);
+  });
+
   it('removes a nested agentdb-memory.db whose every row is mirrored in memory.db', () => {
     const storeDir = path.join(temporaryProject(), '.swarm');
     fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });

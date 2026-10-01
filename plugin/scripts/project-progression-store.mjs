@@ -225,7 +225,14 @@ function relativeEntries(dir) {
  * { removed: [paths], refused: [{ path, reason }] }; a refusal must be shown to the user, never dropped.
  */
 const IN_USE_MS = 10 * 60_000;
-const sqliteFingerprint = (dbPath) => SQLITE(path.basename(dbPath)).map((name) => {
+// The files that carry DATA: the database, its WAL and its rollback journal. Never -shm: it is the WAL
+// index, and every reader — including this proof's own read-only open — rewrites it. Counting it made
+// every real 4.3.40 store look "changed while it was being checked" (and "in use" on the next run).
+const dataFiles = (dbPath) => {
+  const base = path.basename(dbPath);
+  return [base, `${base}-wal`, `${base}-journal`];
+};
+const sqliteFingerprint = (dbPath) => dataFiles(dbPath).map((name) => {
   try { const st = fs.statSync(path.join(path.dirname(dbPath), name)); return `${name}:${st.size}:${st.mtimeMs}`; }
   catch { return `${name}:absent`; }
 });
@@ -239,7 +246,7 @@ const sameFiles = (a, b) => a.join('|') === b.join('|');
  */
 export function proveMirrored(nestedDb, canonicalDb, { now = Date.now(), maxRows = 100_000 } = {}) {
   const fingerprint = sqliteFingerprint(nestedDb);
-  const newest = Math.max(...SQLITE(path.basename(nestedDb)).map((name) => {
+  const newest = Math.max(...dataFiles(nestedDb).map((name) => {
     try { return fs.statSync(path.join(path.dirname(nestedDb), name)).mtimeMs; } catch { return 0; }
   }));
   if (now - newest < IN_USE_MS) return { ok: false, reason: `kept: agentdb-memory.db was written ${Math.round((now - newest) / 1000)}s ago (in use)` };
