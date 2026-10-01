@@ -3173,19 +3173,23 @@ async function doctorRun({ json }) {
 
   // ── AGENTDB RECORDING (ADR-100 §4) — positive confirmation, or the loud reason it is not ────────
   // For the project --doctor is run from. Read-only: the outbox and the store are inspected, nothing
-  // is written. A project without `.swarm` has not adopted the store and gets no line.
+  // is written. A project without `.swarm` has not adopted the store and gets no line. It is a LINE OF THE
+  // ONE VERDICT (re-review S2: it used to be narration only, so --json never saw it): advisory '!' when
+  // stuck — recording is the project's opt-in memory, not the Brain's health — ✓ when proven, ○ otherwise.
+  let agentdbLine = null;
   try {
     const { ContinuityJournal, recordingLine } = await import('../plugin/scripts/continuity-journal.mjs');
     const { resolveProjectStore } = await import('../plugin/scripts/project-store-resolver.mjs');
     const journal = new ContinuityJournal({ projectRoot: resolveProjectStore({ projectDir: process.cwd() }).projectRoot });
     if (fs.existsSync(journal.swarm)) {
       const status = journal.status();
-      const line = recordingLine(status);
-      const glyph = status.stuck ? c.red('✗') : status.notApplicable ? c.dim('○') : status.lastCommitAt ? c.green('✓') : c.yellow('!');
-      console.log(`  ${glyph} ${line}`);
+      const detail = recordingLine(status).replace(/^AgentDB: /, '');
+      agentdbLine = { id: 'agentdb', label: 'AgentDB', detail,
+        state: status.stuck ? 'warn' : status.lastCommitAt && !status.notApplicable ? 'ok' : 'unknown',
+        fix: status.stuck ? (status.problem === 'stuck-pending' ? 'ruflo doctor --fix (then the next session drains the outbox)' : 'node <plugin>/scripts/continuity-brief.mjs --clear') : null };
     }
   } catch (error) {
-    console.log(`  ${c.yellow('!')} AgentDB recording status unavailable: ${error.message}`);
+    agentdbLine = { id: 'agentdb', label: 'AgentDB', state: 'unknown', detail: `recording status unavailable: ${error.message}`, fix: null };
   }
 
   // ── THE MECHANICAL VERDICT ────────────────────────────────────────────────────────────────────
@@ -3266,6 +3270,7 @@ async function doctorRun({ json }) {
       nightlyHealth.state === 'degraded' ? 'npx ruvnet-brain --enable-nightly' : 'npx ruvnet-brain --update'),
     check('host-convergence', 'Hosts sync', !hostConvergence.healthy, hostConvergence.state, 'npx ruvnet-brain --update'),
     ...(rufloOperational ? [rufloCheckLine(rufloOperational)] : []),
+    ...(agentdbLine ? [agentdbLine] : []),
   ];
   // THE ONE VERDICT. Text, --json and the exit code are all read from this object; nothing else decides.
   const verdict = doctorVerdict(confirmation, checks);
