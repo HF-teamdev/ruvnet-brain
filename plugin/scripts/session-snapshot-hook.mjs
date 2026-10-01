@@ -19,6 +19,23 @@ import { captureTurnOutcome } from './turn-outcome-capture.mjs';
  */
 export const CAPTURE_BUDGET_MS = 8_000;
 
+/**
+ * Replaying an interrupted session's outbox costs one `ruflo` write per pending snapshot, each ~3s
+ * cold (project-progression-store.mjs). Under this budget there is room for the NEW snapshot or the
+ * old ones, not both — and the new one is the one nothing else will ever write.
+ */
+export const REPLAY_MIN_BUDGET_MS = 4_000;
+
+/**
+ * The budget this invocation really has. The Codex wrapper hands its own kill deadline down as
+ * RUVNET_CODEX_BUDGET_MS (2200ms at SessionEnd, which Codex caps at 3s); planning for 8s there meant
+ * being SIGKILLed mid-write with nothing reported. 300ms is left for the adapter → shim → body spawns.
+ */
+export function effectiveBudgetMs(env = process.env) {
+  const handed = Number(env.RUVNET_CODEX_BUDGET_MS);
+  return Number.isFinite(handed) && handed > 0 ? Math.max(0, Math.min(CAPTURE_BUDGET_MS, handed - 300)) : CAPTURE_BUDGET_MS;
+}
+
 function regularOrAbsent(file) {
   try {
     const stat = fs.lstatSync(file);
@@ -96,9 +113,10 @@ export function runSessionSnapshotHook(projectDir, event, {
   host = process.env.RUVNET_HOOK_HOST || 'claude',
   captureProgression = captureProjectTransition,
   produce = buildProjectProgression,
-  budgetMs = CAPTURE_BUDGET_MS,
+  budgetMs = effectiveBudgetMs(),
   now = Date.now,
   captureTurn = captureTurnOutcome,
+  makeStoreFactory = boundedStoreFactory,
 } = {}) {
   const metadataWritten = writeSessionSnapshot(projectDir, event);
   let payload;
@@ -135,25 +153,22 @@ export function runSessionSnapshotHook(projectDir, event, {
   }
 
   const deadlineAt = now() + budgetMs;
-  const storeFactory = boundedStoreFactory(deadlineAt);
+  const storeFactory = makeStoreFactory(deadlineAt);
 
-  // Commit anything a previously interrupted session left durable-but-uncommitted. SessionStart is
-  // forbidden from doing this (ADR-073 §5) because replay is a write; a capture boundary already
-  // owns a write budget, so this is where that debt is settled.
-  let replayed = 0;
-  try {
-    replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
-  } catch { /* the new capture below is still worth attempting */ }
-
+  // THE NEW SNAPSHOT FIRST (4.4.0). It used to run after the outbox replay, so on a short budget
+  // (Codex SessionEnd: 3s host cap) the replay of OLD snapshots spent the whole deadline and this
+  // session's own state never even reached the outbox. capture() fsyncs to the outbox before it
+  // touches the store, so going first guarantees it is at least durable.
   let produced;
   try {
     produced = produce({ resolution, payload, host, trigger: event });
   } catch (error) {
-    return { ...idle, replayed, skipped: `producer failed: ${error.message}` };
+    return { ...idle, replayed: 0, skipped: `producer failed: ${error.message}` };
   }
-  if (produced.skipped) return { ...idle, replayed, skipped: produced.skipped.reason };
+  if (produced.skipped) return { ...idle, replayed: 0, skipped: produced.skipped.reason };
 
   let result;
+  let deferred = null;
   try {
     result = captureProgression({
       host,
@@ -166,9 +181,25 @@ export function runSessionSnapshotHook(projectDir, event, {
     // the store, so a budget overrun here leaves the evidence on disk and the next capture boundary
     // (or /checkpoint) commits it. Reporting that plainly is the whole difference between a bounded
     // hook and a lossy one, so the reason is returned rather than thrown at a lifecycle boundary.
-    return { ...idle, replayed, skipped: `capture deferred: ${error.message}` };
+    deferred = `capture deferred: ${error.message}`;
   }
+
+  // THEN commit anything a previously interrupted session left durable-but-uncommitted. SessionStart
+  // is forbidden from doing this (ADR-073 §5) because replay is a write; a capture boundary already
+  // owns a write budget, so this is where that debt is settled — but only when the budget can hold
+  // it. Under REPLAY_MIN_BUDGET_MS the debt waits for the next boundary (nothing is dropped).
+  let replayed = 0;
+  let replaySkipped;
+  if (budgetMs < REPLAY_MIN_BUDGET_MS) {
+    replaySkipped = `outbox replay deferred: budget ${budgetMs}ms < ${REPLAY_MIN_BUDGET_MS}ms`;
+  } else if (!deferred) {
+    try {
+      replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
+    } catch { /* the debt stays durable in the outbox for the next boundary */ }
+  }
+  if (deferred) return { ...idle, replayed, skipped: deferred, ...(replaySkipped ? { replaySkipped } : {}) };
   return {
+    ...(replaySkipped ? { replaySkipped } : {}),
     metadataWritten,
     progressionCaptured: true,
     turn,

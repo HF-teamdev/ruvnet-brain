@@ -135,11 +135,47 @@ const NOT_A_SOURCE = /^(?:Edit|Write|MultiEdit|NotebookEdit|TodoWrite|ToolSearch
 const MCP_MUTATING = /__(?:create|update|delete|remove|publish|deploy|push|write|send|set|merge|upload|patch|put|post|add|rename|move|approve|promote|rollback|cancel|buy|store|edit|import|reset|stop|terminate|spawn|execute)[a-z_-]*$/i;
 
 /** One tool call as evidence: what it looked at (`text`, used for binding) and how much to trust it. */
+const SEARCH_BANNER = /Searched \d+ RuvNet repos/;
+// kb/card-lane.mjs renderCardHit — the FAST LANE first responder never prints the banner.
+const SEARCH_CARD = /evidence=curated-capability-card/;
+const SEARCH_OVERSIZE = /exceeds maximum allowed tokens\. Output has been saved to (\S+?[\\/]tool-results[\\/]\S+?\.txt)/;
+
+/**
+ * Did the brain actually answer? Three real shapes (tests/unit/grounding-success-shapes.test.mjs;
+ * 22 of 240 real results were wrongly failed by the banner-only rule): the heavy lane's banner, the
+ * fast lane's curated card, and a result the HOST swapped for an "exceeds maximum allowed tokens"
+ * error — whose saved file (only from the host's own tool-results directory) holds the answer.
+ * grounding-stamp.sh applies the same predicate at PostToolUse; keep them in step.
+ */
+const REFUSALS = ['RuvNet Brain is disabled', 'RUVNET BRAIN IS DOWN', 'search_ruvnet error:'];
+const answers = (s) => SEARCH_BANNER.test(s) || SEARCH_CARD.test(s);
+/** A refusal the tool spoke BEFORE any answer marker (same rule as grounding-stamp.sh refused()). */
+const refusedFirst = (s) => REFUSALS.some((p) => { const i = s.indexOf(p); return i >= 0 && !answers(s.slice(0, i)); });
+export function brainAnswered(r, { home = os.homedir() } = {}) {
+  if (answers(r)) return true;
+  const m = SEARCH_OVERSIZE.exec(r);
+  if (!m || m[1].includes('..')) return false;
+  // Only the HOST's own saved-result directory, as grounding-stamp.sh requires: any other path in the
+  // result text is text, and a file elsewhere (or a link to one) is not the host's record.
+  const projects = path.join(home, '.claude', 'projects') + path.sep;
+  if (!m[1].startsWith(projects) || !/^[^\\/].*[\\/]tool-results[\\/][^\\/]+$/.test(m[1].slice(projects.length))) return false;
+  try {
+    const st = fs.lstatSync(m[1]);
+    if (!st.isFile() || st.isSymbolicLink()) return false;
+    const fd = fs.openSync(m[1], 'r');
+    try {
+      const buf = Buffer.alloc(16384);
+      const head = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString('utf8');
+      return answers(head) && !refusedFirst(head);
+    } finally { fs.closeSync(fd); }
+  } catch { return false; }
+}
+
 export function sourceOf(name, input = {}, result = '') {
   const n = String(name || '');
   const r = String(result || '');
   if (/(?:^|__)search_ruvnet$/.test(n)) {
-    const ok = /Searched \d+ RuvNet repos/.test(r) && !/^\s*(?:search_ruvnet error:|.{0,200}RUVNET BRAIN IS DOWN|.{0,200}RuvNet Brain is disabled)/s.test(r);
+    const ok = brainAnswered(r) && !/^\s*(?:search_ruvnet error:|.{0,200}RUVNET BRAIN IS DOWN|.{0,200}RuvNet Brain is disabled)/s.test(r);
     const paths = [...r.matchAll(/^path : (\S+)/gm)].map((m) => m[1]).slice(0, 20);
     return { kind: 'search_ruvnet', ref: String(input.query || ''), strength: ok ? 'strong' : 'failed', ok, text: [input.query, ...paths].join(' ') };
   }
@@ -188,6 +224,65 @@ export function turnSources(lines) {
 
 /** Did a search_ruvnet call this turn return a real grounded answer? (Gate 1, from the transcript.) */
 export const searchedThisTurn = (sources) => sources.some((s) => s.kind === 'search_ruvnet' && s.ok);
+
+// ── does the ANSWER assert a rUv capability? (Gate 1's trigger at Stop, 4.4.0) ───────────────────
+// THE FALSE ALARM (measured 2026-09-30 on this repo's own transcripts): Gate 1 arms on any prompt
+// matching RUVNET_GATE1_PATTERN, and in this repository nearly every prompt does (`ruvnet-brain`,
+// "rUv", "swarm"). Of 183 real deliveries of "no successful search_ruvnet call", 172 were on turns
+// whose answer asserted nothing about a rUv tool — release status, git/CI checks, disk and backup
+// answers, memory writes. The directive is "search BEFORE asserting what a RuvNet tool can/cannot do",
+// so the Stop check now demands a search only when the final answer actually asserts that.
+// Deterministic, local (ADR-G004: no model evaluates a gate). Subjects are rUv PRODUCTS (grounded in
+// ruvector ADR-029 and ruflo docs/index.md); `RuvNet Brain` / `ruvnet-brain` is THIS product and is
+// grounded by reading this repo, never by search_ruvnet.
+const RUV_PRODUCT = String.raw`(?:@(?:ruvector|claude-flow|metaharness|ruvnet)\/[a-z0-9-]+|ruflo|ruvector(?:-core)?|rvf(?:-[a-z]+)?|agentdb|agenticow|rulake|ruview|rupixel|ruv-fann|agentic[- ]flow|agentic[- ]qe|synthlang|qudag|safla|metaharness|cve-bench|claude[- ]flow|ruv-swarm|aidefence|aimds|ruvllm|sona|agent[- ]booster|rvlite|ospipe|reasoningbank|flow-nexus|ruvnet(?!\s+brain)|r[uU]v)`;
+// "rUv's/Ruflo's (own) <up to 3 words>" or the bare product, never inside a path, filename or a
+// longer identifier (`ruvnet-brain`, `ruflo-core.mjs`, `kb/ruvector`).
+const RUV_SUBJECT = String.raw`(?<![\w/.@-])${RUV_PRODUCT}(?![\w-]|[./][\w])(?:(?:'|’)s)?(?:\s+own)?(?:\s+(?!(?:can|does|is|are|has|have|the|a|an|and|or|but|to|of|for|with|by|in|on|at|from|if|when|after|before|that|this|these|those|which|who|two|three|it|they|we|you|i)\b)[\w.@/-]+){0,4}?`;
+// Third-person verbs only: a CLI noun phrase (`ruflo memory store`, `ruvector search`) must never read
+// as subject + verb. Base forms ("turn", "ship", "store") count only right after a plural product noun
+// ("rUv's tools turn …") — a lookbehind, so a rejected noun never consumes the real verb after it.
+// Not \b at the end: `support-ticket` is no verb.
+const PLURAL_NOUN = 'tools|packages|crates|plugins|libraries|hooks|agents|skills|servers|workers|daemons|commands|apis|clis|sdks|bindings|routers|gates|controllers';
+const VERBS = 'support|provide|expose|ship|offer|export|implement|include|allow|enable|accept|return|store|require|need|handle|route|record|persist|index|cache|spawn|create|generate|compute|sort|classif|scan|detect|block|prevent|replace|wrap|call|launch|keep|clamp|turn|give|make|run|use|take|let|write';
+const CAPABILITY_VERB = String.raw`(?:can(?:not|'t|’t)?\s+\w+|does(?:n't|n’t|\s+not)\s+\w+|do(?:n't|n’t|\s+not)\s+\w+|has(?:n't|n’t|\s+not)\s+\w+|has\s+(?:a|an|no|its|built-in|native)\b|(?:is|are)\s+(?:able|unable|capable|designed|built|meant|backed|limited|not\s+(?:able|available|supported))\b|only\s+(?:supports?|works|runs|accepts)|comes\s+with|works\s+(?:with|by|on|only)|(?:${VERBS})(?:e?s|ies)|(?<=\b(?:${PLURAL_NOUN})\s+)(?:${VERBS}))(?![\w-])`;
+// What rUv's own docs/research/source SAY is a capability claim too, in any tense.
+const DOC_VERB = String.raw`(?:says?|said|found|finds|shows?|showed|marks?|marked|documents?|documented|recommends?|prescribes?|states?|reports?|measured|took|warns?)\b`;
+const DOC_NOUN = String.raw`(?:research|benchmark|readme|docs?|documentation|release\s+notes|notes|code|source|adr|guidance|skill|campaign|issue|gist)`;
+const RUV_CLAIM = new RegExp(`(${RUV_SUBJECT})\\s+(?:\\([^)]{0,80}\\)\\s+)?(?:also\\s+|already\\s+|actually\\s+|really\\s+|still\\s+|always\\s+|never\\s+|only\\s+)?${CAPABILITY_VERB}`, 'gi');
+const RUV_DOC_CLAIM = new RegExp(`(?<![\\w/.@-])${RUV_PRODUCT}(?:(?:'|’)s)?(?:\\s+own)?(?:\\s+[\\w.@/-]+){0,3}?\\s+${DOC_NOUN}\\b[^.;]{0,40}?\\b${DOC_VERB}`, 'gi');
+// Not an assertion: a question, a hedge, a plan or hypothetical, or a change report ("X now does")
+// about this repo's own work — the measured false-alarm shapes. Narrower than HEDGE above on purpose:
+// "if"/"when" clauses about a rUv tool still assert what it does.
+const NOT_RUV_ASSERTION = /\?|\b(?:might|may|maybe|perhaps|probably|possibly|potentially|likely|unlikely|apparently|seems?|i\s+think|i\s+believe|i\s+suspect|not\s+sure|unsure|unverified|unconfirmed|not\s+verified|would|could|should|i(?:'ll|’ll)|we(?:'ll|’ll)|will|plan(?:ned)?\s+to|going\s+to|once|now|if|unless)\b/i;
+
+function isAssertion(s, m) {
+  // "what rUv already ships" / "whether ruflo supports X" is a noun clause, not an assertion.
+  if (/\b(?:what|whatever|whether)\b[^.,;:!?]{0,40}$/i.test(s.slice(0, m.index))) return false;
+  // "returns 10 results", "takes about 3 s": a measurement this turn, not a capability.
+  return !/^\s*(?:about\s+|around\s+|only\s+|~|≈)?\d/.test(s.slice(m.index + m[0].length));
+}
+
+/** The final answer's sentences (and table cells) that assert what a rUv product does. Never throws. */
+export function ruvCapabilityClaims(rawMessage) {
+  const text = String(rawMessage || '')
+    .replace(/```[\s\S]*?```/g, '\n')                    // command output and code are not prose claims
+    .replace(/^\s*>.*$/gm, ' ')                          // quoted material
+    .replace(/"[^"\n]{0,300}"|“[^”\n]{0,300}”/g, '\n')    // quoted speech: someone else's words (a break: it may carry the full stop)
+    .replace(/`([^`\n]{1,80})`/g, '$1')                  // inline code keeps its identifier
+    .replace(/^\s*#{1,6}\s.*$/gm, ' ')                   // headings name a topic
+    .replace(/\*\*|__/g, '')
+    .replace(/\|/g, '\n');                               // table cells judged one by one
+  const out = [];
+  for (const raw of text.split(/(?<=[.!?;])\s+|\n+|\s+[—–]\s+/)) {
+    const s = raw.replace(/^[\s\-*•#>\d.)]+/, '').trim();
+    if (!s || s.length > 400 || NOT_RUV_ASSERTION.test(s)) continue;
+    const m = [...s.matchAll(RUV_CLAIM), ...s.matchAll(RUV_DOC_CLAIM)].find((x) => isAssertion(s, x));
+    if (m) out.push({ text: s, match: m[0], subject: (m[1] || m[0]).trim().split(/\s+/)[0].replace(/(?:'|’)s$/, '').toLowerCase() });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
 
 // ── Stop-time audit ────────────────────────────────────────────────────────────────────────────────
 const HEDGE = /\?|\b(?:might|may|maybe|perhaps|probably|possibly|likely|unlikely|apparently|seems?|i\s+think|i\s+believe|i\s+suspect|i\s+(?:could|did)\s*n[o']?t\s+(?:confirm|verify|check)|not\s+sure|unsure|unverified|unconfirmed|not\s+verified|assum(?:e|ed|ing)|if|unless|whether|would|should|once|when)\b/i;

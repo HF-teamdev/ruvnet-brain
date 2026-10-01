@@ -81,6 +81,7 @@ const STANDALONE = [
     + 'customer door to a COPY of a real install in one customer state at a time; it downloads releases and writes multi-GB '
     + 'scratch trees, so it is never scheduled. Its install seam is corpus-canary.mjs\'s own (imported), and the states it '
     + 'found are pinned as unit tests (tests/unit/customer-state-matrix.test.mjs and the per-defect tests).'],
+  ['hook-qualify', 'human-run hook qualification matrix (claude/codex/grok host contracts, repeat + concurrency, optional real-host Layer 2 that spends a real turn per host) run on an idle machine before a hook release; its core and host scanners are imported by it and by tests/unit/hook-qualify.test.mjs, and it is deliberately not scheduled or in CI because Layer 2 needs signed-in hosts'],
   ['grounding-turn-replay', 'human-run measurement harness for grounding-turn-gate.mjs (ADR-0030 #1 and shadow #2/#3): replays real transcripts read-only through the same pure functions the hooks call, sharing completion-claim-replay.mjs\'s turn walkers; nothing to schedule'],
   ['duplicate-gate-replay','human-run tuning harness for plugin/scripts/duplicate-gate.mjs: replays the gate over git history, read-only, when its thresholds are re-tuned; it imports the gate\'s own scoring functions, so there is no second copy to drift and nothing to schedule'],
   ['sync-commands', 'explicit maintainer alias synchronizer; run deliberately before release, never from a lifecycle hook'],
