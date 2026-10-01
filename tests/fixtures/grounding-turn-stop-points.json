@@ -508,6 +508,69 @@
    "expectFire": false,
    "synthetic": true,
    "message": "One small thing: your ruflo is a version behind."
+  },
+  {
+   "id": "neg-review441-row-upgraded",
+   "label": "no-ruv-capability-claim",
+   "category": "release-status",
+   "searchedOk": false,
+   "expectFire": false,
+   "synthetic": true,
+   "message": "| ruflo | Upgraded and restarted |"
+  },
+  {
+   "id": "neg-review441-row-installed",
+   "label": "no-ruv-capability-claim",
+   "category": "disk-backup",
+   "searchedOk": false,
+   "expectFire": false,
+   "synthetic": true,
+   "message": "| ruflo | Installed globally |"
+  },
+  {
+   "id": "neg-review441-row-healthy",
+   "label": "no-ruv-capability-claim",
+   "category": "release-status",
+   "searchedOk": false,
+   "expectFire": false,
+   "synthetic": true,
+   "message": "| agentdb | Healthy and reachable |"
+  },
+  {
+   "id": "neg-review441-upgrade-noop",
+   "label": "no-ruv-capability-claim",
+   "category": "release-status",
+   "searchedOk": false,
+   "expectFire": false,
+   "synthetic": true,
+   "message": "The ruflo upgrade is a no-op."
+  },
+  {
+   "id": "neg-review441-write-success",
+   "label": "no-ruv-capability-claim",
+   "category": "memory-write",
+   "searchedOk": false,
+   "expectFire": false,
+   "synthetic": true,
+   "message": "The AgentDB write is a success."
+  },
+  {
+   "id": "neg-review441-own-ci",
+   "label": "no-ruv-capability-claim",
+   "category": "git-ci",
+   "searchedOk": false,
+   "expectFire": false,
+   "synthetic": true,
+   "message": "This is ruflo's own CI failing."
+  },
+  {
+   "id": "neg-review441-fix-heading",
+   "label": "no-ruv-capability-claim",
+   "category": "git-ci",
+   "searchedOk": false,
+   "expectFire": false,
+   "synthetic": true,
+   "message": "## What the ruflo fix does\n\nIt's a one-line change in the hook."
   }
  ]
 }

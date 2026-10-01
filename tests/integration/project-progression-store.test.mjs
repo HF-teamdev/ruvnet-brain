@@ -19,6 +19,22 @@ import { getVersion } from '../../scripts/version.mjs';
 
 const NAMESPACE = 'project-progression';
 let temporaryRoots = [];
+const { DatabaseSync } = await import('node:sqlite');
+
+/** A real store with ruflo's memory_entries shape (the 18 columns the reader pins), aged an hour. */
+function memoryStore(file, rows, { replace = false } = {}) {
+  if (replace) for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${file}${suffix}`, { force: true });
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE IF NOT EXISTS memory_entries (id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT, content TEXT,
+    type TEXT, embedding TEXT, embedding_model TEXT, embedding_dimensions INTEGER, tags TEXT, metadata TEXT, owner_id TEXT,
+    created_at INTEGER, updated_at INTEGER, expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active', provenance_type TEXT)`);
+  const insert = db.prepare('INSERT INTO memory_entries (id, namespace, key, content, status) VALUES (?, ?, ?, ?, ?)');
+  rows.forEach(([namespace, key, content], i) => insert.run(`${namespace}:${key}:${i}`, namespace, key, content, 'active'));
+  db.close();
+  const old = new Date(Date.now() - 3_600_000);
+  for (const suffix of ['', '-wal', '-shm']) { try { fs.utimesSync(`${file}${suffix}`, old, old); } catch { /* absent */ } }
+}
 
 function temporaryProject() {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'progression-store-')));
@@ -560,16 +576,21 @@ describe('managed ProjectProgression append and readback', () => {
   it('cleans a tree shaped exactly like the owner\'s upgraded project and leaves everything else', () => {
     const projectRoot = temporaryProject();
     const storeDir = path.join(projectRoot, '.swarm');
-    const files = ['memory.db', 'memory.db-shm', 'memory.db-wal', 'agentdb-memory.db', 'agentdb-memory.db-shm', 'agentdb-memory.db-wal',
+    // memory.db and the nested agentdb-memory.db are REAL stores (the nested one fully mirrored); their
+    // -wal/-shm sidecars are left out so the read-only proof reads exactly these rows.
+    const files = ['agentdb-memory.db', 'agentdb-memory.db-shm', 'agentdb-memory.db-wal',
       'agentdb-sessions.jsonl', 'agentdb-turns.jsonl', 'agentdb.rvf', 'agentdb.rvf.lock', 'hnsw.index', 'hnsw.metadata.json',
       'model-router-state.json', 'project-progression-outbox.jsonl', 'ruvector.db', 'schema.sql', 'sona-patterns.json', 'state.json',
       'backups/b.db', 'retirement-preservation/r.json', 'ruvnet-brain-learn/l.jsonl',
-      '.swarm/agentdb-memory.db', '.swarm/agentdb-memory.db-shm', '.swarm/agentdb-memory.db-wal', '.swarm/hnsw.index', '.swarm/hnsw.metadata.json',
-      '.claude-flow/policy/state.json'];
+      '.swarm/hnsw.index', '.swarm/hnsw.metadata.json', '.claude-flow/policy/state.json'];
     for (const rel of files) {
       fs.mkdirSync(path.dirname(path.join(storeDir, rel)), { recursive: true });
       fs.writeFileSync(path.join(storeDir, rel), `shape:${rel}`);
     }
+    const rows = [['patterns', 'a', '{"x":1}'], ['turns', 'b', 'two']];
+    memoryStore(path.join(storeDir, 'memory.db'), [...rows, ['other', 'c', 'only-canonical']]);
+    memoryStore(path.join(storeDir, '.swarm', 'agentdb-memory.db'), rows);
+    const memoryBytes = fs.readFileSync(path.join(storeDir, 'memory.db'));
     const preview = cleanLegacyRufloDebris(storeDir, { dryRun: true });
     expect(preview.refused).toEqual([]);
     expect(fs.existsSync(path.join(storeDir, '.swarm', 'hnsw.metadata.json'))).toBe(true); // dry run touched nothing
@@ -578,7 +599,83 @@ describe('managed ProjectProgression append and readback', () => {
     expect(result.removed.map((entry) => path.basename(entry)).sort()).toEqual(['.claude-flow', '.swarm', 'ruvector.db']);
     const kept = files.filter((rel) => !rel.startsWith('.swarm/') && !rel.startsWith('.claude-flow/') && rel !== 'ruvector.db');
     for (const rel of kept) expect(fs.readFileSync(path.join(storeDir, rel), 'utf8'), rel).toBe(`shape:${rel}`);
-    expect(fs.readdirSync(storeDir).sort()).toEqual([...new Set(kept.map((rel) => rel.split('/')[0]))].sort());
+    expect(fs.readFileSync(path.join(storeDir, 'memory.db')).equals(memoryBytes)).toBe(true); // read, never written
+    expect(fs.readdirSync(storeDir).sort()).toEqual([...new Set([...kept.map((rel) => rel.split('/')[0]), 'memory.db'])].sort());
+  });
+
+  // The nested .swarm/.swarm/agentdb-memory.db is a REAL AgentDB (1-41 rows on the owner's projects, still
+  // written by open 4.3.40 sessions). It goes only when every row is proven, byte-identical, in memory.db.
+  it('keeps a nested agentdb-memory.db holding any row memory.db lacks, and says how many', () => {
+    const storeDir = path.join(temporaryProject(), '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    memoryStore(path.join(storeDir, 'memory.db'), [['patterns', 'a', 'one']]);
+    memoryStore(path.join(storeDir, '.swarm', 'agentdb-memory.db'), [['patterns', 'a', 'one'], ['patterns', 'only-here', 'x']]);
+    for (const dryRun of [true, false]) {
+      expect(cleanLegacyRufloDebris(storeDir, { dryRun })).toEqual({ removed: [],
+        refused: [{ path: path.join(storeDir, '.swarm'), reason: 'kept: 1 of 2 rows not in memory.db', kept: true }] });
+    }
+    expect(fs.existsSync(path.join(storeDir, '.swarm', 'agentdb-memory.db'))).toBe(true);
+    // A row with the same key but different content is not mirrored either.
+    memoryStore(path.join(storeDir, '.swarm', 'agentdb-memory.db'), [['patterns', 'a', 'CHANGED']], { replace: true });
+    expect(cleanLegacyRufloDebris(storeDir).refused[0].reason).toBe('kept: 1 of 1 rows not in memory.db');
+  });
+
+  it('keeps a nested agentdb-memory.db that is in use (written recently, live WAL), even when mirrored', () => {
+    const storeDir = path.join(temporaryProject(), '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    memoryStore(path.join(storeDir, 'memory.db'), [['patterns', 'a', 'one']]);
+    const nested = path.join(storeDir, '.swarm', 'agentdb-memory.db');
+    memoryStore(nested, [['patterns', 'a', 'one']]);
+    const writer = new DatabaseSync(nested); // an open 4.3.40 session still writing
+    writer.exec('PRAGMA journal_mode = WAL');
+    writer.exec("UPDATE memory_entries SET access_count = access_count + 1");
+    try {
+      expect(fs.existsSync(`${nested}-wal`)).toBe(true);
+      const result = cleanLegacyRufloDebris(storeDir);
+      expect(result.removed).toEqual([]);
+      expect(result.refused[0]).toMatchObject({ kept: true, reason: expect.stringMatching(/^kept: agentdb-memory.db was written \d+s ago \(in use\)$/) });
+      expect(fs.existsSync(nested)).toBe(true);
+    } finally { writer.close(); }
+  });
+
+  // Final 4.4.1 review: on real data the store was never removed. A real 4.3.40 nested store carries a
+  // WAL and an -shm, and the proof's own read-only open rewrites -shm, so a fingerprint that included -shm
+  // never matched ("changed while it was being checked") and the next run saw a fresh -shm ("in use").
+  it('removes a mirrored nested store that has a REAL WAL and SHM, and a dry run first does not block it', () => {
+    const storeDir = path.join(temporaryProject(), '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    const rows = [['patterns', 'a', 'one'], ['turns', 't', 'two']];
+    memoryStore(path.join(storeDir, 'memory.db'), rows);
+    // Build a WAL-mode store whose rows live in the WAL, and snapshot db + -wal + -shm while the writer is
+    // still open (closing would checkpoint and delete them) — exactly a copy of a live 4.3.40 store.
+    const live = path.join(temporaryProject(), 'agentdb-memory.db');
+    memoryStore(live, []);
+    const writer = new DatabaseSync(live);
+    writer.exec('PRAGMA journal_mode = WAL');
+    writer.exec('PRAGMA wal_autocheckpoint = 0');
+    const insert = writer.prepare('INSERT INTO memory_entries (id, namespace, key, content, status) VALUES (?, ?, ?, ?, ?)');
+    rows.forEach(([ns, key, content], i) => insert.run(`${ns}:${key}:${i}`, ns, key, content, 'active'));
+    const nested = path.join(storeDir, '.swarm', 'agentdb-memory.db');
+    try { for (const suffix of ['', '-wal', '-shm']) fs.copyFileSync(`${live}${suffix}`, `${nested}${suffix}`); }
+    finally { writer.close(); }
+    expect(fs.statSync(`${nested}-wal`).size).toBeGreaterThan(0);
+    expect(fs.existsSync(`${nested}-shm`)).toBe(true);
+    const old = new Date(Date.now() - 3_600_000);
+    for (const suffix of ['', '-wal', '-shm']) fs.utimesSync(`${nested}${suffix}`, old, old);
+
+    expect(cleanLegacyRufloDebris(storeDir, { dryRun: true })).toEqual({ removed: [path.join(storeDir, '.swarm')], refused: [] });
+    expect(cleanLegacyRufloDebris(storeDir)).toEqual({ removed: [path.join(storeDir, '.swarm')], refused: [] });
+    expect(fs.existsSync(path.join(storeDir, '.swarm'))).toBe(false);
+  });
+
+  it('removes a nested agentdb-memory.db whose every row is mirrored in memory.db', () => {
+    const storeDir = path.join(temporaryProject(), '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    memoryStore(path.join(storeDir, 'memory.db'), [['patterns', 'a', 'one'], ['turns', 't', 'two']]);
+    memoryStore(path.join(storeDir, '.swarm', 'agentdb-memory.db'), [['patterns', 'a', 'one'], ['turns', 't', 'two']]);
+    fs.writeFileSync(path.join(storeDir, '.swarm', 'hnsw.metadata.json'), '{}');
+    expect(cleanLegacyRufloDebris(storeDir)).toEqual({ removed: [path.join(storeDir, '.swarm')], refused: [] });
+    expect(fs.existsSync(path.join(storeDir, '.swarm'))).toBe(false);
   });
 
   it('never follows a symlink and never removes an artifact holding anything unexpected', () => {
