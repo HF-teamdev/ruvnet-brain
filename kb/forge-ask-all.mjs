@@ -2414,9 +2414,12 @@ async function sourceBackedCardLane({ dir, query, k, planned }) {
 // Discover the repos present in a bundle dir: every <repo>.rvf (the `.big.rvf` is the same repo's
 // sharp variant, not a separate repo; idmap/embed/passages sidecars are not stores). Returns the
 // unique base names, so searchKb can then pick big-vs-small per repo on its own.
+// A Brain that lived on exFAT/FAT/NTFS carries macOS AppleDouble `._<name>` twins (`._ruvector.rvf`) and
+// .DS_Store; they are the volume's, never a store (tests/unit/volume-metadata-not-stores.test.mjs).
 export function discoverRepos(dir) {
   const names = new Set();
   for (const f of fs.readdirSync(dir)) {
+    if (f.startsWith('._')) continue;                  // volume metadata, not a store
     const m = f.match(/^(.+?)(\.big)?\.rvf$/);
     if (!m) continue;                                  // not an rvf store
     if (/\.(idmap|embed)\b/.test(f)) continue;         // sidecar, not a store

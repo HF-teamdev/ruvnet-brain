@@ -1003,7 +1003,10 @@ function storeInventory(dir) {
   }
   try {
     // Inventory only: tolerate ordinary tooling symlinks (npm .bin). A symlinked .rvf still throws.
-    const files = relativeFiles(dir, '', { strict: false });
+    // macOS volume metadata (AppleDouble `._x.rvf`, .DS_Store) from an exFAT/FAT round trip is neither a
+    // store nor an unclassified file: counting it kept every such backup as "holding a unique store".
+    const files = relativeFiles(dir, '', { strict: false })
+      .filter((name) => !/^(?:\._|\.DS_Store$)/.test(path.basename(name)));
     for (const relative of files.filter((name) => name.endsWith('.rvf'))) {
       if (!declaredFiles.has(relative)) {
         stores.set(path.normalize(relative), relative);
@@ -1059,7 +1062,12 @@ function assertRedundantBackup(backup, live) {
         throw new Error(`unclassified or different symbolic link: ${prior}`);
       }
     } else if (a.isDirectory() && b.isDirectory()) {
-      for (const name of fs.readdirSync(prior)) compare(path.join(prior, name), path.join(current, name));
+      // macOS volume metadata (AppleDouble `._x` = x's extended attributes, .DS_Store = Finder view state)
+      // written by an exFAT/FAT round trip is not Brain data, so it is never what makes a copy unique.
+      for (const name of fs.readdirSync(prior)) {
+        if (/^(?:\._|\.DS_Store$)/.test(name)) continue;
+        compare(path.join(prior, name), path.join(current, name));
+      }
     } else if (a.isFile() && b.isFile()) {
       if (a.size !== b.size || sha256File(prior) !== sha256File(current)) {
         throw new Error(`different bytes: ${prior}`);
