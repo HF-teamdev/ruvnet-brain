@@ -2457,30 +2457,101 @@ export function deployedFamilyReposFromQuery(query, dir, availableRepos) {
   return [];
 }
 
-// Metadata proposes at most three source stores; only normal retrieval can answer.
-function metadataSourceRoute(query, dir, availableRepos) {
+// ── THE ROUTER METADATA INDEX ─────────────────────────────────────────────────────────────────
+// metadataSourceRoute used to re-read and re-tokenize every <repo>.meta.json on EVERY query: 82 MB
+// across the 4.3.37 corpus, ~11-13 s cold. This keeps one inverted index per store file (token ->
+// entry ids), so the long-lived MCP worker parses each store once per KB build. The counts it yields
+// are the per-entry scan's counts exactly (tests/unit/router-metadata-index.test.mjs compares them).
+//
+// NEVER A STALE INDEX AFTER AN UPDATE. An update swaps the whole kb/ directory under the same path,
+// extracted files can carry archive mtimes, and a changed store can keep its byte size, so
+// (mtime, size) alone is not an identity. Every entry is keyed by the KB BUILD IDENTITY (the
+// manifest.json stat plus its generated/generationTag stamp) AND the store file's own
+// (dev, inode, mtime, size). A new build drops every index of the old one before anything is served.
+const _metaIndex = new Map(); // meta file -> { key, postings: Map<token, Uint32Array> }
+let _metaIndexBuild = null;    // the build identity every _metaIndex entry belongs to
+const _buildIdentity = new Map(); // dir -> { statKey, identity }
+
+export function kbBuildIdentity(dir) {
+  const file = path.join(dir, 'manifest.json');
+  let stat;
+  try { stat = fs.statSync(file); } catch { return `${path.resolve(dir)}|no-manifest`; }
+  const statKey = `${stat.dev}:${stat.ino}|${stat.mtimeMs}|${stat.size}`;
+  const cached = _buildIdentity.get(dir);
+  if (cached?.statKey === statKey) return cached.identity;
+  let stamp = 'unreadable';
+  try {
+    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+    stamp = `${manifest.generated || ''}|${manifest.corpus?.generationTag || ''}|${manifest.brainVersion || ''}`;
+  } catch { /* the stat key alone still changes on any rewrite */ }
+  const identity = `${path.resolve(dir)}|${statKey}|${stamp}`;
+  _buildIdentity.set(dir, { statKey, identity });
+  return identity;
+}
+
+function metadataIndex(dir, repo, build) {
+  const file = path.join(dir, `${repo}.meta.json`);
+  let stat;
+  try { stat = fs.statSync(file); } catch { return null; }
+  if (_metaIndexBuild !== build) { _metaIndex.clear(); _metaIndexBuild = build; }
+  const key = `${build}|${stat.dev}:${stat.ino}|${stat.mtimeMs}|${stat.size}`;
+  const cached = _metaIndex.get(file);
+  if (cached?.key === key) return cached;
+  let metadata;
+  try { metadata = parseMetadataFile(file); } catch { _metaIndex.delete(file); return null; }
+  const lists = new Map();
+  let id = 0;
+  for (const row of Object.values(metadata.entries || {})) {
+    for (const token of new Set(contentTokens(`${row.title || ''} ${row.preview || ''}`))) {
+      let list = lists.get(token);
+      if (!list) lists.set(token, (list = []));
+      list.push(id);
+    }
+    id++;
+  }
+  const entry = { key, postings: new Map([...lists].map(([token, ids]) => [token, Uint32Array.from(ids)])) };
+  _metaIndex.set(file, entry);
+  return entry;
+}
+
+// At most this many metadata stores join a route, all of them tied at the best overlap.
+export const METADATA_ROUTE_TIES = 3;
+
+// Metadata proposes a small bounded set of source stores; only normal retrieval can answer.
+export function metadataSourceRoute(query, dir, availableRepos) {
   const terms = new Set(contentTokens(query));
   if (terms.size < 3) return null;
+  const build = kbBuildIdentity(dir);
   const candidates = [];
   for (const repo of availableRepos) {
-    let metadata;
-    try { metadata = parseMetadataFile(path.join(dir, `${repo}.meta.json`)); } catch { continue; }
-    let overlap = 0;
-    for (const row of Object.values(metadata.entries || {})) {
-      const tokens = new Set(contentTokens(`${row.title || ''} ${row.preview || ''}`));
-      const matches = [...terms].filter((term) => tokens.has(term)).length;
-      overlap = Math.max(overlap, matches);
+    const index = metadataIndex(dir, repo, build);
+    if (!index) continue;
+    const perEntry = new Map();
+    for (const term of terms) {
+      for (const entryId of index.postings.get(term) || []) perEntry.set(entryId, (perEntry.get(entryId) || 0) + 1);
     }
-    if (overlap >= 3) candidates.push({ repo, overlap });
+    // overlap: the best single entry's count of query terms. atTop: how many entries reach it.
+    let overlap = 0;
+    let atTop = 0;
+    for (const matches of perEntry.values()) {
+      if (matches > overlap) { overlap = matches; atTop = 1; } else if (matches === overlap) atTop++;
+    }
+    if (overlap >= 3) candidates.push({ repo, overlap, atTop });
   }
-  candidates.sort((a, b) => b.overlap - a.overlap || a.repo.localeCompare(b.repo));
+  // THE TIE-BREAK. On the 206-question novice need set most questions tie at the top overlap, and
+  // the tie used to be broken by repository NAME, so the alphabetically first store won and only it
+  // was searched. Keep up to METADATA_ROUTE_TIES of the stores tied at the best overlap, ordered by
+  // how many of their entries reach that overlap (a store that covers the need in many documents
+  // before one that covers it in a single preview); the name stays the last, deterministic key.
+  candidates.sort((a, b) => b.overlap - a.overlap || b.atTop - a.atTop || a.repo.localeCompare(b.repo));
+  const tied = candidates.filter(({ overlap }) => overlap === candidates[0]?.overlap).slice(0, METADATA_ROUTE_TIES);
   const available = new Set(availableRepos);
   const cardCandidates = (loadCards(dir) || []).filter((card) => available.has(card.repo))
     .map((card) => ({ repo: card.repo, overlap: [...terms].filter((term) => card.tokenSet.has(term)).length }))
     .filter(({ overlap }) => overlap >= 3)
     .sort((a, b) => b.overlap - a.overlap || a.repo.localeCompare(b.repo));
   // Keep both independent routing hints: compact cards and source metadata have different gaps.
-  const repos = [...new Set([...candidates.slice(0, 1), ...cardCandidates.slice(0, 2)]
+  const repos = [...new Set([...tied, ...cardCandidates.slice(0, 2)]
     .map(({ repo }) => repo))];
   return repos.length ? { repos, namedRepos: [], cardRepos: {}, confidence: 'candidate',
     reason: 'bounded source metadata and card shortlist; retrieval must independently establish relevance' } : null;
