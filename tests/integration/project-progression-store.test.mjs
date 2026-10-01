@@ -8,7 +8,9 @@ import { resolveProjectStore } from '../../plugin/scripts/project-store-resolver
 import {
   ProjectProgressionStore,
   projectResumePayloadToBound,
+  ensurePrivateDir,
   rufloCwdFor,
+  rufloScratchRoot,
 } from '../../plugin/scripts/project-progression-store.mjs';
 import { resolveRuflo } from '../../plugin/scripts/ruflo-bin.mjs';
 import { getVersion } from '../../scripts/version.mjs';
@@ -413,21 +415,55 @@ describe('managed ProjectProgression append and readback', () => {
       && name !== 'project-progression-outbox.jsonl'), storeFiles.join(', ')).toEqual([]);
   }, 180_000);
 
-  // The resolver pins the store to <projectRoot>/.swarm/memory.db (a foreign --path is rejected), but the
-  // cwd rule must hold for ANY store path: ruflo creates <cwd>/.swarm on every call.
-  it('runs ruflo from one per-user scratch cwd outside every project, for every store path', () => {
+  // ruflo writes snapshot content (hnsw.metadata.json) into <cwd>/.swarm and LOADS any it finds there,
+  // so the cwd is per project, private, ours, and never in the project tree or a shared /tmp name.
+  it('gives each project its own private scratch cwd under the Brain home, outside the project', () => {
     const projectRoot = temporaryProject();
-    const scratchRoot = temporaryProject();
-    for (const store of [path.join(projectRoot, '.swarm', 'memory.db'), path.join(projectRoot, 'other', '.swarm', 'memory.db')]) {
-      const chosen = rufloCwdFor(store, { scratchRoot });
-      expect(path.dirname(chosen)).toBe(scratchRoot);
-      expect(path.relative(projectRoot, chosen).startsWith('..')).toBe(true);
+    const otherRoot = temporaryProject();
+    const brainHome = temporaryProject();
+    const root = path.join(brainHome, 'ruflo-cwd');
+    const mine = rufloCwdFor(path.join(projectRoot, '.swarm', 'memory.db'), { root });
+    const theirs = rufloCwdFor(path.join(otherRoot, '.swarm', 'memory.db'), { root });
+    expect(mine).not.toBe(theirs); // never pooled across projects
+    expect(rufloCwdFor(path.join(projectRoot, '.swarm', 'memory.db'), { root })).toBe(mine); // stable per project
+    for (const dir of [root, mine, theirs]) {
+      const stat = fs.lstatSync(dir);
+      expect(stat.isDirectory() && !stat.isSymbolicLink()).toBe(true);
+      if (process.platform !== 'win32') {
+        expect(stat.mode & 0o777).toBe(0o700);
+        expect(stat.uid).toBe(process.getuid());
+      }
     }
-    const cwd = rufloCwdFor(path.join(projectRoot, 'stores', 'memory.db'), { scratchRoot });
-    expect(path.dirname(cwd)).toBe(scratchRoot);
-    expect(fs.statSync(cwd).isDirectory()).toBe(true);
+    expect(path.dirname(mine)).toBe(root);
+    expect(path.relative(projectRoot, mine).startsWith('..')).toBe(true);
+    expect(rufloScratchRoot({ RUVNET_BRAIN_HOME: brainHome })).toBe(root);
+    expect(rufloScratchRoot({ HOME: '/h' }).startsWith(path.join(os.homedir(), '.cache', 'ruvnet-brain'))).toBe(true);
     expect(() => resolveProjectStore({ projectDir: projectRoot, requestedStorePath: path.join(projectRoot, 'stores', 'memory.db') }))
       .toThrow(/foreign store root rejected/);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a symlinked scratch dir, repairs a 0755 one, refuses one owned by someone else', () => {
+    const brainHome = temporaryProject();
+    const root = path.join(brainHome, 'ruflo-cwd');
+    const store = path.join(temporaryProject(), '.swarm', 'memory.db');
+    // A planted symlink for the ROOT, and separately for a project's LEAF: both refused, the target untouched.
+    const elsewhere = temporaryProject();
+    fs.symlinkSync(elsewhere, root);
+    expect(() => rufloCwdFor(store, { root })).toThrow(/not a real directory/);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    fs.unlinkSync(root);
+    const leaf = rufloCwdFor(store, { root });
+    fs.rmdirSync(leaf);
+    fs.symlinkSync(elsewhere, leaf);
+    expect(() => rufloCwdFor(store, { root })).toThrow(/not a real directory/);
+    fs.unlinkSync(leaf);
+    // A pre-existing world-readable dir is made private.
+    fs.mkdirSync(leaf, { mode: 0o755 });
+    fs.chmodSync(leaf, 0o755);
+    expect(rufloCwdFor(store, { root })).toBe(leaf);
+    expect(fs.lstatSync(leaf).mode & 0o777).toBe(0o700);
+    // A directory owned by another uid (root-owned /usr stands in; a test cannot chown) is refused.
+    expect(() => ensurePrivateDir('/usr')).toThrow(/owned by uid 0/);
   });
 
   realRufloIt('real ruflo with a non-default --path leaves no .swarm next to the store or in the project', () => {
@@ -435,8 +471,7 @@ describe('managed ProjectProgression append and readback', () => {
     const storeDir = path.join(projectRoot, 'stores');
     fs.mkdirSync(storeDir);
     const store = path.join(storeDir, 'memory.db');
-    const scratchRoot = temporaryProject();
-    const cwd = rufloCwdFor(store, { scratchRoot });
+    const cwd = rufloCwdFor(store, { root: path.join(temporaryProject(), 'ruflo-cwd') });
     const env = { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' };
     const call = (args) => spawnSync(ruflo, args, { cwd, env, encoding: 'utf8', timeout: 120_000 });
     const init = call(['memory', 'init', '--backend', 'agentdb', '--path', store]);

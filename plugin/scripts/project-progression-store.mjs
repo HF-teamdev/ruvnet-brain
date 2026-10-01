@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -136,16 +137,47 @@ function sortRejected(rows) {
 
 /**
  * The working directory ruflo runs in. ruflo writes into its cwd on every invocation even when --path
- * names the store (measured 2026-10-01, ruflo 3.49.0): `<cwd>/.swarm/`, and from the project root also
- * `.claude/`, `.claude-flow/` and `ruvector.db`. Run from inside `<root>/.swarm` it left a nested
- * `.swarm/.swarm/` store; run from the project root it changed the CUSTOMER'S working tree, which broke
- * no-op capture detection. So ruflo ALWAYS runs from one dedicated, per-user scratch directory outside
- * every project; every call carries --path, so the store it reads and writes is unaffected.
+ * names the store (measured 2026-10-01, ruflo 3.49.0): `.claude/`, `.claude-flow/`, `ruvector.db`, and
+ * `<cwd>/.swarm/` holding hnsw.metadata.json — the stored snapshot CONTENT — which it also LOADS when it
+ * finds one there (ruflo/v3/@claude-flow/cli/src/memory/memory-initializer.ts: getMemoryRoot() = cwd).
+ * So the cwd must be:
+ *  - never the project tree (it changed the customer's working tree and broke no-op capture detection),
+ *    never inside `.swarm` (nested `.swarm/.swarm`);
+ *  - PER PROJECT (one shared dir would pool every project's snapshot text and let one project load
+ *    another's metadata);
+ *  - private and ours: under the Brain's own home (never a shared /tmp name another user could pre-create
+ *    or symlink), every directory we create checked to be a real directory, owned by us, mode 0700.
+ * Every ruflo call carries --path, so the store it reads and writes is unaffected by the cwd.
  */
-export function rufloCwdFor(_storePath, { scratchRoot = os.tmpdir() } = {}) {
-  const scratch = path.join(scratchRoot, `ruvnet-brain-ruflo-cwd-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
-  fs.mkdirSync(scratch, { recursive: true, mode: 0o700 });
-  return scratch;
+export function rufloScratchRoot(env = process.env) {
+  if (env.RUVNET_RUFLO_CWD_ROOT) return path.resolve(env.RUVNET_RUFLO_CWD_ROOT);
+  return path.join(env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'), 'ruflo-cwd');
+}
+
+/** Create-or-verify one private directory: a real directory (not a link), owned by us, mode 0700. */
+export function ensurePrivateDir(dir) {
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  const stat = fs.lstatSync(dir);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`ruflo scratch directory ${dir} is not a real directory (symlink or file); refusing to use it`);
+  }
+  if (process.platform !== 'win32') {
+    if (stat.uid !== process.getuid()) {
+      throw new Error(`ruflo scratch directory ${dir} is owned by uid ${stat.uid}, not ${process.getuid()}; refusing to use it`);
+    }
+    if ((stat.mode & 0o777) !== 0o700) {
+      fs.chmodSync(dir, 0o700);
+      if ((fs.lstatSync(dir).mode & 0o777) !== 0o700) throw new Error(`ruflo scratch directory ${dir} could not be made private (0700)`);
+    }
+  }
+  return dir;
+}
+
+export function rufloCwdFor(storePath, { root = rufloScratchRoot() } = {}) {
+  const projectKey = crypto.createHash('sha256').update(path.resolve(storePath)).digest('hex').slice(0, 32);
+  fs.mkdirSync(path.dirname(root), { recursive: true });
+  ensurePrivateDir(root);
+  return ensurePrivateDir(path.join(root, projectKey));
 }
 
 export class ProjectProgressionStore {
