@@ -72,6 +72,8 @@ import {
 } from '../scripts/console-runtime-identity.mjs';
 import { shellDiff as pluginShellDiff } from '../plugin/scripts/host-shell-boundary.mjs';
 import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
+import { moveBrain, MoveRefused } from '../scripts/move-brain.mjs';
+import { brainLocation } from '../plugin/scripts/brain-location.mjs';
 import { cleanLegacyRufloDebris } from '../plugin/scripts/project-progression-store.mjs';
 import { resolveProjectStore } from '../plugin/scripts/project-store-resolver.mjs';
 import { runHostCli, waitForHostCli } from '../scripts/host-cli.mjs';
@@ -137,6 +139,10 @@ const FLAG_DISABLE_SPEND_GUARD = argv.includes('--disable-spend-guard'); // the 
 const FLAG_UNINSTALL = argv.includes('--uninstall'); // reverse everything, in one command
 const FLAG_WHAT_CHANGED = argv.includes('--what-changed'); // show our footprint on this machine
 const FLAG_WHATS_NEW = argv.includes('--whats-new'); // show curated major-release highlights
+// --move-brain <dir> moves the whole Brain to another disk, leaving ~/.cache/ruvnet-brain as a link to it;
+// --move-brain --back brings it home (scripts/move-brain.mjs).
+const FLAG_MOVE_BRAIN = argv.includes('--move-brain');
+const MOVE_BRAIN_TO = (() => { const i = argv.indexOf('--move-brain'); const v = i === -1 ? null : argv[i + 1]; return v && !v.startsWith('-') ? v : null; })();
 // ── onboarding-experience flags (all optional; every offer is safe to decline) ──
 const FLAG_YES = argv.includes('--yes') || argv.includes('-y'); // accept every optional offer non-interactively
 const FLAG_PLAN = argv.includes('--plan') || argv.includes('--dry-run'); // show the interactive checklist, then exit — install NOTHING
@@ -2821,6 +2827,10 @@ async function doctor() {
   console.log(c.dim('Checking every part of the install and reporting green/red.\n'));
   const cacheDir = process.env.RUVNET_BRAIN_KB || path.join(os.homedir(), '.cache', 'ruvnet-brain', 'kb');
   info(`brain dir: ${c.bold(cacheDir)}`);
+  {
+    const where = brainLocation();
+    if (where.state === 'linked') ok(`the Brain lives on another disk: ${where.real} (${where.path} links to it; that disk is mounted)`);
+  }
   const present = fs.existsSync(path.join(cacheDir, 'forge-mcp-all.mjs'));
   if (!present) {
     warn('brain not found here — run the installer first:  npx ruvnet-brain');
@@ -5559,6 +5569,8 @@ Usage:
                               ~/.cache/ruvnet-brain/.telemetry-consent)
   node bin/install.mjs --version <tag>     Install a specific Release tag (e.g. --version v0.5.0-dev)
   node bin/install.mjs --pin <tag>         Same as --version <tag>: install exactly that release
+  node bin/install.mjs --move-brain <dir>  Move the whole Brain to <dir> (e.g. an external disk); ~/.cache/ruvnet-brain links to it
+  node bin/install.mjs --move-brain --back Bring the Brain back to ~/.cache/ruvnet-brain
   node bin/install.mjs --local             Install from a repo clone's assembled dist/ruvnet-brain/
   node bin/install.mjs --force             Re-fetch and reinstall even if already present
   node bin/install.mjs --no-verify         Skip the post-install verify + warm-up smoke test
@@ -5597,6 +5609,27 @@ the installer reports that boot-level declarations changed.
     && canonical(process.argv[1]) === canonical(fileURLToPath(import.meta.url));
   if (!invokedDirectly) return;
   if (FLAG_HELP) return showHelp();
+  // The Brain moved to another disk (a symlink at ~/.cache/ruvnet-brain) and that disk is not here:
+  // say so in one line and stop. Never re-create a fresh brain in ~/.cache over the dangling link, and
+  // never update one that is not there. --doctor reports it as its verdict.
+  {
+    const where = brainLocation();
+    if (where.state === 'unmounted' && !FLAG_MOVE_BRAIN) {
+      if (FLAG_DOCTOR) { printBanner('doctor'); warn(where.message); console.log(`\n  ${c.red('✗ FAILING')} — the Brain's disk is not mounted.`); process.exitCode = 1; return; }
+      die(where.message, 'Plug the disk in (or mount it), then run the same command again.');
+    }
+  }
+  if (FLAG_MOVE_BRAIN) {
+    printBanner('move the brain');
+    try {
+      const moved = moveBrain({ to: MOVE_BRAIN_TO, back: argv.includes('--back'), log: info });
+      ok(`the Brain is at ${moved.to}${moved.to === moved.link ? '' : ` (${moved.link} links to it)`} — ${(moved.bytes / 1024 ** 3).toFixed(2)} GB moved, verified byte for byte`);
+    } catch (error) {
+      if (error instanceof MoveRefused) die(error.message);
+      throw error;
+    }
+    return;
+  }
   // `process.exitCode`, not `return` — doctor()'s verdict is the whole point of running it in a
   // script. A bare `return await doctor()` discarded the number, which is how "! Needs attention"
   // and `echo $?` → 0 coexisted for so long.

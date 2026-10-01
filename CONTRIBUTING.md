@@ -174,6 +174,17 @@ while an update is proven within 36h (a successful refresh receipt or a CURRENT 
 that, the SessionStart self-heal runs the Brain's own update anyway, so no machine exceeds 48h. `--host-sync-only` repairs host wiring and **never** updates
 knowledge — do not use it as an update command.
 
+**Putting the Brain on another disk.** `npx ruvnet-brain --move-brain <dir>` (for example
+`/Volumes/SanDisk/ruvnet-brain`) checks the target has room, copies the whole Brain there, proves the copy
+byte-identical, and leaves `~/.cache/ruvnet-brain` as a symlink to it; `--move-brain --back` brings it home, and
+moving again to a new directory works the same way. That symlink is the one supported layout: every reader, hook,
+the MCP server and the nightly keep using the default path, so nothing else is configured (an environment
+variable would not reach GUI-launched hosts or launchd). If that disk is unplugged, install, `--update`,
+`--doctor`, SessionStart and `search_ruvnet` each say in one line that the Brain's disk is not mounted, and
+nothing re-creates a brain in `~/.cache` over the link. The knowledge root is always
+`realpath(~/.cache/ruvnet-brain/kb)`. Every install and update also measures free space first and refuses,
+naming the exact shortfall, rather than running out half-way.
+
 **Provenance (one ledger, one projection).** `kb/RVF-GENERATIONS.json` is the one per-store
 provenance record; `kb/SOURCE.json` is generated as a projection of it, never written
 independently. Before this, two incompatible "schemaVersion 2" ledger shapes existed side by
