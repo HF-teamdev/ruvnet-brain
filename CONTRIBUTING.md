@@ -192,6 +192,10 @@ without a fresh `search_ruvnet`, or — in this checkout — a new code file or 
 duplicates existing code: refused once per path per session, allowed by a header line
 `// DISTINCT-FROM: <path> — <reason>`, `RUVNET_DUPLICATE_GATE=off` disables it); PostToolUse grounding stamp; Stop continuation and grounding
 check; snapshot capture on Stop/PreCompact/SessionEnd. The Stop grounding check (`grounding-turn-gate`)
+asks for a `search_ruvnet` call only when the final answer asserts what a rUv product does, can, cannot,
+requires or says (`ruvCapabilityClaims` in `grounding-turn-evidence.mjs`) — a status report, git/CI check
+or memory write on a rUv-named prompt is never corrected; when the transcript tail cannot see the turn's
+start it falls back to the grounding stamps, never to a silent pass. It
 also asks for ONE correction when the prompt asked what a tool or platform can do (or for an
 architecture) and the final answer asserts a capability without a relevant source read this turn —
 a file, command, `search_ruvnet` hit or raw page, read after any small-model WebFetch summary about the

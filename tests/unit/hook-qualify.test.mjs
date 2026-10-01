@@ -12,6 +12,10 @@ import {
   CASES, HOSTS, auditWrites, checkStdout, cleanupWorld, fixturesFor, judge, makeWorld, registrations, runCase, runCommand, sandboxAvailable, staticFindings, worldEnv,
 } from '../../scripts/hook-qualify-core.mjs';
 import { scanClaude, scanCodex, scanGrok } from '../../scripts/hook-qualify-hosts.mjs';
+import { resolveBash } from '../../plugin/scripts/hook-shim-bash.mjs';
+
+// The repo's one bash resolver (/bin/bash on POSIX — the macOS 3.2 that reproduced the set -u defects).
+const BASH = resolveBash();
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const B = (s = '') => Buffer.from(s);
@@ -239,7 +243,7 @@ describe.skipIf(process.platform === 'win32')('the write gate refuses the SAME u
   }, 60_000);
 });
 
-describe.skipIf(process.platform === 'win32')('shell hooks stay silent on stderr under the adverse conditions the matrix found', () => {
+describe.skipIf(process.platform === 'win32' || !BASH)('shell hooks stay silent on stderr under the adverse conditions the matrix found', () => {
   // Found by the matrix on the SHIPPED tree (file:line in the report):
   //  - `cmd > "$file" 2>/dev/null` prints the shell's own "Permission denied"/"No such file" because the failed
   //    redirect is processed BEFORE the 2>/dev/null (ground-ruvnet.sh: version stamp, version cache, token ledger),
@@ -253,7 +257,7 @@ describe.skipIf(process.platform === 'win32')('shell hooks stay silent on stderr
     if (readOnlyHome) fs.chmodSync(path.join(home, '.cache', 'ruvnet-brain'), 0o555);
     const e = { PATH: process.env.PATH, HOME: home, TMPDIR: dir, RUVNET_BRAIN_HOME: path.join(home, '.cache', 'ruvnet-brain'), ...env };
     if (env.HOME === null) delete e.HOME;
-    try { return spawnSync('/bin/bash', [SH(file)], { input: stdin, env: e, cwd: dir, encoding: 'utf8', timeout: 30_000 }); }
+    try { return spawnSync(BASH, [SH(file)], { input: stdin, env: e, cwd: dir, encoding: 'utf8', timeout: 30_000 }); }
     finally { try { fs.chmodSync(path.join(home, '.cache', 'ruvnet-brain'), 0o755); } catch { /* gone */ } fs.rmSync(dir, { recursive: true, force: true }); }
   };
   const prompt = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'build a ruflo agentdb swarm service' });
@@ -261,14 +265,41 @@ describe.skipIf(process.platform === 'win32')('shell hooks stay silent on stderr
     expect(run('ground-ruvnet.sh', { stdin: prompt, env: { HOME: null } }).stderr).toBe('');
     expect(run('ground-ruvnet.sh', { stdin: prompt, readOnlyHome: true }).stderr).toBe('');
   });
-  for (const f of ['grounding-stamp.sh', 'ground-before-write.sh', 'design-wall.sh', 'protect-brain-state.sh']) {
+  // EVERY shell hook that combines `set -u` with a timed `read` (4.4.0: the hand-kept list of four missed
+  // learn-capture.sh, kling-preflight.sh and route-dispatch.sh — measured red on macOS /bin/bash 3.2).
+  const TIMED_READ_HOOKS = fs.readdirSync(path.join(ROOT, 'plugin', 'scripts')).filter((f) => f.endsWith('.sh')).filter((f) => {
+    const src = fs.readFileSync(SH(f), 'utf8');
+    return /^\s*set -[a-z]*u/m.test(src) && /read -r -t \d+ /.test(src);
+  });
+  it('discovers every set -u + timed-read hook (the list cannot silently shrink)', () => {
+    expect(TIMED_READ_HOOKS).toEqual(expect.arrayContaining(['grounding-stamp.sh', 'ground-before-write.sh', 'design-wall.sh',
+      'protect-brain-state.sh', 'learn-capture.sh', 'kling-preflight.sh', 'route-dispatch.sh']));
+  });
+  for (const f of TIMED_READ_HOOKS) {
+    it(`${f}: stdin opened and never written is silent (no "unbound variable")`, async () => {
+      const { spawn } = await import('node:child_process');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-sh-'));
+      const home = path.join(dir, 'home'); fs.mkdirSync(home);
+      try {
+        const out = await new Promise((resolve) => {
+          const c = spawn(BASH, [SH(f)], { env: { PATH: process.env.PATH, HOME: home, TMPDIR: dir }, cwd: dir });
+          let stderr = ''; c.stderr.on('data', (d) => { stderr += d; });
+          const t = setTimeout(() => c.kill('SIGKILL'), 8_000);
+          setTimeout(() => c.stdin.end(), 3_000);   // past the hook's own `read -t 2`
+          c.on('close', (status) => { clearTimeout(t); resolve({ status, stderr }); });
+        });
+        expect(out.stderr).toBe('');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    }, 20_000);
+  }
+  for (const f of TIMED_READ_HOOKS) {
     it(`${f}: a payload that is delivered but never closed/terminated is silent (no "unbound variable")`, async () => {
       const { spawn } = await import('node:child_process');
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-sh-'));
       const home = path.join(dir, 'home'); fs.mkdirSync(home);
       try {
         const out = await new Promise((resolve) => {
-          const c = spawn('/bin/bash', [SH(f)], { env: { PATH: process.env.PATH, HOME: home, TMPDIR: dir }, cwd: dir });
+          const c = spawn(BASH, [SH(f)], { env: { PATH: process.env.PATH, HOME: home, TMPDIR: dir }, cwd: dir });
           let stderr = ''; c.stderr.on('data', (d) => { stderr += d; });
           c.stdin.write(JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'x', tool_input: {} }));   // no newline, pipe left open
           const t = setTimeout(() => c.kill('SIGKILL'), 6_000);

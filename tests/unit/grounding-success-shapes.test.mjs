@@ -180,8 +180,26 @@ describe.skipIf(process.platform === 'win32')('Stop grounding-turn-gate on a LON
     fs.writeFileSync(w.transcript, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
     expect(fs.statSync(w.transcript).size).toBeGreaterThan(2 * 1024 * 1024);
     node(MARK, w, fixture('UserPromptSubmit', w, { prompt: 'what does ruflo ship for memory?' }));
+    // The tail cannot see the early search, so the gate falls back to the STAMP evidence (4.4.0: never a
+    // silent pass). The early search's PostToolUse ran the real stamp hook, which minted it.
+    stamp(w, fixture('PostToolUse-search_ruvnet-oversize', w, { tool_input: { query: 'ruflo memory' }, tool_response: JSON.stringify({ answer: BANNERED }) }));
+    expect(minted(w)).toContain('.any-search');
     const r = node(GATE, w, fixture('Stop', w, { last_assistant_message: 'Ruflo ships AgentDB-backed memory.' }));
     expect(r.stdout).toBe('');
+  });
+
+  it('TEETH: the same long turn with NO search evidence anywhere FIRES — the tail is not a free pass', () => {
+    const w = world();
+    const rows = [{ type: 'user', message: { role: 'user', content: 'what does ruflo ship for memory?' } }];
+    for (let i = 0; i < 30; i++) {
+      rows.push({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: `b${i}`, name: 'Bash', input: { command: 'cat big' } }] } });
+      rows.push({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `b${i}`, content: 'x'.repeat(100_000) }] } });
+    }
+    rows.push({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Ruflo ships AgentDB-backed memory.' }] } });
+    fs.writeFileSync(w.transcript, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    node(MARK, w, fixture('UserPromptSubmit', w, { prompt: 'what does ruflo ship for memory?' }));
+    const r = node(GATE, w, fixture('Stop', w, { last_assistant_message: 'Ruflo ships AgentDB-backed memory.' }));
+    expect(r.stdout).toMatch(FALSE_ALARM);
   });
 });
 

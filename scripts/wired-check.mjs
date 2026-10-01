@@ -77,6 +77,7 @@ const STANDALONE = [
   ['gate', 'retired automatic-hook helper and manual benchmark retained for explicit human use; no workflow or scheduler invokes this expensive command'],
   ['dream-issue-gate', 'pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
   ['sync-census', 'explicit maintainer census writer; a destructive source-to-surface refresh is never scheduled'],
+  ['hook-qualify', 'human-run hook qualification matrix (claude/codex/grok host contracts, repeat + concurrency, optional real-host Layer 2 that spends a real turn per host) run on an idle machine before a hook release; its core and host scanners are imported by it and by tests/unit/hook-qualify.test.mjs, and it is deliberately not scheduled or in CI because Layer 2 needs signed-in hosts'],
   ['grounding-turn-replay', 'human-run measurement harness for grounding-turn-gate.mjs (ADR-0030 #1 and shadow #2/#3): replays real transcripts read-only through the same pure functions the hooks call, sharing completion-claim-replay.mjs\'s turn walkers; nothing to schedule'],
   ['duplicate-gate-replay','human-run tuning harness for plugin/scripts/duplicate-gate.mjs: replays the gate over git history, read-only, when its thresholds are re-tuned; it imports the gate\'s own scoring functions, so there is no second copy to drift and nothing to schedule'],
   ['sync-commands', 'explicit maintainer alias synchronizer; run deliberately before release, never from a lifecycle hook'],

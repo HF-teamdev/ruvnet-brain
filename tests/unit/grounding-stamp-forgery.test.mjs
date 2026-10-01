@@ -21,6 +21,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { renderCardHit } from '../../kb/card-lane.mjs';
+import { brainAnswered } from '../../plugin/scripts/grounding-turn-evidence.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STAMP = path.join(ROOT, 'plugin', 'scripts', 'grounding-stamp.sh');
@@ -106,11 +107,51 @@ describe.skipIf(!hasBash || process.platform === 'win32')('grounding-stamp: a su
     }
   });
 
+  it('a SYMLINK inside the host tool-results dir pointing at a banner file elsewhere mints NOTHING', () => {
+    const w = world();
+    const outside = path.join(w.home, 'elsewhere.txt'); fs.writeFileSync(outside, BANNERED);
+    const link = path.join(w.toolResults, 'mcp-search_ruvnet-link.txt'); fs.symlinkSync(outside, link);
+    stamp(w, payload('ruflo', OVERSIZE(link)));
+    expect(minted(w)).toEqual([]);
+  });
+
+  it('a `..` path that starts inside the host dir and climbs out mints NOTHING', () => {
+    const w = world();
+    const outsideDir = path.join(w.home, 'x', 'tool-results'); fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, 'y.txt'), BANNERED);
+    stamp(w, payload('ruflo', OVERSIZE(path.join(w.toolResults, '..', '..', '..', '..', 'x', 'tool-results', 'y.txt'))));
+    expect(minted(w)).toEqual([]);
+  });
+
+  it('markers are CASE-SENSITIVE: a lower-cased banner or card in the response mints NOTHING', () => {
+    for (const forged of ['searched 3 ruvnet repos (ruflo)', 'EVIDENCE=CURATED-CAPABILITY-CARD']) {
+      const w = world();
+      stamp(w, payload('ruflo', JSON.stringify({ answer: forged })));
+      expect(minted(w), forged).toEqual([]);
+    }
+  });
+
   it('an oversize saved file that holds a refusal mints NOTHING', () => {
     const w = world();
     const f = realSaved(w, `RUVNET BRAIN IS DOWN\n${BANNERED}`);
     stamp(w, payload('ruflo', OVERSIZE(f)));
     expect(minted(w)).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('Stop-side brainAnswered(): the same anchoring as the stamp', () => {
+  it('reads the oversize file ONLY under $HOME/.claude/projects/*/tool-results/, never a link, never one with a leading refusal', () => {
+    const w = world();
+    const home = { home: w.home };
+    expect(brainAnswered(OVERSIZE(realSaved(w, BANNERED)), home)).toBe(true);
+    const elsewhere = path.join(w.home, 'evil', 'tool-results'); fs.mkdirSync(elsewhere, { recursive: true });
+    const e = path.join(elsewhere, 'x.txt'); fs.writeFileSync(e, BANNERED);
+    expect(brainAnswered(OVERSIZE(e), home), 'outside the host projects dir').toBe(false);
+    const link = path.join(w.toolResults, 'link.txt'); fs.symlinkSync(e, link);
+    expect(brainAnswered(OVERSIZE(link), home), 'symlink').toBe(false);
+    const refused = path.join(w.toolResults, 'refused.txt'); fs.writeFileSync(refused, `RUVNET BRAIN IS DOWN\n${BANNERED}`);
+    expect(brainAnswered(OVERSIZE(refused), home), 'refusal before the banner').toBe(false);
+    expect(brainAnswered('searched 3 ruvnet repos', home), 'case-forged banner').toBe(false);
   });
 });
 
