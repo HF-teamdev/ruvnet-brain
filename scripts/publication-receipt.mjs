@@ -16,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 // post-publication proofs below (payload assertions, MCP wiring, SOURCE.json, rpcSearch)
 // stay here — they are this side's job, not duplication.
 import { HOST_MODES, RECEIPT_MODE_NAMES, MODE_FROM_RECEIPT_NAME, classifyDoctor, VARIANTS,
-  createInstalledMcpSession, HOST_WARMUP_TIMEOUT_MS, RELEASE_SEARCH_DEADLINE_MS, SELF_STORE_PROOF_QUERY,
+  createInstalledMcpSession, createRestartingMcpSession, HOST_WARMUP_TIMEOUT_MS, RELEASE_SEARCH_DEADLINE_MS, SELF_STORE_PROOF_QUERY,
   SELF_STORE_PROOF_K } from './host-install-matrix.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { evaluateCandidateReceipt, evaluatePublicationReceipt } from './release-proof.mjs';
@@ -62,6 +62,15 @@ export async function runHostDoctors(hosts, doctor) {
   if (failures.length) {
     throw new Error(`installed doctor failed for ${failures.map(({ mode }) => mode).join(', ')}: ${failures[0].error.message}`);
   }
+}
+
+// One warm installed worker per host, reopened (and re-warmed on the warm-up bound) only after a
+// failed search, so one slow canary case cannot turn every later case into a false timeout.
+function openHostSession(serverPath, env) {
+  return createRestartingMcpSession({
+    open: () => createInstalledMcpSession({ serverPath, env, timeout: WARMUP_TIMEOUT_MS }),
+    warm: (fresh) => fresh.search({ query: SELF_STORE_PROOF_QUERY, k: SELF_STORE_PROOF_K, timeoutMs: WARMUP_TIMEOUT_MS }),
+  });
 }
 
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -586,9 +595,7 @@ export function livePublicationAdapter({ root = process.cwd(), candidateRoot = r
           }
           const publicMode = MODE_FROM_RECEIPT_NAME[mode];
           if (!mcpSessions.has(publicMode)) {
-            mcpSessions.set(publicMode, createInstalledMcpSession({
-              serverPath: findMcpServer(context.home), env: context.env, timeout: WARMUP_TIMEOUT_MS,
-            }));
+            mcpSessions.set(publicMode, openHostSession(findMcpServer(context.home), context.env));
           }
           // The generous bound is for one-time readiness/model warmup only; the following
           // measured query still has the unchanged strict 30-second deadline.
@@ -660,7 +667,7 @@ export function livePublicationAdapter({ root = process.cwd(), candidateRoot = r
       }
       let session = mcpSessions.get(mode);
       if (!session) {
-        session = createInstalledMcpSession({ serverPath: findMcpServer(context.home), env: context.env, timeout: WARMUP_TIMEOUT_MS });
+        session = openHostSession(findMcpServer(context.home), context.env);
         mcpSessions.set(mode, session);
         const warmed = await session.search({
           query: SELF_STORE_PROOF_QUERY, k: SELF_STORE_PROOF_K, timeoutMs: WARMUP_TIMEOUT_MS,
