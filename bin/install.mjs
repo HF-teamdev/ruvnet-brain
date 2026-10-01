@@ -2993,6 +2993,22 @@ async function doctor() {
     c.dim('\n  Heads-up: a window that was ALREADY open when you installed needs a restart to pick it up;\n  newly-opened windows are fine.\n'),
   );
 
+  // ── AGENTDB RECORDING (ADR-100 §4) — positive confirmation, or the loud reason it is not ────────
+  // For the project --doctor is run from. Read-only: the outbox and the store are inspected, nothing
+  // is written. A project without `.swarm` has not adopted the store and gets no line.
+  try {
+    const { ContinuityJournal, recordingLine } = await import('../plugin/scripts/continuity-journal.mjs');
+    const { resolveProjectStore } = await import('../plugin/scripts/project-store-resolver.mjs');
+    const journal = new ContinuityJournal({ projectRoot: resolveProjectStore({ projectDir: process.cwd() }).projectRoot });
+    if (fs.existsSync(journal.swarm)) {
+      const status = journal.status();
+      const line = recordingLine(status);
+      console.log(`  ${status.stuck ? c.red('✗') : c.green('✓')} ${line}`);
+    }
+  } catch (error) {
+    console.log(`  ${c.yellow('!')} AgentDB recording status unavailable: ${error.message}`);
+  }
+
   // ── THE MECHANICAL VERDICT ────────────────────────────────────────────────────────────────────
   // `--hooks` is retained as a compatibility alias for a read-only zero-registration proof. It must
   // never execute dormant hook bodies.
