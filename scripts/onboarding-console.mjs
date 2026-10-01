@@ -2764,7 +2764,12 @@ function saveConfig(values) {
     credentialChange = saveOpenRouterCredential(requestedSecret, { cwd: process.cwd() });
     if (!credentialChange.ok) return { ok: false, rejected, log: credentialChange.log };
   }
-  if (requestedNightly !== undefined) {
+  // The page sends every field the person has ever chosen, so changing only the model house carries the
+  // already-saved nightly value with it. Re-running the installer for a choice the scheduler already
+  // satisfies rewrote the plist and re-registered the runner on every unrelated save (RNBC review
+  // 2026-10-01). Only a request that differs from the measured scheduler state is a scheduler change; a
+  // degraded or unknown state still goes to the installer, which is how it gets repaired.
+  if (requestedNightly !== undefined && nightlyStatus().state !== (requestedNightly ? 'on' : 'off')) {
     nightlyChange = applyNightlyChoice(requestedNightly);
     if (!nightlyChange.ok) {
       rollbackCredential();
@@ -3031,7 +3036,10 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 function serveStatic(req, res) {
   const rel = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html';
   const file = path.join(CONSOLE_DIR, rel);
-  if (!file.startsWith(CONSOLE_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return send(res, 404, 'text/plain', 'not found');
+  // Containment by path, not by string prefix: `startsWith(CONSOLE_DIR)` also accepted a sibling such
+  // as `<root>/console-anything/…` reached with an encoded `..` (RNBC review 2026-10-01).
+  const inside = path.relative(CONSOLE_DIR, file);
+  if (!inside || inside === '..' || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return send(res, 404, 'text/plain', 'not found');
   let body = fs.readFileSync(file);
   const ext = path.extname(file);
   if (ext === '.html') body = Buffer.from(String(body).replace('</head>', `<script>window.__CONSOLE_TOKEN__=${JSON.stringify(TOKEN)}</script></head>`));
