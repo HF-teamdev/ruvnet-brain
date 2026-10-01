@@ -52,18 +52,38 @@ describe('session-snapshot: the budget it is handed, and what it spends it on fi
     expect(effectiveBudgetMs({ RUVNET_CODEX_BUDGET_MS: 'nonsense' })).toBe(CAPTURE_BUDGET_MS);
   });
 
-  it('a full budget captures the NEW snapshot first, then replays the outbox', () => {
+  // CAUSAL ORDER: the producer links a new snapshot to COMMITTED heads, so old debt must be committed
+  // before the new snapshot is produced, or the project ends with two unrelated heads
+  // (tests/acceptance/cross-host-project-resume.test.mjs).
+  it('a full budget replays the outbox FIRST, then produces and captures (causal order)', () => {
     const { order, result } = run(CAPTURE_BUDGET_MS);
-    expect(order).toEqual(['produce', 'capture', 'replay']);
+    expect(order).toEqual(['replay', 'produce', 'capture']);
     expect(result).toMatchObject({ progressionCaptured: true, receipt: { eventKey: 'new' }, replayed: 1 });
-    expect(result.replaySkipped).toBeUndefined();
   });
 
-  it('under REPLAY_MIN_BUDGET_MS (Codex SessionEnd) it captures the new snapshot and DEFERS the replay, saying so', () => {
+  it('under REPLAY_MIN_BUDGET_MS with NO debt it captures inline and replays nothing', () => {
     const { order, result } = run(REPLAY_MIN_BUDGET_MS - 1);
     expect(order).toEqual(['produce', 'capture']);
     expect(result).toMatchObject({ progressionCaptured: true, receipt: { eventKey: 'new' }, replayed: 0 });
-    expect(result.replaySkipped).toMatch(/outbox replay deferred: budget \d+ms < 4000ms/);
+  });
+
+  it('under REPLAY_MIN_BUDGET_MS WITH debt it neither replays nor produces inline: it queues the capture behind the debt', () => {
+    const dir = project();
+    new ProgressionOutbox({ projectRoot: dir }).appendRecord({ type: 'snapshot', eventKey: 'old-1', payloadDigest: 'a'.repeat(64), snapshot: { eventKey: 'old-1' } });
+    const order = [];
+    const spawned = [];
+    const result = runSessionSnapshotHook(dir, 'SessionEnd', {
+      rawInput: JSON.stringify({ session_id: 'budget-2', hook_event_name: 'SessionEnd', cwd: dir }), host: 'codex', budgetMs: 1900,
+      produce: () => { order.push('produce'); return { projectProgression: {}, provenance: {} }; },
+      captureProgression: () => { order.push('capture'); return { receipt: {} }; },
+      makeStoreFactory: () => () => ({ replay: () => { order.push('replay'); return []; } }),
+      spawnReplay: (x) => { spawned.push(x); return true; },
+    });
+    expect(order).toEqual([]);
+    expect(result).toMatchObject({ progressionCaptured: false, deferredToReplayer: true });
+    expect(result.replaySkipped).toMatch(/1 pending, this capture queued behind it, handed to a detached replayer/);
+    expect(spawned).toHaveLength(1);
+    expect(fs.readdirSync(path.join(dir, '.swarm')).filter((n) => n.startsWith('.progression-capture-queue-'))).toHaveLength(1);
   });
 });
 
@@ -105,14 +125,22 @@ process.exit(2);
         rawInput: JSON.stringify({ session_id: 'codex-b', hook_event_name: 'Stop', cwd: dir }), host: 'codex',
         budgetMs: effectiveBudgetMs({ RUVNET_CODEX_BUDGET_MS: '4000' }),
       });
-      expect(stopped.progressionCaptured).toBe(true);
-      expect(stopped.replaySkipped).toMatch(/1 pending handed to a detached replayer/);
+      expect(stopped).toMatchObject({ progressionCaptured: false, deferredToReplayer: true });
+      expect(stopped.replaySkipped).toMatch(/1 pending, this capture queued behind it, handed to a detached replayer/);
 
-      const until = Date.now() + 20_000;
-      while (pendingIn(dir) > 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 200));
-      expect(pendingIn(dir), 'the detached replayer committed the deferred row').toBe(0);
-      expect(Object.keys(ruflo.rows()).length, 'both sessions\' snapshots are in the store').toBe(2);
-      expect(fs.existsSync(path.join(dir, '.swarm', '.progression-replay.lock')), 'lock released').toBe(false);
+      const lock = path.join(dir, '.swarm', '.progression-replay.lock');
+      const until = Date.now() + 30_000;
+      while ((Object.keys(ruflo.rows()).length < 2 || fs.existsSync(lock)) && Date.now() < until) await new Promise((r) => setTimeout(r, 200));
+      expect(pendingIn(dir), 'the detached worker committed the deferred row').toBe(0);
+      const rows = Object.values(ruflo.rows()).map((v) => JSON.parse(v));
+      expect(rows.length, 'both sessions\' snapshots are in the store').toBe(2);
+      // CAUSAL ORDER, kept off the host's clock: the worker committed the debt BEFORE it stored the
+      // queued capture (the fake store keeps write order). The head LINK itself needs the real store's
+      // committed-heads read (node:sqlite), which this JSON fake cannot provide — it is proven with real
+      // ruflo by tests/acceptance/cross-host-project-resume.test.mjs ("ONE head ... descended").
+      expect(rows.map((r) => r.sessionIdentity)).toEqual(['codex-a', 'codex-b']);
+      expect(fs.existsSync(lock), 'lock released').toBe(false);
+      expect(fs.readdirSync(path.join(dir, '.swarm')).filter((n) => n.startsWith('.progression-capture-queue-')), 'queue drained').toEqual([]);
     } finally {
       if (prior === undefined) delete process.env.RUFLO_BIN; else process.env.RUFLO_BIN = prior;
     }
