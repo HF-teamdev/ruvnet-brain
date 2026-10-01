@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  CONTINUITY_SECRETS,
   collectCommits, collectReleases, collectTurnEvents, eventIdOf, eventKey, makeEvent, userLevelAgentdbHooks,
 } from '../../plugin/scripts/continuity-events.mjs';
 import { ContinuityJournal } from '../../plugin/scripts/continuity-journal.mjs';
@@ -169,6 +170,60 @@ describe('redaction happens BEFORE truncation (review S2)', () => {
 
 // Re-review S3: gate summaries land in .swarm and are quoted in the SessionStart brief, and these shapes
 // survived redaction. Each secret is synthetic (EXAMPLE-style), never a real credential.
+// Re-review a6 SHOULD-FIX 2: the URL-userinfo pattern was quadratic (measured 1,186 ms on 64 KB 'a.a.…', 2,869 ms
+// on 100 KB). EVERY redaction pattern is timed here on 64 KB and 100 KB adversarial inputs, so a future pattern
+// cannot regress it: each must finish in < 50 ms (best of three runs, to ignore a scheduler hiccup).
+describe('every secret pattern is linear (re-review a6 SF2)', () => {
+  const UNITS = ['a.', 'sk-', 'KEY', '"token', 'x=', 'a://', '\\', '@', ':', ' -p', '-u ', 'X-', 'Bearer "', 'export A ', 'apiKey:',
+    'a:', 'a b', '"a":', "'", '"', 'mysql ', '--password ', 'X-Api-Key:', 'https://a:', 'A=', 'npm_', 'Authorization: ', 'a-', 'a_', '-p', 'a@'];
+  it.each(CONTINUITY_SECRETS.map((entry, i) => [i, entry]))('pattern #%i stays under 50 ms on 64 KB and 100 KB adversarial input', (_i, [pattern, replacement]) => {
+    for (const unit of UNITS) for (const size of [64 * 1024, 100 * 1024]) {
+      const input = unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+      let best = Infinity;
+      for (let run = 0; run < 3 && best >= 50; run += 1) {
+        const started = performance.now(); input.replace(pattern, replacement); best = Math.min(best, performance.now() - started);
+      }
+      expect(best, `${JSON.stringify(unit)} × ${size}`).toBeLessThan(50);
+    }
+  });
+});
+
+// Re-review a6 SHOULD-FIX 3: shapes that still leaked. Every value is BUILT AT RUNTIME (no credential-shaped
+// literal in this file — push protection and scripts/development-push-check.mjs reject those).
+describe('more secret shapes are redacted (re-review a6 SF3)', () => {
+  const v = (tag) => ['zq', tag, 'Wv', '7Rk', 'Pm', '42x'].join('');           // a synthetic secret value
+  const CASES = () => [
+    ['--password value', `mysqldump --password ${v('a')} db`, v('a')],
+    ['--pass value', `tool --pass ${v('b')} run`, v('b')],
+    ['--password=value', `tool --password=${v('c')}`, v('c')],
+    ['mysql -p attached', `mysql -u root -p${v('d')} app`, v('d')],
+    ['curl -u user:pass', `curl -u deploy:${v('e')} https://example.invalid`, v('e')],
+    ['--user user:pass', `curl --user deploy:${v('f')} https://example.invalid`, v('f')],
+    ['X-Api-Key header', `curl -H "X-Api-Key: ${v('g')}" https://example.invalid`, v('g')],
+    ['X-Auth-Token header', `X-Auth-Token: ${v('h')}`, v('h')],
+    ['X-Secret header', `X-Secret-Value: ${v('i')}`, v('i')],
+    ['quoted Bearer', `Bearer "${v('j')}"`, v('j')],
+    ['JS object key', `const cfg = { apiKey: "${v('k')}" }`, v('k')],
+    ['JS key, single quotes', `clientSecret: '${v('l')}'`, v('l')],
+    ['numeric JSON value', `{"password": 98765${'4'.repeat(6)}}`, `98765${'4'.repeat(6)}`],
+    ['export without =', `export TOKEN ${v('m')}`, v('m')],
+    ['setenv', `setenv API_SECRET ${v('n')}`, v('n')],
+    ['URL password with @ (the part after the first @)', `https://bot:${v('o')}@x${v('p')}@registry.example.invalid/pkg`, v('p')],
+    ['URL password with @ (the part before it)', `https://bot:${v('o')}@x${v('p')}@registry.example.invalid/pkg`, v('o')],
+    ['unterminated quoted env value', `DB_PASSWORD="${v('q')} and the rest of the line`, 'and the rest of the line'],
+  ];
+  it.each(CASES().map(([label, text, secret]) => [label, text, secret]))('%s is not stored', (_label, text, secret) => {
+    const e = makeEvent({ kind: 'finding', source: 'agent-result', authoritative: false, summary: `Ran: ${text} (done)` });
+    expect(JSON.stringify(e)).not.toContain(secret);
+    expect(e.summary).toMatch(/REDACTED/);
+  });
+  it('ordinary text near the new patterns is left alone', () => {
+    for (const text of ['mkdir -p build/out', 'ls -la -u', 'X-Request-Id: 1234-abcd', 'export PATH /usr/bin', 'const port: 8080', 'https://example.invalid/a@b']) {
+      expect(makeEvent({ kind: 'finding', source: 'agent-result', authoritative: false, summary: text }).summary, text).toBe(text);
+    }
+  });
+});
+
 describe('secrets in commands, outputs and findings are redacted (re-review S3)', () => {
   const SECRETS = [
     ['env token', 'NPM_TOKEN=npm' + '_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789', 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'],

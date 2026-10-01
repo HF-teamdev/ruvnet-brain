@@ -68,19 +68,36 @@ function redactKeyTails(value) {
 }
 /** Redact the WHOLE text first; only then may it be shortened (review S2: truncate-first cut off the END
  * marker, so the key regex never matched and the BEGIN line plus key body survived). */
-// Shapes the shared progression list misses (re-review S3) — gate commands and output tails carry them.
-// Linear: a name is matched by ONE character class anchored at a word boundary and judged in a callback
-// (a `[\w]*(?:KEY|…)[\w]*` pattern backtracks quadratically — measured 1.6 s on 60 KB).
+// Shapes the shared progression list misses (re-review S3, a6) — gate commands and output tails carry them.
+// LINEAR by construction, and timed per pattern on 64 KB / 100 KB adversarial input in
+// tests/unit/continuity-events.test.mjs: every repeated name is ONE character class anchored at a word boundary
+// (or bounded, e.g. a URL scheme of at most 32 characters) and judged in a callback; a `[\w]*(?:KEY|…)[\w]*`
+// pattern backtracked quadratically (1.6 s on 60 KB), and so did an unbounded URL scheme (1.2 s on 64 KB).
 const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH/i;
-const CONTINUITY_SECRETS = [
-  // ENV-style assignments: NPM_TOKEN=…, AWS_SECRET_ACCESS_KEY=…, DB_PASSWORD="…", GH_API_KEY=…
-  [/\b([A-Za-z0-9_]+)(\s*=\s*)("[^"\n]*"|'[^'\n]*'|[^\s;,&|]+)/g, (m, name, eq) => (SECRET_NAME.test(name) ? `${name}${eq}[REDACTED:secret]` : m)],
-  // JSON values: "password": "…", "apiKey":"…", "client_secret": "…"
-  [/"([A-Za-z0-9_-]+)"(\s*:\s*)"(?:[^"\\\n]|\\.)*"/g, (m, name, colon) => (SECRET_NAME.test(name) ? `"${name}"${colon}"[REDACTED:secret]"` : m)],
-  // URL userinfo: scheme://user:pass@host
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[REDACTED:userinfo]@'],
-  // Authorization headers of any scheme
+const VALUE = String.raw`"[^"\n]*"?|'[^'\n]*'?|[^\s;,&|]+`; // a quoted value may be unterminated: redact to end of line
+const named = (name, sep) => `${name}${sep}[REDACTED:secret]`;
+export const CONTINUITY_SECRETS = [
+  // ENV-style assignments: NPM_TOKEN=…, AWS_SECRET_ACCESS_KEY=…, DB_PASSWORD="…", GH_API_KEY=…, --password=…
+  [new RegExp(String.raw`\b([A-Za-z0-9_]+)(\s*=\s*)(${VALUE})`, 'g'), (m, name, eq) => (SECRET_NAME.test(name) ? named(name, eq) : m)],
+  // JSON values, string or number: "password": "…", "apiKey":"…", "pin": 98765…
+  [/"([A-Za-z0-9_-]+)"(\s*:\s*)("(?:[^"\\\n]|\\.)*"|-?\d[\d.eE+-]*)/g, (m, name, colon) => (SECRET_NAME.test(name) ? `"${name}"${colon}"[REDACTED:secret]"` : m)],
+  // URL userinfo up to the LAST '@' before the host (a password may contain '@'); scheme length is bounded.
+  [/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]+:[^\s/]*@/gi, '$1[REDACTED:userinfo]@'],
+  // Authorization headers of any scheme, and a quoted Bearer value
   [/\b(Authorization\s*:\s*)(?:Basic|Bearer|Token|Digest)?\s*[^\s"']+/gi, '$1[REDACTED:authorization]'],
+  [/\b(Bearer\s+)(["'])[^"'\n]*\2/gi, '$1[REDACTED:bearer-token]'],
+  // X-…-Key / X-Auth-Token / X-Secret… headers (name length bounded)
+  [new RegExp(String.raw`\b(X-[A-Za-z0-9-]{1,64})(\s*:\s*)(${VALUE})`, 'gi'), (m, name, colon) => (SECRET_NAME.test(name) ? named(name, colon) : m)],
+  // CLI flags: --password <v>, --pass <v>, --token <v>, --api-key <v>
+  [new RegExp(String.raw`(--(?:password|passwd|pass|token|secret|api-key|apikey|access-key|auth-token)(?:\s+|=))(${VALUE})`, 'gi'), '$1[REDACTED:secret]'],
+  // mysql-family -p<password> (attached), within one command line
+  [/(\b(?:mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)\b[^\n]{0,200}?\s-p)(\S+)/g, '$1[REDACTED:secret]'],
+  // -u / --user user:password (curl and friends)
+  [/((?:^|\s)(?:-u|--user)\s+)([^\s:]+):(\S+)/g, '$1$2:[REDACTED:secret]'],
+  // JS/TS object keys without quotes: { apiKey: "…" }, clientSecret: '…'
+  [/\b([A-Za-z_][A-Za-z0-9_]*)(\s*:\s*)("[^"\n]*"?|'[^'\n]*'?|`[^`\n]*`?)/g, (m, name, colon) => (SECRET_NAME.test(name) ? named(name, colon) : m)],
+  // export / setenv / set NAME value (no '=')
+  [new RegExp(String.raw`\b((?:export|setenv|set)\s+)([A-Za-z0-9_]+)(\s+)(${VALUE})`, 'g'), (m, kw, name, sp) => (SECRET_NAME.test(name) ? `${kw}${named(name, sp)}` : m)],
   // Well-known token shapes
   [/\b(?:npm_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16})\b/g, '[REDACTED:token]'],
 ];
