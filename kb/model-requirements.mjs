@@ -3,6 +3,9 @@ import path from 'node:path';
 
 export const MINILM_MODEL = 'Xenova/all-MiniLM-L6-v2';
 export const BGE_MODEL = 'Xenova/bge-base-en-v1.5';
+// The default cross-encoder every reranked answer loads (forge-rerank.mjs). Named here so the
+// doctor can tell a cold cache from a broken reader without importing the ONNX stack.
+export const RERANKER_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 
 export function modelPath(modelCache, model) {
   return path.join(modelCache, ...model.split('/'));

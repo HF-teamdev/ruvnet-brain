@@ -31,7 +31,10 @@ import {
 } from '../kb/model-requirements.mjs';
 import { applyManagedCatalogUpdate } from '../scripts/model-router-catalog.mjs';
 import { cmpVersion } from '../scripts/stack-sync.mjs';
-import { inspectInstalledBrain, classifySmokeEvidence, DOCTOR_SMOKE_QUERY, doctorSmokeArgs } from '../scripts/installed-brain-health.mjs';
+import {
+  inspectInstalledBrain, classifySmokeEvidence, classifySmokeFailure, coldModels, DOCTOR_SMOKE_QUERY, doctorSmokeArgs,
+  MODEL_WARMUP_SCRIPT, MODEL_WARMUP_TIMEOUT_MS,
+} from '../scripts/installed-brain-health.mjs';
 import { validateCoverageDirectory } from '../plugin/scripts/coverage-integrity.mjs';
 import {
   continuityContractIds,
@@ -2557,8 +2560,35 @@ async function smokeQuery(cacheDir) {
     'this warms the local model and checks that retrieval returns usable, cited evidence',
   );
   const Q = DOCTOR_SMOKE_QUERY;
+  const modelCache = resolveRuntimeModelCache();
+  // WARMING IS NOT ANSWERING. A cold cache means the first question also downloads and loads the
+  // models, so a timeout could not tell "still fetching" from "broken". Fetch them first, as their
+  // own step with their own bound and their own verdict; the question's limit then measures an
+  // answer. A warm cache (every later doctor run) skips this step entirely.
+  const cold = coldModels(cacheDir, modelCache);
+  if (cold.length) {
+    info(c.dim(`warming ${cold.length} local model(s) once: ${cold.join(', ')}`));
+    const warmStarted = Date.now();
+    const w = spawnSync(process.execPath, ['--input-type=module', '-e', MODEL_WARMUP_SCRIPT], {
+      cwd: cacheDir, encoding: 'utf8', timeout: MODEL_WARMUP_TIMEOUT_MS,
+      env: { ...process.env, KB_MODEL_CACHE: modelCache },
+    });
+    const warmSecs = ((Date.now() - warmStarted) / 1000).toFixed(1);
+    if (w.status === 0) {
+      ok(`local models ready in ${warmSecs}s (downloaded and loaded once; later questions skip this)`);
+    } else if (w.status === 3) {
+      info(c.dim('this bundle predates the separate warm-up step — the question below includes it'));
+    } else {
+      const why = w.error ? w.error.message
+        : w.signal ? `stopped by ${w.signal} after ${warmSecs}s (${MODEL_WARMUP_TIMEOUT_MS / 1000}s limit)`
+          : `exited ${w.status} after ${warmSecs}s`;
+      warn(`could not prepare the local models — ${why}`);
+      const err = `${w.stderr || ''}`.trim();
+      if (err) for (const line of err.split('\n').slice(0, 8)) info(c.dim(`    ${line.slice(0, 200)}`));
+      return { ran: true, grounded: false, reason: `model-warmup-failed: ${why}`, stderr: err.slice(0, 4000) };
+    }
+  }
   info(`Q: ${c.cyan(`"${Q}"`)}`);
-  info(c.dim('(first run downloads a small local model once — this can take a minute)'));
   const started = Date.now();
   let r;
   try {
@@ -2575,19 +2605,18 @@ async function smokeQuery(cacheDir) {
       // path here makes the install smoke warm the model cache the product will actually reopen,
       // instead of a second kb-local cache that can go green while the real door stays cold.
       //
-      // RUVNET_BRAIN_QUERY_DEADLINE_MS: this ONE probe is the very first query ever run against a
-      // freshly-installed cache — the model is cold and the cross-encoder "rerank" phase has to pay
-      // load cost that every later, warm query never pays again. Measured on macOS GitHub Actions
-      // runners 2026-09-27 (public-verification runs 36324328134 job 108636740357, 28.5-28.7s; and
-      // 36325803503 job 108638381147, 27.1-27.2s): this exact probe consistently needs ~27-29s on
-      // that platform, against the general 20s deadline (kb/query-deadline.mjs
-      // DEFAULT_QUERY_DEADLINE_MS) that is correct for every normal, warm query. 45s keeps this
-      // bounded (never unbounded — the module's core guarantee) while giving this one cold-start
-      // probe real margin, without touching the default that protects normal queries everywhere
-      // else. Only applied if the caller hasn't already set an explicit override.
+      // RUVNET_BRAIN_QUERY_DEADLINE_MS: 45s for this one probe, against the general 20s deadline
+      // (kb/query-deadline.mjs DEFAULT_QUERY_DEADLINE_MS) that protects every normal query. Still
+      // bounded — the module's core guarantee. The 27-29s once quoted here (public-verification runs
+      // 36324328134, 36325803503) were THREE doctors started at once on the 3-vCPU/7GB macOS runner,
+      // not one cold probe. Measured 2026-10-01 on that runner (ci-probe run 36882813925): model
+      // download+load 6-7s (now its own step above), this question alone 6.6-10.4s with a warm cache
+      // and 14-15s with the fetch inside it, three at once 24-34s; the real --doctor, alone, verified
+      // in 11.8s (4.4.1) and 15.4s (4.4.0). 45s is ~3x the measured single-doctor cost. Only applied
+      // if the caller hasn't already set an explicit override.
       env: {
         ...process.env,
-        KB_MODEL_CACHE: resolveRuntimeModelCache(),
+        KB_MODEL_CACHE: modelCache,
         RUVNET_BRAIN_QUERY_DEADLINE_MS: process.env.RUVNET_BRAIN_QUERY_DEADLINE_MS ?? '45000',
       },
     });
@@ -2605,11 +2634,10 @@ async function smokeQuery(cacheDir) {
     // crash, a timeout, and a missing module all read as "nothing is wrong, it will warm up".
     // Observed on this machine: a smoke query that produced no answer in 240s was reported as a
     // first-run download. spawnSync already tells us which it was; say that instead.
-    const cause = r.error ? `could not launch the reader: ${r.error.message}`
-      : r.signal === 'SIGTERM' ? `timed out after ${secs}s (240s limit) with no answer`
-        : r.signal ? `the reader was killed by ${r.signal} after ${secs}s`
-          : r.status !== 0 ? `the reader exited ${r.status} after ${secs}s`
-            : `the reader exited 0 after ${secs}s but printed nothing`;
+    const limitMs = Number(process.env.RUVNET_BRAIN_QUERY_DEADLINE_MS ?? 45000);
+    const failure = classifySmokeFailure({ error: r.error, signal: r.signal, status: r.status,
+      stderr: r.stderr, secs, limitSecs: Number.isFinite(limitMs) ? limitMs / 1000 : 45 });
+    const { cause } = failure;
     warn(`no answer came back — ${cause}`);
     // SHOW THE ACTUAL ERROR (issue #37 bug 2, Agentist-Elder, 2026-07-21).
     //
@@ -2632,7 +2660,8 @@ async function smokeQuery(cacheDir) {
     }
     // The reason travels with the verdict so the doctor's "Grounding NOT proven (<reason>)" line
     // names the real cause too, instead of the generic token.
-    return { ran: true, grounded: false, reason: `no-answer: ${cause}`, secs, stderr: err.slice(0, 4000) };
+    return { ran: true, grounded: false, reason: `no-answer: ${cause}`, secs, stderr: err.slice(0, 4000),
+      slow: failure.kind === 'slow' };
   }
 
   const verifier = await loadCitationVerifier(cacheDir);
@@ -2971,7 +3000,12 @@ async function doctor() {
     console.log(`    really exists in your local KB. Checked in ${smoke.secs}s, no cloud, no API key.`);
   } else if (smoke.grounded === false) {
     console.log(`  ${c.yellow('! Grounding NOT proven')} (${smoke.reason}). The install is present but the brain did not`);
-    console.log('    answer from a verifiable source. Re-run  npx ruvnet-brain  to repair the KB.');
+    // A timeout mid-answer is not a damaged KB, and reinstalling a working brain does not make the
+    // machine faster — so that case gets its own, true advice. Still NOT proven, still failing.
+    console.log(smoke.slow
+      ? '    answer inside the limit. The reader was working, not broken — a reinstall will not help. Run\n'
+        + '    npx ruvnet-brain --doctor  again when the machine is less busy.'
+      : '    answer from a verifiable source. Re-run  npx ruvnet-brain  to repair the KB.');
   } else if (smoke.grounded === null) {
     console.log(`  ${c.yellow('! Grounding not verifiable')} on this bundle — it predates the citation verifier.`);
     console.log('    Re-run  npx ruvnet-brain  to refresh, then --doctor will prove it.');
