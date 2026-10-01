@@ -89,6 +89,40 @@ describe('issue #126 — already-ahead is converged, not a failed sync', () => {
     expect(run(home, '9.9.8').status).toBe(1);
   }, 70_000);
 
+  // N5 (4.4 review): the "no host" exit 0 must not become a false success.
+  const bareHome = () => { const home = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-nohost-')); temps.push(home); return home; };
+  const runWith = (home, expected, extra) => spawnSync(process.execPath, [ENGINE, '--auto', '--expected-version', expected], {
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'CLAUDE_CONFIG_DIR')),
+      HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex'), ...extra },
+    encoding: 'utf8', timeout: 60_000 });
+
+  it('honours CLAUDE_CONFIG_DIR: a payload staged there is a host, not "nothing to converge"', () => {
+    const home = bareHome();
+    const config = path.join(home, 'custom-claude');
+    const staged = path.join(config, 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain', '9.9.7');
+    fs.mkdirSync(path.join(staged, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(staged, '.claude-plugin'), { recursive: true });
+    fs.writeFileSync(path.join(staged, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '9.9.7' }));
+    // A different version is staged under CLAUDE_CONFIG_DIR: exact selection refuses it, so this must FAIL
+    // closed — reading only ~/.claude it saw no host at all and reported success.
+    const r = runWith(home, '9.9.8', { CLAUDE_CONFIG_DIR: config });
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(1);
+    expect(`${r.stderr}`).toMatch(/no staged host payload exactly matches/);
+  }, 70_000);
+
+  it('a host whose `claude plugin install` failed (marketplace registered, nothing staged) still fails', () => {
+    for (const [label, extra, root] of [['default ~/.claude', {}, (h) => path.join(h, '.claude')],
+      ['CLAUDE_CONFIG_DIR', { CLAUDE_CONFIG_DIR: 'X' }, (h) => path.join(h, 'custom-claude')],
+      ['CODEX_HOME', {}, (h) => path.join(h, '.codex')]]) {
+      const home = bareHome();
+      const config = root(home);
+      fs.mkdirSync(path.join(config, 'plugins', 'marketplaces', 'ruvnet-brain'), { recursive: true });
+      const r = runWith(home, '9.9.8', extra.CLAUDE_CONFIG_DIR ? { CLAUDE_CONFIG_DIR: config } : {});
+      expect(r.status, `${label}: ${r.stdout}${r.stderr}`).toBe(1);
+      expect(`${r.stdout}`, label).not.toMatch(/nothing to converge/);
+    }
+  }, 120_000);
+
   it('the PAYLOAD SELECTOR stays exact — issue #64 must not regress', () => {
     // Asserted against the source, because the behavioural proof lives in
     // tests/qe/release/issue-64-host-convergence.test.mjs and this file must fail loudly if someone

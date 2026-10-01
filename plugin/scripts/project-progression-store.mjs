@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { ProgressionOutbox } from './project-progression-outbox.mjs';
 import {
@@ -132,6 +134,23 @@ function sortRejected(rows) {
     || left.reasons.join('|').localeCompare(right.reasons.join('|')));
 }
 
+/**
+ * The working directory ruflo runs in for a store at `storePath`. ruflo creates `<cwd>/.swarm/` on every
+ * invocation even when --path names the store (measured 2026-10-01, ruflo 3.49.0), so:
+ *  - a store at `<dir>/.swarm/memory.db` (the default, and any other `.swarm` store) runs from `<dir>`,
+ *    where `<cwd>/.swarm` IS the store's own directory;
+ *  - any other store path runs from a dedicated, per-user scratch directory outside every project, so a
+ *    stray `.swarm` lands there and never next to (or nested inside) a store.
+ * Running from the store's own directory left an unused nested `.swarm/.swarm/` store in every project.
+ */
+export function rufloCwdFor(storePath, { scratchRoot = os.tmpdir() } = {}) {
+  const storeDir = path.dirname(path.resolve(storePath));
+  if (path.basename(storeDir) === '.swarm') return path.dirname(storeDir);
+  const scratch = path.join(scratchRoot, `ruvnet-brain-ruflo-cwd-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
+  fs.mkdirSync(scratch, { recursive: true, mode: 0o700 });
+  return scratch;
+}
+
 export class ProjectProgressionStore {
   constructor({
     projectDir,
@@ -164,15 +183,8 @@ export class ProjectProgressionStore {
   }
 
   run(args) {
-    // ruflo creates `<cwd>/.swarm/` on every invocation even when --path names the store. Run from the
-    // project root when the store is the default `<root>/.swarm/memory.db`, so that directory IS the
-    // store's own; running from inside `.swarm` left an unused nested `.swarm/.swarm/` store in every
-    // project (measured 2026-10-01, ruflo 3.49.0).
-    const defaultStore = path.join(this.resolution.projectRoot, '.swarm', 'memory.db');
-    const cwd = path.resolve(this.resolution.canonicalAgentDbPath) === path.resolve(defaultStore)
-      ? this.resolution.projectRoot : path.dirname(this.resolution.canonicalAgentDbPath);
     return this.runner(this.rufloBinary, args, {
-      cwd,
+      cwd: rufloCwdFor(this.resolution.canonicalAgentDbPath),
       encoding: 'utf8',
       timeout: 120_000,
       env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' },

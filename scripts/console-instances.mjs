@@ -66,6 +66,18 @@ export function readConsoleReceipts(receiptDir, { alive = pidAlive, probe = prob
   return { live, pruned };
 }
 
+// The replacement Console is a user-facing process, not part of the installer run: it gets a clean
+// environment (identity, locale, the brain's own location overrides), never the installer's flags such as
+// RUVNET_NIGHTLY=1 from the scheduler or RUVNET_BRAIN_TEST from a test harness.
+const CONSOLE_ENV_KEYS = new Set(['HOME', 'USER', 'LOGNAME', 'PATH', 'SHELL', 'TMPDIR', 'TEMP', 'TMP', 'LANG', 'TERM',
+  'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'ComSpec', 'PATHEXT', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME',
+  'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'RUVNET_BRAIN_HOME', 'RUVNET_BRAIN_KB', 'RUVNET_CONSOLE_ROOT', 'RUVNET_SETTINGS_FILE']);
+export function consoleEnv(env = process.env, port) {
+  const clean = Object.fromEntries(Object.entries(env).filter(([key, value]) => value != null
+    && (CONSOLE_ENV_KEYS.has(key) || /^LC_[A-Z_]+$/.test(key))));
+  return { ...clean, CONSOLE_PORT: String(port) };
+}
+
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 
@@ -92,9 +104,19 @@ export function replaceStaleConsoles({ entry, identity, receiptDir, env = proces
     }
     if (!fs.existsSync(entry)) { refuse(`the activated Console runtime is missing (${entry})`); continue; }
     if (!fs.existsSync(receipt.scope)) { refuse(`its project directory no longer exists (${receipt.scope})`); continue; }
+    // The pid is alive, but is it STILL this Console? A reused pid (reboot, long uptime) with a port that
+    // does not answer this receipt's identity is a dead Console's receipt: remove it now instead of
+    // waiting 20s for a process that will never release anything and reporting a false failure.
+    const answer = probe(receipt.port) || probe(receipt.port);
+    if (!answer || !sameIdentity(answer, receipt)) {
+      try { fs.unlinkSync(file); } catch { /* raced */ }
+      results.push({ ...where, replaced: false, pruned: true,
+        reason: `pid ${receipt.pid} is no longer that Console (port ${receipt.port} does not answer with its identity); its receipt was removed` });
+      continue;
+    }
     try {
       const child = spawnFn(process.execPath, [entry, '--serve'], { cwd: receipt.scope, detached: true, stdio: 'ignore',
-        windowsHide: true, env: { ...env, CONSOLE_PORT: String(receipt.port) } });
+        windowsHide: true, env: consoleEnv(env, receipt.port) });
       child.on?.('error', () => {});
       child.unref?.();
     } catch (error) { refuse(`could not start the current Console: ${error.message}`); continue; }
