@@ -1640,7 +1640,9 @@ async function main() {
   if (!APPLY) {
     writeCheckOutcome({ currencyVerdict: verdict.verdict, currencyReason: verdict.reason,
       candidateKind: candidateIdentity.kind, storeCount: targets.length });
-    if (anyBehind) { console.log(`\nA newer build exists. Run:  node forge-update.mjs --apply`); process.exit(10); }
+    // The npx door upgrades this updater before applying; an old installed updater run directly can fail
+    // the guard on a newer bundle (customer-state-matrix D8, 2026-09-30).
+    if (anyBehind) { console.log(`\nA newer build exists. Run:  npx ruvnet-brain@latest --update`); process.exit(10); }
     console.log(`\nAll stores current. Nothing to do.`); process.exit(0);
   }
 
