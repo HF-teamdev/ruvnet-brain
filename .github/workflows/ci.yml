@@ -127,6 +127,18 @@ jobs:
         run: |
           npx vitest run --config tests/qe/gpt56/vitest.config.mjs \
             tests/qe/gpt56/live-brain-search.test.mjs --reporter=dot
+      # The 9-question capability-selection battery (plugin/test/run-tests.mjs) ran nowhere with a
+      # brain present: every CI runner skipped it, so "RuVector HNSW vector search overview" answering
+      # from agentdb (a code defect since 2026-09-11) went unseen until an owner ran `npm test`. Run it
+      # here, with the candidate's reader overlaid on the seed, so the battery measures the code this
+      # release ships against the corpus it ships with. REQUIRE_BRAIN makes a skip a failure.
+      - name: Capability selection battery (candidate reader on the seed corpus)
+        env:
+          REQUIRE_BRAIN: '1'
+        run: |
+          set -euo pipefail
+          cp kb/*.mjs "$RUVNET_BRAIN_KB/"
+          node plugin/test/run-tests.mjs
 
   release-acceptance-linux:
     needs: candidate-preflight
