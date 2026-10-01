@@ -3646,13 +3646,14 @@ async function runUpdate() {
   };
   process.once('exit', exitGuard);
   info(`brain dir: ${c.bold(kbDir)}`);
-  // An update killed between its two directory renames leaves no usable kb/ (no updater in it) — the
-  // brain sits in a receipted kb.rollback-<id>, and the recovery that renames it back lives inside the
-  // updater that is now missing. Run that same recovery (the package's own copy) under this refresh lock
-  // first, so the check below sees the restored brain instead of telling the user to reinstall over it.
+  // RECOVER AN INTERRUPTED UPDATE FIRST, before anything below writes into the brain. Two measured
+  // reasons: (1) a kill between the two directory renames leaves no usable kb/ — the brain sits in a
+  // receipted kb.rollback-<id>, and the recovery that renames it back lives inside the updater that is
+  // now missing; (2) the preflight below re-stamps RUNTIME-IDENTITY.json into kb/, after which recovery
+  // can never prove kb/ still equals the identity sealed at LOCKED, so any pre-activation kill wedged
+  // every later update at RECOVERY_REQUIRED. Same function the updater runs, under this refresh lock.
   // Receipts hold the REAL paths the updater knew, so recovery is addressed by the physical path.
-  if (!fs.existsSync(path.join(kbDir, 'forge-update.mjs'))
-    && fs.existsSync(path.join(path.dirname(kbDir), `.${path.basename(kbDir)}.update-transactions`))) {
+  if (fs.existsSync(path.join(path.dirname(kbDir), `.${path.basename(kbDir)}.update-transactions`))) {
     try {
       const recovered = recoverIncompleteStorageTransactions(physicalPath(kbDir));
       if (recovered.length) ok(`restored the brain from an interrupted update (${recovered.map((r) => `${r.transactionId}: ${r.from}`).join(', ')})`);

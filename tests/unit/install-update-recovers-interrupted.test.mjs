@@ -58,3 +58,41 @@ checkpoint:(phase)=>{if(phase==='OLD_RENAMED')process.exit(93);}});`;
     expect(fs.readdirSync(receipts).sort().at(-1)).toMatch(/-ROLLED_BACK\.json$/);
   }, 150_000);
 });
+
+describe('installer --update recovers BEFORE its preflight writes into the brain', () => {
+  // MEASURED 2026-09-30 (customer-state-matrix, transaction=killed-during-candidate-build, re-run with the
+  // quarantine fix): the second `--update` still ended RECOVERY_REQUIRED, "interrupted live tree identity
+  // differs from its sealed receipt". The installer's preflight (ensureUpdaterPrerequisites) re-stamps
+  // RUNTIME-IDENTITY.json (stampedUtc) into the live tree BEFORE the updater's recovery compares live with
+  // the identity sealed at LOCKED, so no pre-activation interruption could ever be recovered via `--update`.
+  it('a kill while building the candidate is recovered on the next --update, not wedged', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'install-prebuild-kill-')));
+    temps.push(root);
+    const brainHome = path.join(root, 'brain');
+    const kb = path.join(brainHome, 'kb');
+    const incoming = path.join(root, 'incoming');
+    fs.mkdirSync(kb, { recursive: true });
+    fs.mkdirSync(incoming);
+    // A live brain the preflight writes into (it has an updater), with no SOURCE.json so the placed updater
+    // stops early and offline; what is asserted is the recovery that must come first.
+    fs.writeFileSync(path.join(kb, 'forge-update.mjs'), '// old updater\n');
+    fs.writeFileSync(path.join(incoming, 'forge-update.mjs'), '// new updater\n');
+    const script = `import {runStorageTransaction} from ${JSON.stringify(MODULE)};
+runStorageTransaction({liveDir:${JSON.stringify(kb)},sourceDir:${JSON.stringify(incoming)},transactionId:'mid-build',
+prepareCandidate:()=>{process.exit(93);}});`;
+    expect(spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' }).status).toBe(93);
+    const home = path.join(root, 'home');
+    fs.mkdirSync(home);
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin', 'install.mjs'), '--update', '--no-nightly-prompt'], {
+      encoding: 'utf8', timeout: 120_000, cwd: root,
+      env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR || os.tmpdir(), RUVNET_BRAIN_TEST: '1',
+        RUVNET_BRAIN_HOME: brainHome, RUVNET_BRAIN_KB: kb, RUVNET_BRAIN_NO_UPDATE_FALLBACK: '1' },
+    });
+    const output = `${r.stdout}${r.stderr}`;
+    const states = fs.readdirSync(path.join(brainHome, '.kb.update-transactions', 'mid-build')).sort();
+    expect(states.some((name) => /RECOVERY_REQUIRED/.test(name)), output).toBe(false);
+    expect(states.at(-1)).toMatch(/-ROLLED_BACK\.json$/);
+    expect(fs.existsSync(path.join(brainHome, 'kb.failed-mid-build'))).toBe(true); // quarantined, not deleted
+    expect(output).toMatch(/restored the brain from an interrupted update/);
+  }, 150_000);
+});
