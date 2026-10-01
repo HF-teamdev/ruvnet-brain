@@ -24,7 +24,7 @@ import { applyBrainProfile, readBrainProfile } from '../kb/brain-profile.mjs';
 import { acquireRefreshLock, finishRefreshReceipt, openRefreshReceipt, physicalPath, recordRefreshAdvisory,
   recordRefreshPhase, settleRefreshRun, UPDATE_REFRESH_PHASES } from '../kb/refresh-run.mjs';
 import { pruneLifecycleEvidence } from '../kb/lifecycle-evidence-retention.mjs';
-import { recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
+import { checkDiskSpace, recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
 import {
   requiredEmbedderModels,
   missingEmbedderModels,
@@ -623,6 +623,18 @@ export async function unzipInto(zipPath, cacheDir, sourceDir = null, { releaseTa
   );
 
   fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
+  // DISK-SPACE PREFLIGHT before staging: the whole unpacked bundle lands beside the brain (the prior
+  // generation is renamed, never copied). Refuse cleanly with the exact shortfall rather than ENOSPC
+  // half-way through an extraction.
+  if (zipPath && !sourceDir) {
+    let space;
+    try {
+      const { zipDeclaredBytes } = await import(new URL('../kb/zip-extract.mjs', import.meta.url).href);
+      space = checkDiskSpace([{ dir: path.dirname(cacheDir), bytes: zipDeclaredBytes(zipPath), purpose: 'unpacked brain' }],
+        { what: 'install the brain' });
+    } catch { space = { ok: true }; } // unmeasurable: extraction's own limits still apply
+    if (!space.ok) die(space.message.split('\n')[0], 'Nothing was installed and nothing was changed.');
+  }
   const stageDir = fs.mkdtempSync(path.join(path.dirname(cacheDir), `.${path.basename(cacheDir)}.install-stage-`));
   const localCopy = async () => `local directory copy — ${copyLocalBundleInto(sourceDir, stageDir)} top-level entries`;
   const nodeExtract = async () => {
@@ -3344,6 +3356,11 @@ export function classifyUpdaterExit(status, { fallbackAllowed = true, result = n
   // the fallback would turn the refusal into +1 copy per run (measured: 2 -> 3, +1.3 GB). Report instead.
   if (/^unresolved rollback state exists/.test(String(result?.reason || ''))) {
     return { verdict: 'refused-retained-copies', fallback: false, exitCode: status || 1 };
+  }
+  // Exit 6 / "not enough free disk space": the updater measured before unpacking and touched nothing. A
+  // fresh-install fallback needs at least as much room, so it would only fail later and messier.
+  if (status === 6 || /^not enough free disk space/.test(String(result?.reason || ''))) {
+    return { verdict: 'refused-disk-space', fallback: false, exitCode: status || 6 };
   }
   // Exit 2 is "manifest unreachable, nothing touched". The fallback exists for a DEAD manifest URL (an old
   // bundle polling a path that 404s); a rate limit, a 5xx or no network is transient, and a full fresh

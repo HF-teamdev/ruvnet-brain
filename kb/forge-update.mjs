@@ -25,10 +25,10 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash, createPublicKey, verify as verifySignature } from 'node:crypto';
-import { extractZip } from './zip-extract.mjs';
+import { extractZip, zipDeclaredBytes } from './zip-extract.mjs';
 import { applyBrainProfile, discoverStoreFamilies, readBrainProfile } from './brain-profile.mjs';
 import { acquireRefreshLock, releaseRefreshLock } from './refresh-run.mjs';
-import { runStorageTransaction, treeIdentity, managedStorageInventory, storageDelta } from './update-storage-transaction.mjs';
+import { runStorageTransaction, treeIdentity, managedStorageInventory, storageDelta, checkDiskSpace, directoryBytes } from './update-storage-transaction.mjs';
 import { pruneLifecycleEvidence } from './lifecycle-evidence-retention.mjs';
 import {
   isCorpusReleaseTag, assertCorpusReleaseCompatible, readInstalledRuntime,
@@ -1710,6 +1710,17 @@ async function main() {
   const signature = verifyDownloadedBundle(zipPath, sigPath);
   if (!signature.ok) { fs.rmSync(tmp, { recursive: true, force: true }); die(`✗ SIGNATURE VERIFICATION FAILED: ${signature.reason}`, 4); }
   console.log(`  ✓ signature verified — ${signature.reason}`);
+  // DISK-SPACE PREFLIGHT, before a single byte is unpacked: the bundle unpacks in temp, then a whole
+  // candidate generation (bundle + the live node_modules carried into it) is built beside the live one.
+  let space;
+  try {
+    const unpacked = zipDeclaredBytes(zipPath);
+    space = checkDiskSpace([
+      { dir: extractDir, bytes: unpacked, purpose: 'unpacked bundle' },
+      { dir: path.dirname(KB_DIR), bytes: unpacked + directoryBytes(path.join(KB_DIR, 'node_modules')), purpose: 'new generation' },
+    ]);
+  } catch (error) { space = { ok: true, skipped: error.message }; } // unmeasurable: extraction's own limits still apply
+  if (!space.ok) { fs.rmSync(tmp, { recursive: true, force: true }); die(space.message, 6); }
   try { await extractZip(zipPath, extractDir); }
   catch (error) { fs.rmSync(tmp, { recursive: true, force: true }); die(`extraction failed: ${error.message} — local files untouched.`); }
   // ── TIER 3: the staged bundle names the runtime that built it; this client names the runtime it

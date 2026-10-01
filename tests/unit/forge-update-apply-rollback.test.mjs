@@ -256,6 +256,28 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     expect(served.hits).toEqual({ zip: 1, sig: 1 });
   });
 
+  // 4.5: an apply needs ~3.3 GB growth / ~5 GB peak on a real brain. Out of space, it must refuse BEFORE
+  // unpacking anything, name the exact amount and the one fix, and leave the live brain untouched.
+  it('refuses cleanly, before unpacking, when the disk cannot hold the unpacked bundle and new generation', async () => {
+    const current = sourceJson({ releaseTag: 'v4.0.7', brainVersion: '4.0.7', builtUtc: '2026-07-31T04:39:28.414Z', stores: [STORE_A] });
+    layDown(kbDir, current);
+    publish(sourceJson({ releaseTag: 'v4.0.8', brainVersion: '4.0.8', builtUtc: '2026-08-02T12:00:00.000Z', stores: [STORE_A] }), 'v4.0.8');
+    const before = fs.readdirSync(kbDir).sort();
+    const tmpBefore = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('forge-update-release-')).length;
+
+    const { code, out } = await runWithEnv({ RUVNET_BRAIN_TEST: '1', RUVNET_TEST_FREE_BYTES: '1000' }, '--apply');
+
+    expect(code, out).toBe(6);
+    expect(out).toMatch(/not enough free disk space to apply this update: .* has 0\.00 GB free and needs \d+\.\d\d GB \(unpacked bundle .* \+ new generation .* \+ 0\.25 GB headroom\)\. Free \d+\.\d\d GB on that disk, or put the Brain on a bigger disk with RUVNET_BRAIN_HOME\. Nothing was changed\./);
+    expect(fs.readdirSync(kbDir).sort()).toEqual(before);
+    expect(JSON.parse(fs.readFileSync(path.join(kbDir, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.0.7');
+    expect(fs.readdirSync(root).filter((n) => /\.next-|\.rollback-|\.failed-|kb\.bak-/.test(n))).toEqual([]);
+    expect(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('forge-update-release-')).length).toBeLessThanOrEqual(tmpBefore);
+    // With room, the same release applies (the refusal was about space, nothing else).
+    const ok = await runWithEnv({ RUVNET_BRAIN_TEST: '1', RUVNET_TEST_FREE_BYTES: String(64 * 1024 ** 3) }, '--apply');
+    expect(ok.code, ok.out).toBe(0);
+  });
+
   it('rejects invalid staged ReleaseCoverage before backup or live-tree mutation', async () => {
     const current = sourceJson({
       releaseTag: 'v4.0.7', brainVersion: '4.0.7', builtUtc: '2026-07-31T04:39:28.414Z', stores: [STORE_A],

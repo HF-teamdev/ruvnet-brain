@@ -17,6 +17,75 @@ const STATES = Object.freeze([
   'RECOVERY_REQUIRED',
 ]);
 
+// ── DISK-SPACE PREFLIGHT ──────────────────────────────────────────────────────────────────────────
+// An apply needs room for the unpacked bundle (temp), the candidate generation beside the live one
+// (the bundle plus the live node_modules carried into it) and its receipts; measured ~3.3 GB growth and
+// ~5 GB peak per apply on a 1.3 GB brain. Running out half-way leaves a half-built candidate and a
+// confusing ENOSPC, so every install/update measures first and refuses cleanly — nothing touched.
+export const DISK_HEADROOM_BYTES = 256 * 1024 ** 2;
+
+function nearestExisting(dir) {
+  let current = path.resolve(dir);
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return current;
+}
+
+/** Free bytes available to this user on the filesystem holding `dir` (or its nearest existing parent). */
+export function availableBytes(dir, env = process.env) {
+  // Test seam, honoured only under RUVNET_BRAIN_TEST=1: a full disk cannot be produced on demand.
+  if (env.RUVNET_BRAIN_TEST === '1' && /^\d+$/.test(String(env.RUVNET_TEST_FREE_BYTES || ''))) return Number(env.RUVNET_TEST_FREE_BYTES);
+  const stat = fs.statfsSync(nearestExisting(dir));
+  return Number(stat.bavail) * Number(stat.bsize);
+}
+
+/** Bytes of every regular file under `dir`; symlinks are not followed; an absent dir is 0. */
+export function directoryBytes(dir) {
+  let total = 0;
+  const walk = (current) => {
+    let entries;
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) { try { total += fs.lstatSync(full).size; } catch { /* vanished */ } }
+    }
+  };
+  walk(dir);
+  return total;
+}
+
+const gb = (bytes) => `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+
+/**
+ * `requirements`: [{ dir, bytes, purpose }]. Requirements on the same filesystem add up. Returns
+ * { ok, shortfalls: [{ dir, needBytes, freeBytes, shortBytes, purposes }], message }.
+ */
+export function checkDiskSpace(requirements, { available = availableBytes, deviceOf = (dir) => fs.statSync(nearestExisting(dir)).dev,
+  headroom = DISK_HEADROOM_BYTES, what = 'apply this update' } = {}) {
+  const byDevice = new Map();
+  for (const { dir, bytes, purpose } of requirements) {
+    const device = deviceOf(dir);
+    const group = byDevice.get(device) || { dir: nearestExisting(dir), bytes: 0, purposes: [] };
+    group.bytes += bytes;
+    group.purposes.push(`${purpose} ${gb(bytes)}`);
+    byDevice.set(device, group);
+  }
+  const shortfalls = [];
+  for (const group of byDevice.values()) {
+    const needBytes = group.bytes + headroom;
+    const freeBytes = available(group.dir);
+    if (freeBytes < needBytes) shortfalls.push({ dir: group.dir, needBytes, freeBytes, shortBytes: needBytes - freeBytes, purposes: group.purposes });
+  }
+  const message = shortfalls.map((s) => `not enough free disk space to ${what}: ${s.dir} has ${gb(s.freeBytes)} free and needs `
+    + `${gb(s.needBytes)} (${s.purposes.join(' + ')} + ${gb(headroom)} headroom). Free ${gb(s.shortBytes)} on that disk, or `
+    + 'put the Brain on a bigger disk with RUVNET_BRAIN_HOME. Nothing was changed.').join('\n');
+  return { ok: shortfalls.length === 0, shortfalls, message };
+}
+
 function assertDirectory(dir, label) {
   const stat = fs.lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label} is not a trusted directory: ${dir}`);
