@@ -224,7 +224,36 @@ function relativeEntries(dir) {
  * With `dryRun`, reports what WOULD be removed and touches nothing (--doctor). Returns
  * { removed: [paths], refused: [{ path, reason }] }; a refusal must be shown to the user, never dropped.
  */
-export function cleanLegacyRufloDebris(storeDir, { dryRun = false } = {}) {
+const IN_USE_MS = 10 * 60_000;
+const sqliteFingerprint = (dbPath) => SQLITE(path.basename(dbPath)).map((name) => {
+  try { const st = fs.statSync(path.join(path.dirname(dbPath), name)); return `${name}:${st.size}:${st.mtimeMs}`; }
+  catch { return `${name}:absent`; }
+});
+const sameFiles = (a, b) => a.join('|') === b.join('|');
+
+/**
+ * Is every active (namespace, key, content) row of a stray nested AgentDB present, byte-identical, in
+ * the canonical store? Read-only through the progression reader (node:sqlite, readOnly — no write, no
+ * checkpoint). Anything it cannot prove — recently written (in use), unreadable, a row missing or
+ * different — keeps the file and says why.
+ */
+export function proveMirrored(nestedDb, canonicalDb, { now = Date.now(), maxRows = 100_000 } = {}) {
+  const fingerprint = sqliteFingerprint(nestedDb);
+  const newest = Math.max(...SQLITE(path.basename(nestedDb)).map((name) => {
+    try { return fs.statSync(path.join(path.dirname(nestedDb), name)).mtimeMs; } catch { return 0; }
+  }));
+  if (now - newest < IN_USE_MS) return { ok: false, reason: `kept: agentdb-memory.db was written ${Math.round((now - newest) / 1000)}s ago (in use)` };
+  const nested = withProgressionReader(nestedDb, (reader) => reader.allRows({ maxRows }));
+  if (!nested.ok) return { ok: false, reason: `kept: agentdb-memory.db could not be read to prove it is mirrored (${nested.reason})` };
+  const canonical = withProgressionReader(canonicalDb, (reader) => reader.allRows({ maxRows }));
+  if (!canonical.ok) return { ok: false, reason: `kept: memory.db could not be read to prove agentdb-memory.db is mirrored (${canonical.reason})` };
+  const have = new Map(canonical.value.map((row) => [`${row.namespace}\u0000${row.key}`, row.content]));
+  const missing = nested.value.filter((row) => row.content === null || have.get(`${row.namespace}\u0000${row.key}`) !== row.content);
+  if (missing.length) return { ok: false, reason: `kept: ${missing.length} of ${nested.value.length} rows not in memory.db`, missing: missing.length };
+  return { ok: true, rows: nested.value.length, fingerprint };
+}
+
+export function cleanLegacyRufloDebris(storeDir, { dryRun = false, now = Date.now() } = {}) {
   const removed = [];
   const refused = [];
   for (const [name, allowed] of Object.entries(LEGACY_CWD_ARTIFACTS)) {
@@ -240,7 +269,19 @@ export function cleanLegacyRufloDebris(storeDir, { dryRun = false } = {}) {
         .map((item) => (item.link ? `${item.rel} (symbolic link)` : item.rel));
       if (unknown.length) { refused.push({ path: entry, reason: `unexpected entries: ${unknown.join(', ')}` }); continue; }
     }
-    if (!dryRun) fs.rmSync(entry, { recursive: true, force: true });
+    // A nested AgentDB is a real store (owner's projects: 1-41 rows, still written by open 4.3.40
+    // sessions). It goes only when every row is PROVEN present, identically, in the canonical memory.db.
+    const nestedDb = path.join(entry, 'agentdb-memory.db');
+    const mirror = name === '.swarm' && fs.existsSync(nestedDb) ? proveMirrored(nestedDb, path.join(storeDir, 'memory.db'), { now }) : null;
+    if (mirror && !mirror.ok) { refused.push({ path: entry, reason: mirror.reason, kept: true }); continue; }
+    if (!dryRun) {
+      // The proof is only valid for the bytes it read: anything written since means the file is in use.
+      if (mirror && !sameFiles(mirror.fingerprint, sqliteFingerprint(nestedDb))) {
+        refused.push({ path: entry, reason: 'kept: agentdb-memory.db changed while it was being checked (in use)', kept: true });
+        continue;
+      }
+      fs.rmSync(entry, { recursive: true, force: true });
+    }
     removed.push(entry);
   }
   return { removed, refused };
