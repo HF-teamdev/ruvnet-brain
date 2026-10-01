@@ -58,11 +58,11 @@ describe('--move-brain', () => {
     const incoming = temp('move-incoming-');
     fs.cpSync(path.join(dest, 'kb'), incoming, { recursive: true, verbatimSymlinks: true });
     fs.rmSync(path.join(incoming, 'node_modules'), { recursive: true }); // a bundle never ships node_modules
-    fs.writeFileSync(path.join(incoming, 'SOURCE.json'), JSON.stringify({ releaseTag: 'v4.5.0' }));
+    fs.writeFileSync(path.join(incoming, 'SOURCE.json'), JSON.stringify({ releaseTag: 'v7.7.0' }));
     const result = runStorageTransaction({ liveDir: fs.realpathSync(kb), sourceDir: incoming, transactionId: 'through-link' });
     expect(result.terminalVerdict).toBe('applied');
-    expect(JSON.parse(fs.readFileSync(path.join(kb, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.5.0'); // read via the link
-    expect(JSON.parse(fs.readFileSync(path.join(dest, 'kb', 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.5.0'); // stored on the disk
+    expect(JSON.parse(fs.readFileSync(path.join(kb, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v7.7.0'); // read via the link
+    expect(JSON.parse(fs.readFileSync(path.join(dest, 'kb', 'SOURCE.json'), 'utf8')).releaseTag).toBe('v7.7.0'); // stored on the disk
     // A reader resolving the default store root reaches the moved store.
     expect(fs.readFileSync(path.join(kb, 'store.passages.jsonl'), 'utf8')).toContain('hello');
   });
