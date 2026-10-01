@@ -112,3 +112,4 @@ line), first clause only — see each ADR for the full, dated status history.
 | [0092](0092-knowledge-is-data-only.md) | ADR-092 — Knowledge is data only — build each store once, ship only what changed, never through a code release | Proposed |
 | [0098](0098-footprint-and-currency-guarantee.md) | The footprint and currency guarantee — one knowledge base, current, in use, nothing building up | Accepted |
 | [0100](0100-guaranteed-agentdb-continuity.md) | Guaranteed AgentDB continuity — material events, durable outbox, come-up-to-speed brief, one writer | Proposed |
+| [0093](0093-proactive-package-recommender.md) | ADR-093 — The proactive package recommender — "what would rUv do" from package cards, behind a flag | Proposed |
