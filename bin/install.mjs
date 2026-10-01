@@ -107,17 +107,6 @@ const PACKAGE_VERSION = (() => {
 const REPO = 'stuinfla/ruvnet-brain';
 const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const ASSET_NAME = 'ruvnet-brain.zip';
-// Known-good BUNDLE tag, used ONLY by --pin. It is no longer a silent fallback for a failed
-// latest-release lookup: that bundle predates ReleaseCoverage and cannot pass validation, so a lookup
-// failure now stops with its real cause (resolveRelease / releaseLookupFailure).
-//
-// This MUST NOT be derived from this package's own version. The installer and the brain bundle are
-// two independent version streams (README: "Three independent things version separately here — by
-// design"). Reading it from package.json produced a tag that has never existed — installer 1.14.0-dev
-// asking for releases/download/v1.14.0-dev/ruvnet-brain.zip, which 404s, while the newest bundle
-// Release is v0.5.0-dev. Verified live: v1.14.0-dev → HTTP 404, v0.5.0-dev → HTTP 200. The safety net
-// was broken in exactly the situation it exists for. Bump this by hand when a new bundle ships.
-const RELEASE_VERSION = 'v2.9.0'; // sync-version-ignore: the BUNDLE Release tag, not this package's version
 const fallbackUrl = (tag) => `https://github.com/${REPO}/releases/download/${tag}/${ASSET_NAME}`;
 const APPROX_SIZE = '~736MB';
 
@@ -132,7 +121,6 @@ const FLAG_HOOKS = argv.includes('--hooks');
 const FLAG_NO_VERIFY = argv.includes('--no-verify');
 // Escape hatch for the installer's closing self-check ONLY (it never disables --doctor's verdict).
 const FLAG_NO_SELFCHECK = argv.includes('--no-selfcheck');
-const FLAG_PIN = argv.includes('--pin'); // skip the latest-check, use the bundled default
 const FLAG_DEMO = argv.includes('--demo'); // guided, real (non-fabricated) walkthrough of the brain in action
 const FLAG_FEEDBACK = argv.includes('--feedback'); // prefill a GitHub Discussion (version + health, nothing private) and open it
 // ── freshness flags — invoke/schedule the SELF-UPDATER the bundle already ships (kb/forge-update.mjs) ──
@@ -158,12 +146,32 @@ const FLAG_ENHANCE_CLAUDE_MD = argv.includes('--enhance-claude-md'); // add the 
 const FLAG_NO_ENHANCE = argv.includes('--no-enhance'); // skip the CLAUDE.md offer entirely
 const FLAG_STATUSLINE = argv.includes('--statusline'); // opt in to the status-bar version segment, non-interactively
 const FLAG_NO_STATUSLINE = argv.includes('--no-statusline'); // decline the status-bar offer without prompting
-// --version <tag> forces a specific Release tag (e.g. --version v0.5.0-dev)
-const versionIdx = argv.indexOf('--version');
-const FORCED_VERSION =
-  versionIdx !== -1 && argv[versionIdx + 1] && !argv[versionIdx + 1].startsWith('-')
-    ? argv[versionIdx + 1]
-    : null;
+// --version <tag> forces a specific Release tag (e.g. --version v0.5.0-dev); --pin <tag> is the same.
+/**
+ * Which release the operator named, if any. Pure, for testing.
+ * --pin used to mean "install the bundled known-good v2.9.0" — a bundle that predates COVERAGE.json,
+ * so every --pin install failed validation two steps later. A pin now names its version, or stops.
+ * @returns {{ tag: string, source: 'pinned'|'forced' } | { error: string, hint: string } | null}
+ */
+export function namedReleaseFromArgs(args) {
+  const valueAfter = (flag) => {
+    const i = args.indexOf(flag);
+    if (i === -1) return undefined;
+    const next = args[i + 1];
+    return next && !next.startsWith('-') ? next : null;
+  };
+  const pin = valueAfter('--pin');
+  const version = valueAfter('--version');
+  if (pin === null) {
+    return { error: '--pin needs the release to install, e.g.  --pin v4.4.1', hint: `It no longer falls back to a built-in release (that bundle could not pass validation). Pick one from https://github.com/${REPO}/releases, or omit --pin to install the latest.` };
+  }
+  if (pin && version && pin !== version) return { error: `--pin ${pin} and --version ${version} disagree`, hint: 'Name one release.' };
+  if (pin) return { tag: pin, source: 'pinned' };
+  if (version) return { tag: version, source: 'forced' };
+  return null;
+}
+const NAMED_RELEASE = namedReleaseFromArgs(argv);
+const FORCED_VERSION = NAMED_RELEASE?.tag || null;
 
 // ── tiny narrating logger — every step says WHAT and WHY ─────────────────────────────────────────
 const c = {
@@ -335,7 +343,7 @@ function fetchJson(url, redirects = 0) {
 
 // ── step: resolve which Release to download (latest by default; safe fallback) ───────────────────
 // Default behavior: ask GitHub for the LATEST Release and use its ruvnet-brain.zip asset.
-// --version <tag> forces a tag; --pin skips the network check and uses the bundled known-good tag.
+// --version <tag> / --pin <tag> install exactly that tag; there is no built-in fallback release.
 // Any failure (offline / rate-limited / no releases) THROWS with the HTTP status or network error and
 // a retry hint; callers that must download stop on it, the staleness check reports "could not check".
 /**
@@ -370,14 +378,10 @@ async function resolveRelease() {
     'so a stranger always gets the most current brain — not whatever was hardcoded when this script shipped',
   );
 
-  if (FLAG_PIN) {
-    info(`--pin set: skipping the latest-check and using the bundled known-good ${c.bold(RELEASE_VERSION)}`);
-    return { tag: RELEASE_VERSION, url: fallbackUrl(RELEASE_VERSION), source: 'pinned' };
-  }
-
-  if (FORCED_VERSION) {
-    info(`--version set: forcing Release ${c.bold(FORCED_VERSION)} (no latest-check)`);
-    return { tag: FORCED_VERSION, url: fallbackUrl(FORCED_VERSION), source: 'forced' };
+  if (NAMED_RELEASE?.error) throw Object.assign(new Error(NAMED_RELEASE.error), { hint: NAMED_RELEASE.hint });
+  if (NAMED_RELEASE) {
+    info(`${NAMED_RELEASE.source === 'pinned' ? '--pin' : '--version'} set: installing Release ${c.bold(NAMED_RELEASE.tag)} (no latest-check)`);
+    return { tag: NAMED_RELEASE.tag, url: fallbackUrl(NAMED_RELEASE.tag), source: NAMED_RELEASE.source };
   }
 
   // Deterministic integration seam: stale/current behavior must not depend on GitHub API quota.
@@ -476,12 +480,13 @@ async function obtainBundle(release) {
     return { zipPath: localZip, downloaded: false };
   }
 
-  const downloadUrl = (release && release.url) || fallbackUrl(RELEASE_VERSION);
+  if (!release || !release.url) die('no release was resolved to download.', 'Re-run to look up the latest release, or name one with  --version <tag>.');
+  const downloadUrl = release.url;
   step(
     `Downloading the brain (${APPROX_SIZE})`,
     'the brain embeds source from dozens of RuvNet repos — too big for git, so it ships as a Release',
   );
-  info(`version: ${c.bold((release && release.tag) || RELEASE_VERSION)}`);
+  info(`version: ${c.bold(release.tag)}`);
   info(`from: ${downloadUrl}`);
   // Download into a PRIVATE, per-run temp DIR — never a predictable os.tmpdir()/ruvnet-brain-<pid>.zip
   // filename (CWE-377: a guessable path invites a pre-created or symlinked file at that location to be
@@ -5553,7 +5558,7 @@ Usage:
                               opt-in prompt appears once at install; answer lives in a plain file:
                               ~/.cache/ruvnet-brain/.telemetry-consent)
   node bin/install.mjs --version <tag>     Install a specific Release tag (e.g. --version v0.5.0-dev)
-  node bin/install.mjs --pin               Skip the latest-check; use the bundled known-good version
+  node bin/install.mjs --pin <tag>         Same as --version <tag>: install exactly that release
   node bin/install.mjs --local             Install from a repo clone's assembled dist/ruvnet-brain/
   node bin/install.mjs --force             Re-fetch and reinstall even if already present
   node bin/install.mjs --no-verify         Skip the post-install verify + warm-up smoke test
@@ -5732,7 +5737,7 @@ the installer reports that boot-level declarations changed.
     // bundle cannot also swap the key it is checked against).
     //
     // SIGNING_REQUIRED was `false` transitionally, for releases that predated signing. That is over:
-    // every release from v2.0.0 on is signed, including the pinned offline fallback (RELEASE_VERSION).
+    // every release from v2.0.0 on is signed.
     // Leaving it false left a real downgrade path — strip or 404 the small .sig file and the missing-
     // signature branch printed a warning and extracted 800MB+ of executable .mjs anyway. No alarm
     // fired, because no signature was ever obtained. Now a missing signature fails closed like an
