@@ -43,8 +43,6 @@ export const FOOTPRINT_POLICY = Object.freeze({
   staleForgeCandidateMs: 24 * 3_600_000,
   staleLeaseMs: 6 * 3_600_000,       // plugin/scripts/update-apply.mjs LEASE_FRESH_MS
   staleRufloRunMs: 3_600_000,        // plugin/scripts/project-progression-store.mjs STALE_RUN_MS
-  recoveryLeftoverMs: 7 * 24 * 3_600_000,
-  recoveryLeftoverMaxBytes: 64 * MIB,
 });
 
 /** Every full-KB copy name this product (or a recovery) has ever created beside the live KB. A superset of
@@ -264,14 +262,14 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
         reason: over ? 'over its size cap' : 'within its size cap' });
       continue;
     }
+    // A hand-made backup (X.bak-20260808, .retired-, .dead-, bootstrap-backup-*): the Brain never writes
+    // these names (its own backups are ISO-stamped, `.bak-2026-10-01T…Z`, and live outside the brain home),
+    // so there is no proof it is ours to judge. REPORTED, never removed, never counted as Brain cruft.
     if (RECOVERY_LEFTOVER.test(name) && !st.isSymbolicLink()) {
-      const size = bytes(full);
-      const old = now - st.mtimeMs > policy.recoveryLeftoverMs;
       const holdsKb = st.isDirectory() && (isKbTree(full) || names(full).some((n) => isKbTree(path.join(full, n))));
-      const removable = old && !holdsKb && (!measure || size <= policy.recoveryLeftoverMaxBytes);
-      add({ id: 'leftover', path: full, class: old || holdsKb ? 'must-not-exist' : 'may-exist', kind: 'recovery-leftover', action: removable ? 'remove' : old || holdsKb ? 'report' : 'keep', bytes: size,
-        reason: holdsKb ? 'a hand-made recovery copy that holds a KB tree; remove it yourself once inspected'
-          : old ? 'a hand-made backup of a replaced file' : 'a recent hand-made backup; released after 7 days' });
+      add({ id: 'leftover', path: full, class: 'unowned', kind: 'recovery-leftover', action: 'report', bytes: bytes(full),
+        reason: holdsKb ? 'a hand-made recovery copy that holds a KB tree, not created by the Brain; remove it yourself once inspected'
+          : 'a hand-made backup, not created by the Brain; kept — remove it yourself if you no longer need it' });
       continue;
     }
     if (name === 'leases' && st.isDirectory()) {

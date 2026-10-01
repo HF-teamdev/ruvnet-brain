@@ -72,6 +72,14 @@ shouldn't be there isn't, nothing building up cruft" — confirmed positively, n
   or link (`tests/unit/brain-footprint.test.mjs`, BREAK-IT mutants).
 - Nothing is followed through a symlink; nothing outside an owned root is removed; an `npm_config_cache`
   outside HOME is ignored.
+- **Only what the Brain itself created is ever removed.** Anything in our directories that the Brain did
+  not write — in particular hand-made backups such as `X.bak-20260808`, `*.retired-*`, `*.dead-*` and
+  `bootstrap-backup-*` — is classified **unowned** and only REPORTED: no age, size or "looks like a backup"
+  heuristic makes it removable, and it never counts as Brain cruft (so it never makes "No cruft" fail or
+  names `--clean`). Removal is limited to names the Brain writes (its KB-copy and stage prefixes, capped
+  logs, stale leases, ruflo scratch, older npx copies of `ruvnet-brain`), and for any KB copy only with
+  the `kb-copy-proof` above (amended 2026-10-01 after review B1: an earlier rule deleted hand-made backups
+  older than 7 days with no proof; `tests/unit/brain-footprint.test.mjs` "report-only guard" mutant).
 - An in-progress storage transaction's trees, a refresh-lock holder's siblings, and a live lease are kept.
 
 ## Consequences

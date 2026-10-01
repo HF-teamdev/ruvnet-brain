@@ -185,8 +185,9 @@ describe('inventory: everything the Brain owns is classified', () => {
     expect(cls(path.join(m.brainHome, 'leases', 'mcp-dead.json'))).toBe('must-not-exist');
     expect(item(fp, path.join(m.brainHome, 'leases', 'mcp-me.json'))).toBeUndefined(); // old mtime, live pid
     expect(item(fp, path.join(m.brainHome, 'ruvector-mcp'))).toMatchObject({ class: 'unowned', action: 'report' });
-    expect(item(fp, path.join(m.brainHome, 'open-issues.json.bak-20260808'))).toMatchObject({ class: 'must-not-exist', action: 'remove' });
-    expect(item(fp, path.join(m.brainHome, 'console-instances.dead-20260930'))).toMatchObject({ class: 'may-exist', action: 'keep' });
+    // Hand-made backups: the Brain never wrote these names, so they are REPORTED, never removed (ADR-098).
+    expect(item(fp, path.join(m.brainHome, 'open-issues.json.bak-20260808'))).toMatchObject({ class: 'unowned', action: 'report' });
+    expect(item(fp, path.join(m.brainHome, 'console-instances.dead-20260930'))).toMatchObject({ class: 'unowned', action: 'report' });
   });
 
   it('sweep removes exactly what the proof allows, keeps private-unique copies by name, and is idempotent', () => {
@@ -212,6 +213,28 @@ describe('inventory: everything the Brain owns is classified', () => {
     expect(result.after.kbCopies).toBe(1 + 1 + 1 + 1); // live + kept preserved + in-progress next + quarantined unique
     const again = sweepFootprint(opts(m, { apply: true }));
     expect(again.removed).toEqual([]);
+  });
+
+  it('a hand-made backup (.bak-/.retired-/.dead-/bootstrap-backup-) is reported and NEVER deleted, however old or small', () => {
+    const m = machine(); live(m);
+    const planted = {
+      'open-issues.json.bak-20260808': 'file', 'settings.json.retired-20260901': 'file', 'console-instances.dead-20260930': 'dir',
+      'bootstrap-backup-20260901': 'dir', 'notes.bak-20250101': 'file',
+    };
+    for (const [name, kind] of Object.entries(planted)) {
+      const p = path.join(m.brainHome, name);
+      if (kind === 'dir') write(path.join(p, 'x.json'), '{"mine":true}'); else write(p, 'mine');
+      old(p, 400); // far past any age limit
+    }
+    const result = sweepFootprint(opts(m, { apply: true }));
+    for (const name of Object.keys(planted)) {
+      expect(fs.existsSync(path.join(m.brainHome, name)), `${name} was deleted`).toBe(true);
+      expect(item(result.before, path.join(m.brainHome, name))).toMatchObject({ class: 'unowned', action: 'report' });
+    }
+    expect(result.removed.filter((r) => Object.keys(planted).includes(path.basename(r.path)))).toEqual([]);
+    // Reported, not counted as Brain cruft: a user's own file cannot make "No cruft" fail or name --clean.
+    expect(result.after.cruft.filter((i) => Object.keys(planted).includes(path.basename(i.path)))).toEqual([]);
+    expect(result.after.unowned.map((i) => path.basename(i.path))).toEqual(expect.arrayContaining(Object.keys(planted)));
   });
 
   it('never enters or removes a symlinked KB-copy name, and removing a copy never follows a link inside it', () => {
@@ -449,6 +472,16 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
     json(path.join(m.brainHome, '.kb.update-transactions', '77', '001-LOCKED.json'), { state: 'LOCKED' });
     mod.sweepFootprint(opts(m, { apply: true }));
     expect(fs.existsSync(path.join(m.brainHome, 'kb.next-77'))).toBe(false);
+  });
+  it('report-only guard on hand-made backups removed -> a user backup is deleted', async () => {
+    const mod = await mutant([['brain-footprint.mjs', "add({ id: 'leftover', path: full, class: 'unowned', kind: 'recovery-leftover', action: 'report',",
+      "add({ id: 'leftover', path: full, class: 'must-not-exist', kind: 'recovery-leftover', action: 'remove',"]]);
+    const m = machine(); live(m);
+    const mine = path.join(m.brainHome, 'open-issues.json.bak-20260808'); write(mine, 'mine');
+    sweepFootprint(opts(m, { apply: true }));
+    expect(fs.existsSync(mine)).toBe(true); // real module: kept
+    mod.sweepFootprint(opts(m, { apply: true }));
+    expect(fs.existsSync(mine)).toBe(false); // mutant: deleted
   });
   it('live-lease guard removed -> a lease whose process is alive is deleted', async () => {
     const mod = await mutant([['brain-footprint.mjs', '&& !pidAlive(readJson(lp)?.pid)', '']]);
