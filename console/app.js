@@ -305,8 +305,7 @@ function updateVerdict() {
   const v = $('#verdict');
   if (!v || found.capsTotal == null) return;      // nothing measured yet — say nothing
 
-  const behind = (found.pkgTotal != null && found.pkgCurrent != null)
-    ? found.pkgTotal - found.pkgCurrent : null;
+  const behind = found.pkgNeedsLook != null ? found.pkgNeedsLook : null;
 
   // What actually wants the reader's attention, in blast-radius order.
   const needsLook = [];
@@ -316,6 +315,7 @@ function updateVerdict() {
   const caveats = [];
   if (found.capsUnknown) caveats.push(`${found.capsUnknown} capabilit${found.capsUnknown === 1 ? "y" : "ies"} we could not check`);
   if (found.memNotTested) caveats.push(`${found.memNotTested} memory dimension${found.memNotTested === 1 ? '' : 's'} not probed this session`);
+  if (found.pkgUnchecked) caveats.push(`${found.pkgUnchecked} package${found.pkgUnchecked === 1 ? '' : 's'} whose version we could not check`);
 
   const good = !needsLook.length;
   const headline = good
@@ -323,8 +323,10 @@ function updateVerdict() {
     : `Mostly good — ${needsLook.join(' and ')}.`;
 
   const detail = `${found.capsOn} of ${found.capsTotal} capabilities are on`
+    + (found.capsIdle ? `, ${found.capsIdle} set up but not running` : '')
     + (found.capsAbsent ? `, ${found.capsAbsent} not installed` : '')
-    + (behind === 0 ? ', and every package on your stack is current' : '')
+    + (behind === 0 && !found.pkgUnchecked ? ', and every package on your stack is current' : '')
+    + (behind === 0 && found.pkgUnchecked ? ', and no checked package is behind' : '')
     + '.';
 
   v.replaceChildren(
@@ -764,6 +766,12 @@ function renderStack(data) {
 
   found.pkgTotal = total;
   found.pkgCurrent = current;
+  // RNBC QA 2026-10-01: the verdict used to compute "behind" as total − current, so 34 plugin
+  // packages whose marketplace revision is simply not checked were announced as "34 packages
+  // behind" directly above a stack card saying "Nothing needs attention". Behind is what the audit
+  // MEASURED as behind or broken; not-checked is its own caveat.
+  found.pkgNeedsLook = behind + broken;
+  found.pkgUnchecked = Math.max(0, total - current - behind - broken - ahead);
   updateFoundStrip();
 
   pkgs.sort((a, b) =>
@@ -777,6 +785,8 @@ function renderStack(data) {
     ahead ? el('span', {}, ', ', el('b', {}, fmtInt(ahead)), ' ahead of the registry (which is legal)') : '',
     broken ? el('span', {}, ', ', el('b', {}, fmtInt(broken)), ' broken') : '',
     behind ? el('span', {}, ', ', el('b', {}, fmtInt(behind)), ' behind') : '',
+    found.pkgUnchecked ? el('span', {}, ', ', el('b', {}, fmtInt(found.pkgUnchecked)),
+      ' installed but not version-checked (plugin marketplace revisions are not compared)') : '',
     '.', infoBtn('Your stack', STACK_INFO)));
 
   if (pkgs.length) {
@@ -803,10 +813,17 @@ function renderStack(data) {
     // (the purge:shadows recommendation — evidence, cost, undo); the in-sync majority collapses
     // to a single verified line with a peel-back for whoever wants the full inventory.
     const staleRows = shadows.filter((s) => s.stale);
-    const syncCount = shadows.length - staleRows.length;
+    // A cached copy with NO global install has nothing to "match" — RNBC QA 2026-10-01 measured
+    // four "cache 0.1.12 · global ?" rows each wearing a green "in sync" chip under "All 8 cached
+    // copies match your installs". They are counted and labelled for what they are.
+    const orphanRows = shadows.filter((s) => !s.stale && !s.global);
+    const syncCount = shadows.length - staleRows.length - orphanRows.length;
+    const orphanNote = orphanRows.length
+      ? ` ${fmtInt(orphanRows.length)} more ${orphanRows.length === 1 ? 'is a cached copy' : 'are cached copies'} of a package with no global install to compare against.`
+      : '';
     main.push(el('aside', { class: 'shadows' },
       el('p', { class: 'shadows-title' }, 'Shadow copies in the npx cache',
-        staleRows.length ? chip(`${staleRows.length} stale`, 'warn') : chip('all in sync', 'green')),
+        staleRows.length ? chip(`${staleRows.length} stale`, 'warn') : chip(orphanRows.length ? 'none stale' : 'all in sync', 'green')),
       staleRows.length ? el('p', { class: 'shadows-sub' },
         'npx keeps private copies in ', el('code', {}, '~/.npm/_npx'),
         '. A stale one quietly answers instead of your newer install — every command still “works”, which is exactly why it’s invisible. These need dealing with:') : null,
@@ -822,18 +839,18 @@ function renderStack(data) {
         el('span', { class: 'shadow-dir' }, s.dir || ''),
       )),
       el('p', { class: 'shadows-ok' },
-        staleRows.length
-          ? `The other ${fmtInt(syncCount)} cached ${syncCount === 1 ? 'copy matches' : 'copies match'} your installs — re-checked on every audit.`
+        (staleRows.length || orphanRows.length
+          ? `${staleRows.length ? 'The other ' : ''}${fmtInt(syncCount)} cached ${syncCount === 1 ? 'copy matches' : 'copies match'} your installs — re-checked on every audit.`
           : shadows.length === 1
             ? 'The 1 cached copy matches your install — re-checked on every audit; nothing is hiding stale.'
-            : `All ${fmtInt(shadows.length)} cached copies match your installs — re-checked on every audit; nothing is hiding stale.`),
+            : `All ${fmtInt(shadows.length)} cached copies match your installs — re-checked on every audit; nothing is hiding stale.`) + orphanNote),
       el('details', { class: 'sub' },
         el('summary', {}, `Peel it back — ${shadows.length === 1 ? 'the 1 cached copy' : `all ${fmtInt(shadows.length)} cached copies`}`),
         el('div', { class: 'sub-body' },
           shadows.map((s) => el('div', { class: 'shadow-row' },
             el('span', { class: 'shadow-name' }, s.name || '—'),
             el('span', { class: 'shadow-vers' }, `cache ${s.version ?? '?'} · global `, el('b', {}, s.global ?? '?')),
-            s.stale ? chip('stale', 'warn') : chip('in sync', 'green'),
+            s.stale ? chip('stale', 'warn') : s.global ? chip('in sync', 'green') : chip('no global install', 'grey', 'Nothing installed globally to compare this cached copy with'),
             el('span', { class: 'shadow-dir' }, s.dir || ''),
           ))))));
   }
@@ -1100,7 +1117,14 @@ function capRow(row) {
       checkboxEligible
         ? capCheckbox(row)
         : wantsAdvice
-          ? (turnOn
+          ? (row.setting
+            ? el('p', { class: 'cap-turnon' },
+                el('span', { class: 'cap-turnon-lb' }, 'to turn it on'),
+                'use the switch in Settings — ',
+                el('button', { class: 'btn btn-ghost btn-sm cap-setting-jump', type: 'button', onclick: () => jumpToSetting(String(row.setting)) },
+                  'take me to it'),
+                ' (saved with an undo)')
+            : turnOn
             ? el('p', { class: 'cap-turnon' },
                 el('span', { class: 'cap-turnon-lb' }, 'to turn it on'),
                 String(turnOn.human || 'run'), ' — ', el('code', {}, String(turnOn.cmd)))
@@ -1218,7 +1242,7 @@ function renderCapabilities(data) {
   setChips('chips-capabilities', chips);
   // Feed the verdict line. It needs the same counts this card just derived, and deriving them a
   // second time somewhere else is how two surfaces start disagreeing about one machine.
-  found.capsOn = on; found.capsOff = off; found.capsAbsent = absent; found.capsUnknown = unknown;
+  found.capsOn = on; found.capsOff = off; found.capsAbsent = absent; found.capsUnknown = unknown; found.capsIdle = idle;
   found.capsTotal = rows.length;
   updateFoundStrip();
 
@@ -1237,6 +1261,9 @@ function renderCapabilities(data) {
   const counts = [
     on ? el('span', {}, el('b', {}, fmtInt(on)), ' on') : null,
     off ? el('span', {}, el('b', {}, fmtInt(off)), ' off') : null,
+    // RNBC QA 2026-10-01: idle rows were in the chips but missing from this sentence, so "11
+    // capabilities: 7 on, 1 not installed, and 1 we could not check" silently lost two.
+    idle ? el('span', {}, el('b', {}, fmtInt(idle)), ' set up but not running') : null,
     absent ? el('span', {}, el('b', {}, fmtInt(absent)), ' not installed') : null,
     unknown ? el('span', {}, el('b', {}, fmtInt(unknown)), ' we could not check') : null,
   ].filter(Boolean);
@@ -2641,7 +2668,7 @@ function fieldBeats(f) {
  * same widget — same markup, same "not chosen" honesty rule, same info-bubble mechanics — as every
  * config.json field, rather than a bespoke control invented for one setting.
  */
-function buildSettingsField(f, values, defaults, refreshDirty) {
+function buildSettingsField(f, values, defaults, refreshDirty, overrides = null) {
   const labId = `lab-${f.key}`;
   const helpId = `help-${f.key}`;
   const ctl = el('div', { class: 'field-ctl' });
@@ -2731,6 +2758,15 @@ function buildSettingsField(f, values, defaults, refreshDirty) {
     collector = () => ({ include: true, value: input.value });
   }
 
+  // A project file that overrides this key for the runtime that reads it (see projectOverrides()
+  // on the server). Saving here still changes the user-level choice; the note says why this project
+  // will not follow it.
+  const ov = overrides && overrides.values && Object.hasOwn(overrides.values, f.key) ? overrides : null;
+  if (ov) {
+    ctl.append(el('p', { class: 'field-override bp-warn', role: 'note' },
+      'This project overrides this setting: ', el('b', {}, String(typeof ov.values[f.key] === 'boolean' ? (ov.values[f.key] ? 'on' : 'off') : segLabel(f.key, ov.values[f.key]))),
+      ' (from ', el('code', {}, ov.path), '). A change saved here applies to your other projects, not this one.'));
+  }
   const row = el('div', { class: 'field', id: `field-${f.key}` },
     el('div', {},
       el('span', { class: 'field-label', id: labId }, f.label || f.key, infoBtn(f.label || f.key, fieldBeats(f))),
@@ -2769,7 +2805,7 @@ function buildSettingsForm(cfg, { endpoint }) {
   function refreshDirty() { if (saveBtn) saveBtn.disabled = !isDirty(); }
 
   for (const f of cfg.schema) {
-    const { row, collector, initialValue } = buildSettingsField(f, values, defaults, refreshDirty);
+    const { row, collector, initialValue } = buildSettingsField(f, values, defaults, refreshDirty, cfg.projectOverrides);
     collectors[f.key] = collector;
     if (f.type !== 'secret' && !f.secret) initial[f.key] = initialValue;
     form.append(row);
@@ -2878,10 +2914,17 @@ function nightlyFactsLine(f) {
   const run = f.lastRun === 'ok' ? (f.lastRunAt ? fmtDate(f.lastRunAt) : 'completed')
     : f.lastRun === 'never-ran' ? 'never'
       : f.lastRun === 'failed' ? 'failed' : String(f.lastRun || 'unknown');
+  // Each fact carries ITS OWN evidence. RNBC QA 2026-10-01: the agent's evidence ("No LaunchAgent
+  // plist at …") was printed after "last completed run: failed", reading as the reason the run
+  // failed — while the run's real failure (a preflight refusal, a week earlier) was never shown.
+  const runWhen = f.lastRun === 'failed' && f.lastRunAt ? ` ${fmtDate(f.lastRunAt)}` : '';
   return el('p', { class: `fineprint field-facts${f.agree === false ? ' bp-warn' : ''}` },
-    'switch: ', el('b', {}, choice), ' · agent: ', el('b', {}, agent), ' · last completed run: ', el('b', {}, run),
-    f.agree === false ? ' — these disagree, so the toggle above shows no single state until they do.' : '',
-    f.enforcementEvidence ? el('span', { class: 'muted' }, ` (${f.enforcementEvidence})`) : '');
+    'switch: ', el('b', {}, choice),
+    ' · agent: ', el('b', {}, agent),
+    f.enforcementEvidence ? el('span', { class: 'muted nf-agent-ev' }, ` (${f.enforcementEvidence})`) : '',
+    ' · last completed run: ', el('b', {}, run + runWhen),
+    f.lastRunEvidence && f.lastRun !== 'ok' ? el('span', { class: 'muted nf-run-ev' }, ` (${f.lastRunEvidence})`) : '',
+    f.agree === false ? ' — these disagree, so the toggle above shows no single state until they do.' : '');
 }
 
 function renderSettings(cfg, us, bp) {
@@ -2986,15 +3029,21 @@ function renderInventory(inv) {
       inv && inv.reason ? inv.reason : 'The console could not read RVF-GENERATIONS.json from the installed brain, so it is not guessing a list.'));
     return;
   }
-  const chips = [chip(`${fmtInt(inv.count)} repositories`, 'green')];
+  // "stores", not "repositories": gist and concept stores are in this list too (RNBC QA 2026-10-01).
+  const chips = [chip(`${fmtInt(inv.count)} stores`, 'green')];
   if (inv.privateCount > 0) chips.push(chip(`${fmtInt(inv.privateCount)} private`, 'cyan', 'Fenced private stores — never leave this machine'));
   if (inv.releaseTag) chips.push(chip(`generation ${inv.releaseTag}`, 'grey'));
   setChips('chips-inventory', chips);
 
-  const mb = inv.totalBytes ? `${(inv.totalBytes / 1e6).toFixed(0)} MB on disk` : null;
+  // totalBytes sums each store's .rvf only. It was labelled "on disk" beside a Brain-power card
+  // reporting the same 207 stores as 1.25 GB installed (RVF + passages + sidecars) — both true, but
+  // only one of them is the disk footprint. Say which bytes this is.
+  const mb = inv.totalBytes ? `${(inv.totalBytes / 1e6).toFixed(0)} MB of vector files` : null;
   const summary = el('p', { class: 'muted' },
     `${fmtInt(inv.count)} searchable stores`,
-    inv.withProvenance != null ? `, ${fmtInt(inv.withProvenance)} with a recorded upstream commit` : '',
+    // withProvenance counts rows whose SOURCE.json names an upstream repository — not commits (nearly
+    // every row shows its build commit below).
+    inv.withProvenance != null ? `, ${fmtInt(inv.withProvenance)} with a named upstream repository` : '',
     mb ? `, ${mb}.` : '.');
 
   const rows = (inv.stores || []).map((s) => el('li', { class: 'inv-row', 'data-name': s.name.toLowerCase() },
@@ -3281,11 +3330,16 @@ function bpParts(bp) {
       'best for cross-repository reasoning; RuVector Only is the compact choice for people who only ',
       'need the RuVector source. Nightly updates preserve whichever profile is selected.'),
 
-    el('p', { class: 'fineprint' },
-      'There are three more switches in the settings file — what it learns from, whether it may act ',
-      'on its own, and whether new projects inherit these choices. They are deliberately not shown ',
-      'as controls here: nothing enforces them yet, and a switch that governs nothing would make ',
-      'every real switch on this page worth less.'));
+    // RNBC QA 2026-10-01: this used to say these switches were "deliberately not shown … nothing
+    // enforces them yet" — while the Settings card rendered all of them and learn-capture/learn-flush,
+    // the console's guarded remedy loop and SessionStart seeding each read one. A sentence about the
+    // page that the page itself contradicts is the failure this card exists to prevent.
+    el('p', { class: 'fineprint bp-more-settings' },
+      'Four more choices shape what the brain does while it is on — what it learns from, how much it ',
+      'jumps in, whether it may act on its own, and whether new projects inherit these choices. They ',
+      'are in ',
+      el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => jumpToSetting('learningScope') }, 'Settings'),
+      ', and each one names the runtime that enforces it.'));
 }
 
 /* -------------------------------------------------- section 7: trust & provenance

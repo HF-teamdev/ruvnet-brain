@@ -874,6 +874,10 @@ export const CAPABILITIES = [
     scope: SCOPE.MACHINE,
     // Loading a launchd job is machine mutation with no single verified command; global Rule 10.
     turnOn: null,
+    // …but there IS a verified control: the console's Settings switch, which saveConfig() hands to
+    // nightly-controller.applyNightlyChoice() with a recorded undo. RNBC QA 2026-10-01: the row said
+    // "No verified one-line command exists" two cards above that very switch.
+    setting: 'nightly',
     detect() {
       const status = nightlyStatus();
       if (status.state === 'on') return row(STATE.ON, status.evidence);
@@ -911,6 +915,7 @@ export function auditAll({ project = process.cwd() } = {}) {
       whatItBuysYou: c.whatItBuysYou,
       scope: c.scope,
       turnOn: c.turnOn,
+      ...(c.setting ? { setting: c.setting } : {}),
       state,
       evidence,
       // A digest binds proactive routing to this audit invocation's observed bytes. Synthetic test

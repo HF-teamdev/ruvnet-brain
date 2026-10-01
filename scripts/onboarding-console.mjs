@@ -68,6 +68,7 @@ import {
   openRouterCredentialStatus,
   saveOpenRouterCredential,
   learnerCwd,
+  loadRuntimePreferences,
 } from '../plugin/scripts/runtime-preferences.mjs';
 import { applyNightlyChoice, nightlyStatus } from './nightly-controller.mjs';
 // One canonical answer to "which directory is this, and have I counted it already?" — shared with
@@ -770,6 +771,30 @@ function gatherInventory() {
   };
 }
 
+/**
+ * Keys a project-level <project>/.swarm/ruvnet-brain-settings.json overrides FOR THE RUNTIME THAT
+ * READS IT. runtime-preferences merges that file over the user-level choices, and route-cheap, the
+ * managed-CLI gate (routing, qeFleet) and learn-capture/learn-flush (learningScope) obey the merge.
+ * The console saves user-level values only, so without this a project seeded by "Apply these choices
+ * to new projects" silently ignored every later change made here (RNBC QA 2026-10-01). Only keys whose
+ * consumer honours the project file are reported — advocacy, autoApply and provider are read at user
+ * level by their consumers, so a project value for them changes nothing and is not claimed to.
+ */
+const PROJECT_HONOURED_KEYS = Object.freeze(['routing', 'qeFleet', 'learningScope']);
+function projectOverrides(keys) {
+  try {
+    const prefs = loadRuntimePreferences({ cwd: process.cwd() });
+    if (!prefs.projectInherited) return null;
+    const raw = readJSON(prefs.paths.project) || {};
+    const values = raw.values && typeof raw.values === 'object' ? raw.values : raw;
+    const out = {};
+    for (const key of keys) {
+      if (PROJECT_HONOURED_KEYS.includes(key) && Object.hasOwn(values, key) && prefs.values[key] === values[key]) out[key] = values[key];
+    }
+    return Object.keys(out).length ? { path: prefs.paths.project.replace(CONSOLE_ROOT, '~'), values: out } : null;
+  } catch { return null; }
+}
+
 function gatherConfig() {
   const cfg = readJSON(CONFIG_PATH) || {};
   const credential = openRouterCredentialStatus({ cwd: process.cwd() });
@@ -797,6 +822,7 @@ function gatherConfig() {
     // What the project would pick FOR you, kept separate from what you actually picked. The form can
     // then say "recommended: on" without ever claiming that is the current state.
     defaults: { provider: 'auto', nightly: true, routing: 'auto', qeFleet: false },
+    projectOverrides: projectOverrides(CONFIG_SCHEMA.map((field) => field.key)),
     schema: CONFIG_SCHEMA.filter((field) =>
       !Object.hasOwn(CONFIG_CONTROL_SUPPORT, field.key)
       && (field.key !== 'nightly' || schedule.artifact.supported)),
@@ -841,6 +867,7 @@ function gatherAdvocacy() {
       Object.hasOwn(chosen, field.key) ? state.values[field.key] : null,
     ])),
     defaults: Object.fromEntries(LIVE_USER_FIELDS.map((field) => [field.key, field.default])),
+    projectOverrides: projectOverrides(LIVE_USER_SETTING_KEYS),
     schema: LIVE_USER_FIELDS,
     unavailable: [],
   };
@@ -1975,8 +2002,12 @@ function gatherRouterEngine() {
   const cfg = readJSON(CONFIG_PATH) || {};
   // User-constraint detection (Brain-side by design — a fact about THIS user, not routing logic):
   // an OpenRouter key decides whether metered cross-provider candidates are even reachable.
-  let openrouterKey = !!process.env.OPENROUTER_API_KEY;
-  if (!openrouterKey) openrouterKey = !!(cfg.openrouterKey && String(cfg.openrouterKey).length > 8);
+  // The SAME reader the Settings card uses (env → SOPS+age store → legacy plaintext). This read only
+  // env + plaintext, so a key saved through Settings (encrypted, plaintext retired) showed "No key
+  // added" here under a Settings row saying "•••• set" (RNBC QA 2026-10-01).
+  let openrouterKey = false;
+  try { openrouterKey = openRouterCredentialStatus({ cwd: process.cwd() }).configured === true; }
+  catch { openrouterKey = !!process.env.OPENROUTER_API_KEY || !!(cfg.openrouterKey && String(cfg.openrouterKey).length > 8); }
   // House (issue #21): three mechanisms used to disagree — Settings wrote config.json's `provider`,
   // but the chip strip derived "yours" from whichever pool candidate happened to be
   // subscriptionCovered first, sourced from profile.json (a file nothing in the console writes). The
@@ -2389,7 +2420,7 @@ function gatherStack() {
   const rows = a.rows.map((r) => ({ name: r.name, installed: r.installed, target: r.target, tag: r.tag, state: r.state, source: r.source ?? 'npm-global', marketplace: r.marketplace ?? null }));
   const shadows = a.shadows.map((s) => ({ name: s.name, version: s.version, global: s.global, dir: String(s.dir).replace(SYSTEM_HOME, '~'), stale: !!(s.global && s.version !== s.global) }));
   const by = (st) => rows.filter((r) => r.state === st).length;
-  const summary = { total: rows.length, behind: by('BEHIND'), broken: by('BROKEN'), ahead: by('AHEAD'), current: by('CURRENT'), unresolved: by('UNRESOLVED'), shadows: shadows.length, stale: a.stale.length };
+  const summary = { total: rows.length, behind: by('BEHIND'), broken: by('BROKEN'), ahead: by('AHEAD'), current: by('CURRENT'), unresolved: by('UNRESOLVED'), unverified: by('INSTALLED_UNVERIFIED'), shadows: shadows.length, stale: a.stale.length };
   const recommendations = buildStackRecommendations({ rows: a.rows, stale: a.stale });
   const result = { error: a.error, packages: rows, shadows, summary, recommendations };
   // Cache the last good audit so repeat page-loads render instantly ("as of HH:MM — re-checking").
