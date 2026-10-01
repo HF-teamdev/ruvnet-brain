@@ -33,10 +33,26 @@ function privateToUser(p) {
   try { const st = fs.statSync(p); return st.uid === uid && (st.mode & 0o077) === 0; } catch { return false; }
 }
 
+// The endpoint's short-socket fallback dir (kb/recommend-endpoint.mjs shortSocketDir, held equal by
+// tests/unit/package-recommender-semantic.test.mjs): used when <brainHome>/run/… is too long for a socket.
+export function shortSocketDir(id = uid) {
+  return id === null || id === undefined ? null : path.join('/tmp', `ruvnet-brain-${id}`);
+}
+
+/** Where a descriptor's socket may live: inside run/, or exactly recommend-<pid>.sock in the private short dir. */
+function trustedSocket(d, runDir) {
+  const socket = path.resolve(String(d?.socket));
+  if (path.dirname(socket) === path.resolve(runDir)) return true;
+  const short = shortSocketDir();
+  if (!short || path.dirname(socket) !== short || path.basename(socket) !== `recommend-${d.pid}.sock`) return false;
+  try { const st = fs.lstatSync(short); return st.isDirectory() && !st.isSymbolicLink() && privateToUser(short); } catch { return false; }
+}
+
 /**
  * Live endpoint descriptors, newest first. A descriptor is trusted only when the run/ dir and the file
  * are private to this user, its schema matches, its pid is alive and ours, and (POSIX) its socket lies
- * inside run/ — so a planted descriptor cannot route the user's prompt text to someone else's socket
+ * inside run/ (or is that pid's socket in the private short dir) — so a planted descriptor cannot route the
+ * user's prompt text to someone else's socket
  * (adversarial review M3). Stale ones are skipped here, swept by the next endpoint.
  */
 export function liveEndpoints(env = process.env) {
@@ -52,7 +68,7 @@ export function liveEndpoints(env = process.env) {
       const d = JSON.parse(fs.readFileSync(file, 'utf8'));
       const sockOk = process.platform === 'win32'
         ? /^\\\\\.\\pipe\\ruvnet-brain-recommend-\d+$/.test(String(d?.socket))
-        : path.dirname(path.resolve(String(d?.socket))) === path.resolve(dir);
+        : trustedSocket(d, dir);
       if (d?.schema === SCHEMA && Number.isInteger(d.pid) && n === `recommend-${d.pid}.json` && sockOk
         && typeof d.token === 'string' && d.token.length >= 32 && alive(d.pid)) out.push(d);
     } catch { /* torn or foreign file */ }

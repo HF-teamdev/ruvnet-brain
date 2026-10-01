@@ -126,6 +126,34 @@ describe('the endpoint and the hook client, over a real socket', () => {
     expect(client.liveEndpoints(env())).toHaveLength(0);
   });
 
+  // A Unix socket path is capped (macOS: 104 bytes, measured; 105 → listen EINVAL). A long HOME or
+  // RUVNET_BRAIN_HOME made <brainHome>/run/recommend-<pid>.sock too long and the endpoint never started.
+  it('a brain home too deep for a socket path still serves: the socket goes in the short private per-user dir', async () => {
+    if (process.platform === 'win32') return;
+    const deep = path.join(home, 'a'.repeat(60), 'b'.repeat(40));
+    fs.mkdirSync(deep, { recursive: true });
+    expect(Buffer.byteLength(path.join(deep, 'run', `recommend-${process.pid}.sock`))).toBeGreaterThan(kbEndpoint.SOCKET_PATH_MAX);
+    const lines = [];
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: deep, openIndex: fakeIndex([card('@ruvector/typesafe')]), signals: false, log: (l) => lines.push(l) });
+    expect(ep, lines.join('\n')).not.toBeNull();
+    expect(ep.descriptor.socket).toBe(path.join(kbEndpoint.shortSocketDir(), `recommend-${process.pid}.sock`));
+    expect(lines.some((l) => /bytes \(limit \d+\); listening in /.test(l))).toBe(true); // one diagnostic line
+    expect(fs.lstatSync(kbEndpoint.shortSocketDir()).mode & 0o077).toBe(0);
+    const r = await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: { RUVNET_BRAIN_HOME: deep, RUVNET_PACKAGE_RECOMMENDER: '1' } });
+    expect(r.candidates?.map((c) => c.id)).toEqual(['@ruvector/typesafe']);
+    // red: the short dir is trusted only for THAT pid's socket name, never an arbitrary file in it.
+    const desc = path.join(deep, 'run', `recommend-${process.pid}.json`);
+    const d = JSON.parse(fs.readFileSync(desc, 'utf8'));
+    fs.writeFileSync(desc, JSON.stringify({ ...d, socket: path.join(kbEndpoint.shortSocketDir(), 'recommend-1.sock') }));
+    expect(client.liveEndpoints({ RUVNET_BRAIN_HOME: deep })).toHaveLength(0);
+    fs.writeFileSync(desc, JSON.stringify(d));
+    expect(client.liveEndpoints({ RUVNET_BRAIN_HOME: deep })).toHaveLength(1);
+  });
+
+  it('the plugin and kb copies agree on the short socket dir', () => {
+    for (const uid of [0, 501, 1000, null]) expect(client.shortSocketDir(uid)).toBe(kbEndpoint.shortSocketDir(uid));
+  });
+
   it('the endpoint refuses a directory that is not the card snapshot, and oversize requests', async () => {
     let opened = 0;
     ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: async (dir) => { opened++; return fakeIndex([card('x')])(dir); }, signals: false });
