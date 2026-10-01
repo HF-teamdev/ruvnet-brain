@@ -183,12 +183,12 @@ export function runSessionSnapshotHook(projectDir, event, {
     if (!handed && token && token !== ordered) releaseReplayLock(root, token);
     return { ...idle, replayed: 0, progressionCaptured: false, deferredToReplayer: Boolean(queued),
       replaySkipped: `${why}; this capture ${queued ? 'queued behind it' : 'NOT queued (queue unwritable)'}`
-        + `${queued ? (handed ? ', handed to a detached worker' : ' (a live worker holds the lock and drains the queue)') : ''}` };
+        + `${queued ? (handed ? ', handed to a detached worker' : ' (the current lock holder hands the queue to a worker when it releases)') : ''}` };
   };
   if (!ordered) {
     token = takeReplayLock(root);
     if (!token) return handOff('a worker is committing older work');
-    const queuedAhead = queuedCaptures(root).length;
+    const queuedAhead = queuedWork(root);
     if (queuedAhead) return handOff(`${queuedAhead} older capture(s) queued`);
     if (budgetMs < REPLAY_MIN_BUDGET_MS) {
       const pending = pendingCount();
@@ -240,7 +240,16 @@ export function runSessionSnapshotHook(projectDir, event, {
       provenance: produced.provenance,
     };
   } finally {
-    if (!ordered && !handedLock) releaseReplayLock(root, token);
+    // A boundary that fired while this one held the lock queued itself and could not start a worker
+    // (this lock was in the way). Releasing without looking stranded it until the next boundary — two
+    // simultaneous SessionEnds lost the second one's final state (4.4.1). So: queued work → hand THIS
+    // lock to a worker; and re-check after releasing, for a boundary that queued in between.
+    if (!ordered && !handedLock) {
+      if (!(queuedWork(root) && spawnReplay({ projectDir: root, token }))) {
+        releaseReplayLock(root, token);
+        if (queuedWork(root)) spawnReplay({ projectDir: root });
+      }
+    }
   }
 }
 
@@ -254,43 +263,102 @@ const REPLAY_LOCK = '.progression-replay.lock';
 const QUEUE_PREFIX = '.progression-capture-queue-';
 const lockPath = (projectDir) => path.join(projectDir, '.swarm', REPLAY_LOCK);
 const readLock = (projectDir) => { try { return fs.readFileSync(lockPath(projectDir), 'utf8').trim(); } catch { return null; } };
-let queueSeq = 0;
+const CLAIM_PREFIX = '.progression-capture-claimed-';
+/** After this long a stale lock is taken over even if its holder pid looks alive (pid reuse, a wedged process). */
+export const REPLAY_LOCK_ABANDON_MS = 30 * 60_000;
 
-/** Queue one boundary's capture for the worker (0600, inside the project's own .swarm), in arrival order. */
-export function queueCapture({ projectDir, event, host, payload, now = Date.now() }) {
-  try {
-    queueSeq += 1;
-    const name = `${QUEUE_PREFIX}${String(now).padStart(15, '0')}-${String(process.hrtime.bigint() % 1_000_000_000n).padStart(9, '0')}-${process.pid}-${queueSeq}.json`;
-    const file = path.join(projectDir, '.swarm', name);
-    fs.writeFileSync(file, JSON.stringify({ event, host, payload }), { flag: 'wx', mode: 0o600 });
-    return file;
-  } catch { return null; }
+/** Is a process with this pid alive? EPERM means alive but not ours. Never throws. */
+export function pidAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
 }
-
-export function queuedCaptures(projectDir) {
-  try {
-    return fs.readdirSync(path.join(projectDir, '.swarm')).filter((n) => n.startsWith(QUEUE_PREFIX) && n.endsWith('.json'))
-      .sort().map((n) => path.join(projectDir, '.swarm', n));
-  } catch { return []; }
-}
+const seqOf = (name) => Number((/(\d{12})\.json$/.exec(name) || [])[1] ?? 0);
+const swarmEntries = (projectDir) => { try { return fs.readdirSync(path.join(projectDir, '.swarm')); } catch { return []; } };
 
 /**
- * Take the lock. Returns this holder's TOKEN, or null when a live holder has it. A lock not refreshed
- * for REPLAY_LOCK_STALE_MS belongs to a dead worker and is taken over: renamed aside first, so two
- * would-be successors cannot both win the exclusive create.
+ * Queue one boundary's capture for the worker (0600, inside the project's own .swarm). ORDER IS THE
+ * ORDER OF EXCLUSIVE CREATION: the name is the next sequence number after every queued or claimed one,
+ * created with O_EXCL and retried on collision — never a clock, which can step backwards or wrap.
  */
-export function takeReplayLock(projectDir, now = Date.now()) {
+export function queueCapture({ projectDir, event, host, payload }) {
+  const body = JSON.stringify({ event, host, payload });
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const seq = Math.max(0, ...swarmEntries(projectDir).filter((n) => n.startsWith(QUEUE_PREFIX) || n.startsWith(CLAIM_PREFIX)).map(seqOf)) + 1;
+    const file = path.join(projectDir, '.swarm', `${QUEUE_PREFIX}${String(seq).padStart(12, '0')}.json`);
+    try { fs.writeFileSync(file, body, { flag: 'wx', mode: 0o600 }); return file; } catch (error) {
+      if (error?.code !== 'EEXIST') return null;
+    }
+  }
+  return null;
+}
+
+/** Unclaimed queued captures, in queue order. */
+export function queuedCaptures(projectDir) {
+  return swarmEntries(projectDir).filter((n) => n.startsWith(QUEUE_PREFIX) && n.endsWith('.json'))
+    .sort().map((n) => path.join(projectDir, '.swarm', n));
+}
+
+/** All older work a boundary must wait behind: unclaimed captures plus captures a worker has claimed. */
+export function queuedWork(projectDir) {
+  return swarmEntries(projectDir).filter((n) => (n.startsWith(QUEUE_PREFIX) || n.startsWith(CLAIM_PREFIX)) && n.endsWith('.json')).length;
+}
+
+/** Claim a queued capture by atomic rename; null if another worker claimed it first. */
+function claimQueued(file) {
+  const name = path.basename(file);
+  const claimed = path.join(path.dirname(file), `${CLAIM_PREFIX}${process.pid}-${name.slice(QUEUE_PREFIX.length)}`);
+  try { fs.renameSync(file, claimed); return claimed; } catch { return null; }
+}
+const unclaimedName = (claimed) => path.join(path.dirname(claimed),
+  `${QUEUE_PREFIX}${path.basename(claimed).slice(CLAIM_PREFIX.length).replace(/^\d+-/, '')}`);
+
+/** Return to the queue every capture claimed by a worker that is no longer alive. */
+export function reclaimOrphans(projectDir, { isAlive = pidAlive } = {}) {
+  let n = 0;
+  for (const name of swarmEntries(projectDir).filter((x) => x.startsWith(CLAIM_PREFIX))) {
+    const pid = Number(name.slice(CLAIM_PREFIX.length).split('-')[0]);
+    if (isAlive(pid)) continue;
+    const claimed = path.join(projectDir, '.swarm', name);
+    try { fs.linkSync(claimed, unclaimedName(claimed)); fs.rmSync(claimed, { force: true }); n += 1; } catch { /* already returned */ }
+  }
+  return n;
+}
+
+const lockFacts = (file) => { const st = fs.statSync(file); return { content: fs.readFileSync(file, 'utf8'), mtimeMs: st.mtimeMs, ino: st.ino }; };
+const sameFacts = (a, b) => a.content === b.content && a.mtimeMs === b.mtimeMs && a.ino === b.ino;
+
+/**
+ * Take the lock. Returns this holder's TOKEN (`<pid>-<time>-<random>`), or null.
+ *  • Free → exclusive create.
+ *  • Fresh (refreshed within REPLAY_LOCK_STALE_MS) → null.
+ *  • Stale but its holder pid is ALIVE → null until REPLAY_LOCK_ABANDON_MS: a laptop asleep mid-step,
+ *    or a long step, is not a dead worker, and taking over would put two workers on one job.
+ *  • Otherwise taken over: the stale file is renamed aside and VERIFIED to be the very file judged
+ *    stale (content, mtime, inode). If a successor's fresh lock was moved instead (it took over between
+ *    our check and our rename), it is linked back — never over a third lock — and we back off. One winner.
+ */
+export function takeReplayLock(projectDir, now = Date.now(), { isAlive = pidAlive, beforeRename = null } = {}) {
   const lock = lockPath(projectDir);
   const token = `${process.pid}-${now}-${Math.random().toString(36).slice(2, 10)}`;
   const create = () => { fs.writeFileSync(lock, `${token}\n`, { flag: 'wx', mode: 0o600 }); return token; };
   try { return create(); } catch { /* held, or stale */ }
-  try {
-    if (now - fs.statSync(lock).mtimeMs <= REPLAY_LOCK_STALE_MS) return null;
-    const aside = `${lock}.stale-${process.pid}-${now}`;
-    fs.renameSync(lock, aside);
-    fs.rmSync(aside, { force: true });
-    return create();
-  } catch { return null; }
+  let seen;
+  try { seen = lockFacts(lock); } catch { try { return create(); } catch { return null; } }
+  const age = now - seen.mtimeMs;
+  if (age <= REPLAY_LOCK_STALE_MS) return null;
+  if (age <= REPLAY_LOCK_ABANDON_MS && isAlive(Number(seen.content.trim().split('-')[0]))) return null;
+  beforeRename?.();
+  const aside = `${lock}.stale-${token}`;
+  try { fs.renameSync(lock, aside); } catch { return null; }
+  let moved = null;
+  try { moved = lockFacts(aside); } catch { /* vanished */ }
+  if (!moved || !sameFacts(moved, seen)) {
+    try { fs.linkSync(aside, lock); } catch { /* a third holder exists; the successor sees it lost the lock and stops */ }
+    try { fs.rmSync(aside, { force: true }); } catch { /* best effort */ }
+    return null;
+  }
+  try { fs.rmSync(aside, { force: true }); } catch { /* best effort */ }
+  try { return create(); } catch { return null; }
 }
 
 /** Heartbeat: refresh the lock's mtime if (and only if) this holder still owns it. */
@@ -323,11 +391,12 @@ export function replayOutboxDetached({ projectDir, token = null, spawnFn = spawn
 }
 
 /**
- * The detached worker's body, holding the lock `token`: replay the outbox, then run every queued capture
- * IN ORDER — each re-entering the boundary as `ordered`, so it replays before it produces — refreshing
- * the lock between steps and STOPPING the moment the lock is no longer its own (a successor took it
- * over: running on would duplicate its work). Releases only its own lock, then re-checks for captures
- * queued while it held it.
+ * The detached worker's body, holding the lock `token`: return orphaned claims to the queue, replay the
+ * outbox, then run every queued capture IN ORDER — each CLAIMED by atomic rename first, so no other
+ * worker can run it too, and each re-entering the boundary as `ordered`, so it replays before it
+ * produces. Ownership is re-checked before every step and right after each claim; a worker that lost
+ * the lock puts an unstarted claim back and stops. A finished claim is the claimer's own and is
+ * deleted. Releases only its own lock, then re-checks for captures queued while it held it.
  */
 export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_LOCK_TOKEN || null, budgetMs = DETACHED_REPLAY_BUDGET_MS,
   makeStoreFactory = boundedStoreFactory, now = Date.now, runCapture = runSessionSnapshotHook } = {}) {
@@ -336,6 +405,7 @@ export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_
   for (let round = 0; held && round < 8; round += 1) {
     try {
       if (!refreshReplayLock(projectDir, held)) return replayed;
+      reclaimOrphans(projectDir);
       const resolution = resolveProjectStore({ projectDir });
       const store = makeStoreFactory(now() + budgetMs)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath });
       for (const snapshot of store.outbox.pendingSnapshots()) {
@@ -345,19 +415,25 @@ export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_
       }
       for (const file of queuedCaptures(projectDir)) {
         if (!refreshReplayLock(projectDir, held)) return replayed;
+        const claimed = claimQueued(file);
+        if (!claimed) continue;
+        if (!refreshReplayLock(projectDir, held)) {
+          try { fs.linkSync(claimed, file); fs.rmSync(claimed, { force: true }); } catch { /* reclaimed as an orphan later */ }
+          return replayed;
+        }
         let job = null;
-        try { job = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* torn: dropped below */ }
+        try { job = JSON.parse(fs.readFileSync(claimed, 'utf8')); } catch { /* torn: dropped below */ }
         try {
           if (job) runCapture(projectDir, job.event, { rawInput: JSON.stringify(job.payload), host: job.host,
             budgetMs, makeStoreFactory, now, ordered: held, writeMetadata: false,
             captureTurn: () => ({ recorded: false, skipped: 'detached replay' }) });
         } catch { /* a failed capture leaves its own snapshot durable in the outbox */ }
-        try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
+        try { fs.rmSync(claimed, { force: true }); } catch { /* best effort */ }
       }
     } catch { /* the debt stays durable; the next boundary hands it on again */ } finally {
       releaseReplayLock(projectDir, held);
     }
-    held = queuedCaptures(projectDir).length ? takeReplayLock(projectDir) : null;
+    held = queuedWork(projectDir) ? takeReplayLock(projectDir) : null;
   }
   return replayed;
 }
