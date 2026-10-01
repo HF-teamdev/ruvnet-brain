@@ -145,6 +145,12 @@ Measured 2026-10-01; outputs are in `evals/runs/2026-10-01-retrieval-4.5/`.
     - With E2 on, the keyword lane had masked the loss.
   - **The shipped rule** keeps a store's own name as an identifier while that store is searched
     (ba9af6f7).
+  - **Shipped reader vs the 4.4.1 base** (`final-5127bc53/`, `latency-base-vs-shipped/`):
+    - recall gate: 162/182, the same per-store hit set;
+    - off-topic and held-out: byte-identical outputs;
+    - capability battery: 58/58;
+    - paired warm latency, n=69: +32 ms median per question [−102, +85], p50 +18 ms
+      [−562, +417]; faster on 34/69.
 - **E2 (keyword lane): OFF, behind `RUVNET_BRAIN_KEYWORD_LANE=1`** (ADR-090 §9).
   - Gains with the lane on:
     - recall gate 162 → 165/182;
