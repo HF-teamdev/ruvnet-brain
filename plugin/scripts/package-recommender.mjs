@@ -261,8 +261,29 @@ export function rank(prompt, index, gates = GATES) {
 /** The hook's entry point: the one card to recommend, or null. Never throws. */
 export function recommend(prompt, { index } = {}) {
   try {
-    return rank(prompt, index === undefined ? loadIndex() : index).decision;
+    const idx = index === undefined ? loadIndex() : index;
+    const d = rank(prompt, idx).decision;
+    if (!d) return null;
+    // Name the PRODUCT's canonical install (ADR-093 rev 3), not whichever sibling package matched.
+    const canon = d.card.canonical && d.card.canonical !== d.card.id ? idx.entries.find((e) => e.card.id === d.card.canonical)?.card : null;
+    return canon ? { ...d, card: canon, matchedVia: d.card.id } : d;
   } catch { return null; }
+}
+
+/** One card per PRODUCT, named by its canonical install (ADR-093 rev 3). Unknown ids drop out. */
+export function canonicalPicks(candidates, byId) {
+  const seen = new Set();
+  const out = [];
+  for (const c of candidates || []) {
+    const card = byId.get(c.id);
+    if (!card) continue;
+    const canon = (card.canonical && byId.get(card.canonical)) || card;
+    const product = card.product || canon.id;
+    if (seen.has(product)) continue;
+    seen.add(product);
+    out.push({ card: canon, similarity: c.similarity, matchedVia: card.id });
+  }
+  return out;
 }
 
 export { packageRecommenderEnabled, offerNames } from './package-recommender-flag.mjs';
@@ -356,8 +377,7 @@ export function semanticLane({ prompt, semantic, offered = new Set(), allowed = 
   const idx = index === undefined ? loadIndex() : index;
   if (!idx) return null;
   const byId = new Map(idx.entries.map((e) => [e.card.id, e.card]));
-  const picks = semantic.candidates
-    .map((c) => ({ card: byId.get(c.id), similarity: c.similarity }))
+  const picks = canonicalPicks(semantic.candidates, byId)
     .filter((p) => p.card && !offered.has(shortName(p.card)) && allowed(`${findingPrefix}${p.card.id}`))
     .slice(0, SEMANTIC_K);
   if (!picks.length) return null;

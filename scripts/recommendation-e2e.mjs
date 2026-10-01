@@ -60,6 +60,8 @@ function produce(prompt, flag, n) {
     RUVNET_ADVOCACY_ROUTE_ROOTS: path.join(home, 'none'),
     ...(flag === 'on' ? { RUVNET_PACKAGE_RECOMMENDER: '1' } : {}),
     ...(arg('--budget', null) ? { RUVNET_PACKAGE_RECOMMENDER_BUDGET_MS: arg('--budget', null) } : {}),
+    // --floor 0 records every hint so a floor can be derived afterwards on the tuning set only.
+    ...(arg('--floor', null) !== null ? { RUVNET_PACKAGE_RECOMMENDER_MIN_SIMILARITY: arg('--floor', null) } : {}),
   };
   const t = process.hrtime.bigint();
   const r = spawnSync(process.execPath, [path.join(ROOT, 'plugin', 'scripts', 'advocacy-route.mjs')],
@@ -85,7 +87,8 @@ try {
     const qid = `Q${String(i + 1).padStart(3, '0')}`;
     key.push({ qid, set: it.set, id: it.id, category: it.category, accept: it.accept || [], acceptStores: it.acceptStores || [],
       lane: b.cand ? (b.cand.candidates ? 'semantic' : String(b.cand.findingId).startsWith('recommend:pkg:') ? 'lexical' : 'catalogue') : null,
-      offered: b.cand ? (b.cand.candidates || [b.cand.package || b.cand.capability]) : [], status: b.status });
+      offered: b.cand ? (b.cand.candidates || [b.cand.package || b.cand.capability]) : [], status: b.status,
+      topSimilarity: Array.isArray(b.cand?.similarities) ? b.cand.similarities[0] : null });
     if (b.cand) packet.push({ qid, prompt: it.prompt, hint: b.cand.copy });
   });
   const timing = {

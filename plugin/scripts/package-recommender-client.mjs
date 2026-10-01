@@ -91,7 +91,7 @@ function askOne(d, request, deadline) {
  * The semantic lane, from the hook. Tries live endpoints newest-first until one answers or the
  * budget is spent. Resolves (never rejects) to { candidates: [{id, similarity}] | null, reason }.
  */
-export async function askWarmWorker({ prompt, k = 4, cardsDir = CARDS_DIR, budgetMs = DEFAULT_BUDGET_MS, env = process.env } = {}) {
+export async function askWarmWorker({ prompt, k = 8, cardsDir = CARDS_DIR, budgetMs = DEFAULT_BUDGET_MS, env = process.env } = {}) {
   const deadline = Date.now() + budgetMs;
   const endpoints = liveEndpoints(env);
   if (!endpoints.length) return { candidates: null, reason: 'no-warm-worker' };

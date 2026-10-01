@@ -313,3 +313,79 @@ describe('a swapped .rvf is refused before the native reader sees it', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('products derived from repo + manifest facts (ADR-093 rev 3)', () => {
+  const mk = (id, store, source, kind = 'npm') => ({ id, store, source: `${store}/${source}`, kind });
+  const derive = async (cards, names = []) => (await import('../../scripts/package-cards.mjs')).deriveProducts(cards, { productNames: new Set(names) });
+  it('R1 flagship + R2 scope CLI: ruflo, root claude-flow and @claude-flow/cli are one product, installed as ruflo', async () => {
+    const out = await derive([mk('ruflo', 'ruflo', 'ruflo/package.json'), mk('claude-flow', 'ruflo', 'package.json'), mk('@claude-flow/cli', 'ruflo', 'v3/@claude-flow/cli/package.json'), mk('@claude-flow/memory', 'ruflo', 'v3/@claude-flow/memory/package.json')]);
+    const p = Object.fromEntries(out.map((c) => [c.id, c]));
+    expect(new Set([p.ruflo.product, p['claude-flow'].product, p['@claude-flow/cli'].product]).size).toBe(1);
+    expect(p['@claude-flow/cli'].canonical).toBe('ruflo');
+    expect(p['@claude-flow/memory'].product).not.toBe(p.ruflo.product);
+  });
+  it('R3: a corpus-named key joins repos (npm canonical); a common word never does', async () => {
+    const cards = [mk('@claude-flow/aidefence', 'ruflo', 'v3/@claude-flow/aidefence/package.json'), mk('aidefence-core', 'midstream', 'crates/aidefence-core/Cargo.toml', 'crate'),
+      mk('@claude-flow/deployment', 'ruflo', 'v3/@claude-flow/deployment/package.json'), mk('deployment', 'autogenous', 'deployment/package.json')];
+    const p = Object.fromEntries((await derive(cards, ['aidefence'])).map((c) => [c.id, c]));
+    expect(p['aidefence-core'].product).toBe(p['@claude-flow/aidefence'].product);
+    expect(p['aidefence-core'].canonical).toBe('@claude-flow/aidefence');
+    expect(p.deployment.product).not.toBe(p['@claude-flow/deployment'].product);
+    // red twin: without the corpus naming the product, the cross-repo merge does not happen
+    const q = Object.fromEntries((await derive(cards, [])).map((c) => [c.id, c]));
+    expect(q['aidefence-core'].product).not.toBe(q['@claude-flow/aidefence'].product);
+  });
+  it('the shipped snapshot carries a product and a canonical install on every card', () => {
+    const doc = JSON.parse(fs.readFileSync(path.join(SCRIPTS, 'package-cards.json'), 'utf8'));
+    const ids = new Set(doc.cards.map((c) => c.id));
+    for (const c of doc.cards) { expect(typeof c.product).toBe('string'); expect(ids.has(c.canonical)).toBe(true); }
+    const by = Object.fromEntries(doc.cards.map((c) => [c.id, c]));
+    expect(by['aidefence-core'].canonical).toBe('@claude-flow/aidefence');
+    expect(by['@claude-flow/cli'].canonical).toBe('ruflo');
+    expect(by.agenticow.tier).toBe('T1');   // promoted in data/registry.tiers.json (published on npm)
+  });
+});
+
+describe('the hint names one canonical install per product', () => {
+  const index = rec.loadIndex([path.join(SCRIPTS, 'package-cards.json')]);
+  it('sibling packages of one product collapse to its canonical install', () => {
+    const byId = new Map(index.entries.map((e) => [e.card.id, e.card]));
+    const picks = rec.canonicalPicks([{ id: 'aidefence-core', similarity: 0.7 }, { id: '@claude-flow/aidefence', similarity: 0.69 }, { id: '@claude-flow/cli', similarity: 0.6 }], byId);
+    expect(picks.map((p) => p.card.id)).toEqual(['@claude-flow/aidefence', 'ruflo']);
+    expect(picks[0].matchedVia).toBe('aidefence-core');
+  });
+});
+
+describe('family-aware scoring and the frozen floor', () => {
+  const cards = JSON.parse(fs.readFileSync(path.join(SCRIPTS, 'package-cards.json'), 'utf8')).cards;
+  const key = [
+    { qid: 'Q1', set: 'b.json', category: 'design', accept: ['@claude-flow/aidefence'], acceptStores: [], lane: 'semantic', topSimilarity: 0.7 },
+    { qid: 'Q2', set: 'b.json', category: 'no-fit', accept: [], acceptStores: [], lane: 'semantic', topSimilarity: 0.4 },
+  ];
+  it('a sibling of an accepted package counts only when family-aware', async () => {
+    const { judgeScore } = await import('../../scripts/recommendation-judge-score.mjs');
+    const picks = { Q1: 'aidefence-core', Q2: null };
+    expect(judgeScore(key, picks, cards).bySet['b.json'].recall.k).toBe(0);
+    expect(judgeScore(key, picks, cards, { familyAware: true }).bySet['b.json'].recall.k).toBe(1);
+  });
+  it('the floor voids a pick whose hint would not have been injected', async () => {
+    const { applyFloor, deriveFloor } = await import('../../scripts/recommendation-floor.mjs');
+    expect(applyFloor(key, { Q1: 'x', Q2: 'y' }, 0.5)).toEqual({ Q1: 'x', Q2: null });
+    const tune = [0.52, 0.6, 0.7, 0.8].map((s, i) => ({ qid: `T${i}`, set: 't', category: 'design', accept: ['ruflo'], lane: 'semantic', topSimilarity: s }));
+    expect(deriveFloor(tune, Object.fromEntries(tune.map((k) => [k.qid, 'ruflo'])), cards, 't')).toBe(0.52);
+    expect(deriveFloor(tune, {}, cards, 't')).toBeNull();
+  });
+});
+
+describe('the real-host harness reads what the model said', () => {
+  it('mentioned() finds an offered package by full id or distinctive short name, not by a substring', async () => {
+    const { mentioned } = await import('../../scripts/recommendation-real-host.mjs');
+    expect(mentioned('rUv ships @ruvector/typesafe — local classifier', ['@ruvector/typesafe'])).toBe('@ruvector/typesafe');
+    expect(mentioned('I would reach for rUv\'s typesafe here.', ['@ruvector/typesafe'])).toBe('@ruvector/typesafe');
+    // measured false positive (real-host Q157): an ordinary word that is also a package short name
+    expect(mentioned('Add the field and write the migration. Then run it.', ['@claude-flow/migration'])).toBeNull();
+    expect(mentioned('rUv ships @claude-flow/migration for this.', ['@claude-flow/migration'])).toBe('@claude-flow/migration');
+    expect(mentioned('a typesafety concern', ['@ruvector/typesafe'])).toBeNull();
+    expect(mentioned('nothing relevant', ['@ruvector/typesafe'])).toBeNull();
+  });
+});

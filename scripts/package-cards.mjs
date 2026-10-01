@@ -99,6 +99,66 @@ export function familyKey(name) {
   return base;
 }
 
+// ── PRODUCTS (ADR-093 rev 3): packages that are ONE product, derived from repo + manifest facts ──────
+// A recommendation that names `aidefence-core` (midstream's Rust crate) and a label that says
+// `@claude-flow/aidefence` (ruflo's npm package) are the same advice. The relation is derived, never
+// typed: three rules over facts the manifests already carry.
+//   R1 FLAGSHIP — a package whose unscoped name, or whose family key, equals its repo's name, or whose
+//      manifest sits at the repo root, IS that repo's product (`ruflo` and root `claude-flow` → ruflo).
+//   R2 SCOPE CLI/CORE — `@<scope>/cli|core|main|sdk` is the product of the unscoped package `<scope>`
+//      when one exists (`@claude-flow/cli` → `claude-flow` → ruflo's product).
+//   R3 SHARED KEY — packages in different repos are one product when their family key is a FLAGSHIP
+//      product's key, or is itself a product the corpus names (a `## <name>` heading in the public
+//      capability-cards.md): `aidefence-core` + `@claude-flow/aidefence` → aidefence. A key that is only
+//      a common word (`deployment`, `ledger`, `witness`) stays local to its repo.
+// The CANONICAL install names the product in a hint: npm over crate, the repo-named package, then no
+// -core/-wasm-style suffix, then the shortest id.
+const GENERIC_KEYS = new Set(`
+  core cli server client types utils common shared config sdk api index search memory graph cache
+  node wasm runtime backend frontend agent agents swarm flow store queue worker workers proxy bridge
+  monitor dashboard plugin plugins cluster router solver main app web ui test tests demo example
+`.trim().split(/\s+/));
+
+const isRootManifest = (c) => /^(package\.json|Cargo\.toml)$/i.test(c.source.split('/').slice(1).join('/'))
+  || c.source.split('/').slice(1).join('/').toLowerCase() === `${c.store}/package.json`;
+const unscoped = (id) => String(id).replace(/^@[^/]+\//, '').toLowerCase();
+
+export function deriveProducts(cards, { productNames = new Set() } = {}) {
+  const byId = new Map(cards.map((c) => [c.id.toLowerCase(), c]));
+  const product = new Map();
+  const flagship = (c) => unscoped(c.id) === c.store || familyKey(c.id) === c.store || isRootManifest(c);
+  for (const c of cards) if (flagship(c)) product.set(c.id, `repo:${c.store}`);
+  for (const c of cards) {
+    if (product.has(c.id)) continue;
+    const m = c.id.toLowerCase().match(/^@([^/]+)\/(cli|core|main|sdk)$/);
+    const owner = m && byId.get(m[1]);
+    if (owner) product.set(c.id, product.get(owner.id) || `pkg:${owner.id.toLowerCase()}`);
+  }
+  // R3: a distinctive key shared across repos; joins a flagship that carries the same key.
+  const keyProduct = new Map();
+  for (const c of cards) {
+    const k = familyKey(c.id);
+    if (product.has(c.id) && k.length >= 5 && !GENERIC_KEYS.has(k)) keyProduct.set(k, product.get(c.id));
+  }
+  for (const c of cards) {
+    if (product.has(c.id)) continue;
+    const k = familyKey(c.id);
+    const distinctive = k.length >= 5 && !GENERIC_KEYS.has(k);
+    product.set(c.id, keyProduct.get(distinctive ? k : '') || (distinctive && productNames.has(k) ? `key:${k}` : `key:${c.store}:${k}`));
+  }
+  const members = new Map();
+  for (const c of cards) {
+    const p = product.get(c.id);
+    if (!members.has(p)) members.set(p, []);
+    members.get(p).push(c);
+  }
+  const rank = (c) => [c.kind === 'npm' ? 0 : 1, unscoped(c.id) === c.store ? 0 : 1,
+    /-(core|wasm|node|ffi|napi|native|sys|types|bindings|cli)$/.test(c.id) ? 1 : 0, c.id.length];
+  const cmp = (a, b) => { const x = rank(a); const y = rank(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return a.id < b.id ? -1 : 1; };
+  const canonical = new Map([...members].map(([p, list]) => [p, [...list].sort(cmp)[0].id]));
+  return cards.map((c) => ({ ...c, product: product.get(c.id), canonical: canonical.get(product.get(c.id)) }));
+}
+
 /** Lower is better: the variant a recommendation should name when a family has several. */
 function preference(card) {
   const n = card.name.toLowerCase();
@@ -250,7 +310,7 @@ export async function generate({ kbDir, cardsMd, privateStores, owners, tiers = 
     tokenizer: TOKENIZER_VERSION,
     derivedFrom: { ...corpusIdentity(kbDir), manifestPassages: manifests.length, readmePassages: readmes.size, stores: stores.length },
     grounding: 'Every field is copied from a manifest passage of a public store; see source + sourceSha256. t/s are derived scoring tokens.',
-    cards: cards.map((card) => ({ ...card, tier: tiers[card.store] || null, ...cardTokenSets(card) })),
+    cards: deriveProducts(cards, { productNames: publicStores }).map((card) => ({ ...card, tier: tiers[card.store] || null, ...cardTokenSets(card) })),
   };
 }
 

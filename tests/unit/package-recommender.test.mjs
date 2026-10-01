@@ -199,6 +199,10 @@ describe('behind the flag, through advocacy-route and unprompted-runtime', () =>
     RUVNET_ADVOCACY_ROUTE_ROOTS: path.join(dir, 'none'),
     RUVNET_PACKAGE_CARDS: SNAPSHOT,
     RUVNET_SETTINGS_FILE: path.join(dir, 'settings.json'),
+    // These tests prove DELIVERY semantics (dial, ledger, cap), not timing: on a machine at load 130+
+    // the producer measured 2.6 s and the runtime's 2 s deadline silenced it. Timing is measured by
+    // scripts/recommendation-e2e.mjs and gated in the ADR; it is not asserted here.
+    RUVNET_UNPROMPTED_TIMEOUT_MS: '15000',
     ...extra,
   });
   const payload = (prompt, sid = 's1') => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'UserPromptSubmit', prompt });
