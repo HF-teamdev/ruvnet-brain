@@ -18,6 +18,7 @@
  *   continuity-brief.mjs --full [--kind decision|lesson|commit|release|gate|finding|open-item] [--since 7d] [--limit 200]
  *   continuity-brief.mjs --record --kind decision|lesson|open-item|finding --text "<what>" [--owner <who>]
  *   continuity-brief.mjs --status
+ *   continuity-brief.mjs --clear     acknowledge a reported quarantine / corrupt line / cap drop (they also age out in 7d)
  * --record is the explicit capture (authoritative). It journals, drains inline and prints the receipt
  * only after the row was read back by its exact key.
  */
@@ -245,7 +246,7 @@ export async function restoreWithBrief({ env = process.env, cwd = process.cwd(),
   let brief = { context: '' };
   try {
     brief = buildBrief({ projectDir: env.CLAUDE_PROJECT_DIR || cwd, env, home: env.HOME || os.homedir() });
-    if (brief.status?.pending && brief.status.storeReady) launch({ projectRoot: brief.journal.projectRoot, env });
+    if (brief.status?.pending && brief.status.applicable) launch({ projectRoot: brief.journal.projectRoot, env });
   } catch { /* the restore still stands on its own */ }
   if (!brief.context) return restored;
   return { ...(restored || {}), brief: brief.status, context: restored?.context ? `${brief.context}\n${restored.context}` : brief.context };
@@ -292,6 +293,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log(JSON.stringify({ recorded: r.duplicate ? 'already-recorded' : r.committed ? 'stored-and-read-back' : 'durable-pending', key: r.key, ...r.drained }, null, 2));
       console.log(recordingLine(r.status));
       if (!r.duplicate && !r.committed) process.exitCode = 1;
+    } else if (args.clear) {
+      const journal = new ContinuityJournal({ projectRoot: resolveProjectStore({ projectDir }).projectRoot });
+      if (!fs.existsSync(journal.swarm)) throw new Error('no .swarm here: nothing to clear');
+      journal.clearProblems();
+      console.log(recordingLine(journal.status()));
     } else if (args.status) {
       const journal = new ContinuityJournal({ projectRoot: resolveProjectStore({ projectDir }).projectRoot });
       console.log(recordingLine(journal.status()));

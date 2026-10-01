@@ -80,6 +80,25 @@ whole-image mutator (access_count bump) — `ruflo/v3/@claude-flow/cli/src/memor
    (still never replayed — fail-closed for that key) instead of throwing for the whole file;
    `quarantinedKeys()` reports it.
 
+### Amendments after the independent review (2026-10-01)
+
+- **S1a** The owner-correction detector keeps only sentences with durable-rule phrasing ("from now on",
+  "going forward", "never again", "standing rule", a sentence opening with Always / Never (not "never
+  mind") / Remember that|to); ordinary task imperatives yield nothing (negative corpus in
+  `tests/unit/continuity-events.test.mjs`). Detected lessons carry `detail.status: 'detected-unconfirmed'`.
+- **S1b** The brief is model context: repo-controlled text is rendered inside a `PROJECT RECORD` fence as
+  untrusted data (control/bidi characters and fence tokens stripped, capped). Only lessons recorded with
+  `--record` on this machine — key and digest in an ownership ledger under the brain home, outside the repo
+  — appear as STANDING RULES.
+- **S2** Event text is redacted whole (including unterminated key blocks) before it is bounded.
+- **S3/S4** Two observations of one event (same key) are one event, not a quarantine; a stored row that is
+  the same kind:id commits. No store or no ruflo is "n/a", never ✗, and launches no drainer. Quarantine,
+  corrupt lines and cap drops are reported for 7 days or until `continuity-brief.mjs --clear`; the Claude
+  Stop line shows once per session per condition. Failures are one record per event; `compact()` rewrites
+  the outbox atomically (append lock plus a size re-check so a concurrent append is never lost), ages out
+  committed events after 7 days and caps the file at 2000 events. Measured before the fix: 300 pending
+  events with no ruflo grew to 1200 / 2100 / 3000 lines over three simulated days; after: constant.
+
 ## Alternatives considered
 
 - **Model-written summaries / a "remember to store" instruction.** Rejected: that is the suggestion the

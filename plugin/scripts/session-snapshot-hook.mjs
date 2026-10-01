@@ -13,7 +13,7 @@ import { buildProjectProgression } from './project-progression-producer.mjs';
 import { ProjectProgressionStore } from './project-progression-store.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { captureTurnOutcome } from './turn-outcome-capture.mjs';
-import { captureContinuityEvents, recordingLine } from './continuity-journal.mjs';
+import { captureContinuityEvents, stopNotice } from './continuity-journal.mjs';
 
 /**
  * The capture boundary's whole budget. hooks.json declares 10s; this keeps the internal work well
@@ -541,13 +541,18 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-
   const rawInput = fs.readFileSync(0, 'utf8');
   try {
     const result = runSessionSnapshotHook(projectDirectory(), process.argv[2] || 'SessionEnd', { rawInput });
-    // FAIL LOUDLY, NEVER SILENTLY. When recording is stuck (events pending past STUCK_AFTER_MS, a
-    // quarantined collision, a corrupt outbox line) Claude Code shows this systemMessage to the user.
-    // Codex is excluded on purpose: its Stop schema turns any `reason` into a BLOCK
-    // (codex-hook-adapter.mjs), and a recording problem must never hold a turn open.
+    // FAIL LOUDLY, NEVER SILENTLY — AND ONCE. When recording is stuck (events pending past STUCK_AFTER_MS,
+    // a quarantined conflict, a corrupt outbox line, a cap drop) Claude Code shows this systemMessage, at
+    // most once per session per condition (stopNotice; it used to repeat at every turn). "Not applicable"
+    // (no store, no ruflo) is never stuck. Codex is excluded on purpose: its Stop schema turns any `reason`
+    // into a BLOCK (codex-hook-adapter.mjs), and a recording problem must never hold a turn open.
     const host = process.env.RUVNET_HOOK_HOST || 'claude';
-    if (host === 'claude' && result?.continuity?.status?.stuck) {
-      process.stdout.write(JSON.stringify({ systemMessage: `[RuvNet Brain] ${recordingLine(result.continuity.status)}` }));
+    const { status, journal } = result?.continuity || {};
+    if (host === 'claude' && status?.stuck && journal) {
+      let session = null;
+      try { session = JSON.parse(rawInput || '{}').session_id || null; } catch { /* no session: still once per 'unknown' */ }
+      const message = stopNotice({ journal, status, session });
+      if (message) process.stdout.write(JSON.stringify({ systemMessage: message }));
     }
   } catch (error) {
     // ADVISORY, ALWAYS. A capture boundary fires at Stop, PreCompact and SessionEnd; one that can

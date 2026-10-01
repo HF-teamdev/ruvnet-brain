@@ -50,8 +50,9 @@ describe('1. contention → outbox → eventual commit', () => {
     const result = drain(journal, { ruflo: ruflo.bin, backoff: fastBackoff, sleep: noSleep });
     expect(result).toMatchObject({ committed: 1, remaining: 0 });
     const scan = journal.scan();
-    expect(scan.failures.map((f) => f.reason)).toEqual(['wal-contention', 'wal-contention']);
-    expect(scan.failures[0].error).toContain('refusing an unsafe sql.js whole-image write');
+    // Two refusals, then success: the commit records the retries; no failure line per attempt (review S4).
+    expect([...scan.committed.values()][0]).toMatchObject({ attempts: 3, lastError: 'wal-contention' });
+    expect(scan.failures.size).toBe(0);
     const stored = rows(journal.db, CONTINUITY_NAMESPACE);
     expect(stored).toHaveLength(1);
     expect(JSON.parse(stored[0].content).summary).toBe('Read back every write before calling it stored.');
@@ -99,7 +100,7 @@ describe('1. contention → outbox → eventual commit', () => {
 describe('2. never silent', () => {
   it('a healthy journal prints the positive confirmation — and never before a committed read-back', () => {
     const p = adoptedProject();
-    const journal = new ContinuityJournal({ projectRoot: p.dir });
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: fakeRuflo().bin });
     expect(recordingLine(journal.status())).toMatch(/^AgentDB: recording not yet proven/);
     journal.record([lesson('Healthy.')]);
     drain(journal, { ruflo: fakeRuflo().bin, backoff: fastBackoff, sleep: noSleep });
@@ -111,7 +112,7 @@ describe('2. never silent', () => {
     const old = Date.now() - STUCK_AFTER_MS - 60_000;
     const journal = new ContinuityJournal({ projectRoot: p.dir, now: () => old });
     journal.record([lesson('Stuck event.', old)]);
-    const status = new ContinuityJournal({ projectRoot: p.dir }).status();
+    const status = new ContinuityJournal({ projectRoot: p.dir, ruflo: fakeRuflo().bin }).status();
     expect(status.stuck).toBe(true);
     expect(recordingLine(status)).toMatch(/^AgentDB: recording ✗ — 1 event\(s\) pending for \d+m/);
     const ruflo = fakeRuflo({ refusals: 99 });
@@ -125,6 +126,9 @@ describe('2. never silent', () => {
     expect(claude.status, claude.stderr).toBe(0);
     expect(claude.stdout, claude.stderr).not.toBe('');
     expect(JSON.parse(claude.stdout).systemMessage).toMatch(/\[RuvNet Brain\] AgentDB: recording ✗/);
+    const again = fire('claude'); // same session, same condition: shown once, not at every turn (review S3)
+    expect(again.status).toBe(0);
+    expect(again.stdout).toBe('');
     const codex = fire('codex');
     expect(codex.status).toBe(0);
     expect(codex.stdout).toBe('');
@@ -146,7 +150,7 @@ describe('3. two sessions: session 2 comes up to speed on session 1', () => {
     const report = runSessionSnapshotHook(p.dir, 'Stop', {
       rawInput: JSON.stringify({ session_id: 'session-1', hook_event_name: 'Stop', transcript_path: file, cwd: p.dir }),
       host: 'claude', captureTurn: () => ({ recorded: false, skipped: 'not under test' }),
-      captureEvents: (o) => captureContinuityEvents({ ...o, env: {}, launch: (x) => { launches.push(x); return true; } }),
+      captureEvents: (o) => captureContinuityEvents({ ...o, env: {}, ruflo: ruflo.bin, launch: (x) => { launches.push(x); return true; } }),
       produce: () => ({ skipped: { reason: 'not under test' } }),
     });
     expect(report.continuity.recorded).toBe(4); // commit, gate, decision, owner lesson
@@ -258,7 +262,7 @@ describe('4. Codex SessionEnd budget (3s cap, 2200ms handed down)', () => {
     const result = runSessionSnapshotHook(p.dir, 'SessionEnd', {
       rawInput: JSON.stringify({ session_id: 'codex-1', hook_event_name: 'SessionEnd', cwd: p.dir }),
       host: 'codex', budgetMs: 1900, captureTurn: () => ({ recorded: false }),
-      captureEvents: (o) => captureContinuityEvents({ ...o, env: {}, launch: (x) => { launches.push(x); return true; } }),
+      captureEvents: (o) => captureContinuityEvents({ ...o, env: {}, ruflo: ruflo.bin, launch: (x) => { launches.push(x); return true; } }),
       produce: () => ({ skipped: { reason: 'not under test' } }),
     });
     const elapsed = Date.now() - started;

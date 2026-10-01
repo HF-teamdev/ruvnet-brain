@@ -283,9 +283,14 @@ commits and tags from git, test/check/release gate outcomes, agent findings, dec
 (explicit, or detected and marked non-authoritative), each fsynced to `.swarm/continuity-events-outbox.jsonl`
 before a detached drainer stores it (`ruflo memory store --no-upsert --path`, namespace `continuity-events`)
 and reads it back by exact key; a refused write (WAL contention) stays pending and is retried at every
-boundary, and a stuck one is shown (`AgentDB: recording ✗ …`) at Stop (Claude), at SessionStart and in
-`--doctor`. SessionStart prints a bounded `[RuvNet Brain — COME UP TO SPEED …]` brief before the progression
-restore; `/ruvnet-brain:rnb-brief` (`continuity-brief.mjs --full | --record`) pulls history or records
+boundary, and a stuck one is shown (`AgentDB: recording ✗ …`) at Stop (Claude, once per session per
+condition), at SessionStart and in `--doctor`. No initialized store or no ruflo reads `recording n/a`, never ✗,
+and launches no drainer; a quarantined key or corrupt line is reported for 7 days or until
+`continuity-brief.mjs --clear`; failures are one record per event and the outbox is compacted (committed
+events leave after 7 days, hard cap 2000 events). SessionStart prints a bounded `[RuvNet Brain — COME UP TO SPEED …]` brief before the progression
+restore; everything it quotes from the repository (commit subjects, `.swarm` rows) sits inside a fenced
+`PROJECT RECORD` marked as untrusted data, and only lessons recorded with `--record` on this machine (an
+ownership ledger outside the repo) are shown as standing rules; `/ruvnet-brain:rnb-brief` (`continuity-brief.mjs --full | --record`) pulls history or records
 explicitly. `RUVNET_CONTINUITY_CAPTURE=off` disables event capture. `npm run hooks:check` and
 `npm run wired:check` fail on any hook or module that is registered-but-missing or present-but-unwired.
 
