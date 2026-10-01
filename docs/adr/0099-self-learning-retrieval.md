@@ -129,6 +129,50 @@ trajectories and patterns, and runs the EWC++ consolidation.
   - no gate regresses.
 - Heavy runs start only at 1-minute load below 60.
 
+## Where 4.5 left each arm, and the next step (4.6)
+
+Measured 2026-10-01; outputs are in `evals/runs/2026-10-01-retrieval-4.5/`.
+
+- **E3 (quoted-claim merge) and the store-name identifier fix: ON.** With E2 on as well, the
+  identifier fix leaves every gate unchanged (`final-e11b8838/`). It also fixes the capability
+  battery's "RuVector HNSW vector search overview" question, which now passes 58/58.
+- **E2 (keyword lane): OFF, behind `RUVNET_BRAIN_KEYWORD_LANE=1`** (ADR-090 §9).
+  - Gains with the lane on:
+    - recall gate 162 → 165/182;
+    - held-out routed 48 → 51/80;
+    - needs gold or alternative within 5: 4 → 10/206.
+  - Cost: +2.1 s median paired [1.4–2.9] and +5.9 s at p90.
+  - Almost all of the cost is the query-time index build: the lane alone takes p50 1.5 s and
+    p90 5.1 s (`e2-mitigation/`).
+- **Arm C (learned judge): OFF; v1 failed.**
+  - The eight trace features cannot separate the gold file from its neighbours.
+  - No threshold reaches the 0.8 precision target on train, so the judge abstains on all
+    103 held-out needs (0 confident hits).
+  - Replayed on the recall gate, it drops gold within 5 from 165 to 154/182
+    (`judge-report-v1.json`).
+- **Arm A (doc2query): measured, not productized.**
+  - 15,357 generated questions cover the 5,259 markdown files of ruflo, ruvector and ruview.
+  - Held-out needs whose gold repository is searched: the gold file reaches the pool for
+    17/43 [26.4–54.4%] with dense + keyword, and 28/43 [50.2–77.6%] once the entry lane is added
+    (+11). Train goes 18/44 → 31/44 (`doc2query-reach.json`).
+  - This measures pool reach only. Answer quality has not been measured.
+- **Arm B (SONA MicroLoRA):** the harness is committed (`scripts/oracle/sona-query-adapter-eval.mjs`)
+  but has not been run.
+- **Arm D (nightly consolidation):** not started.
+
+**Next step (4.6), in order:**
+
+1. **Build the BM25 keyword index with the corpus and load it at query time.**
+   - The index is built in CI with the stores and sealed with them, so customer machines never
+     build it.
+   - It turns E2 on if both hold on the same paired 69-question latency set:
+     - added p50 ≤ +1.0 s;
+     - the gate gains hold (recall ≥ +2, needs gold within 5 ≥ 8/206).
+2. **Arm A in the product.**
+   - A doc2query entry lane over CI-built entry indexes, behind its own flag.
+   - Measured end to end on held-out answers, not just pool reach, under the same latency rule.
+3. Arm B's experiment, then arm D.
+
 ## Alternatives considered
 
 | Alternative | Why not (now) |

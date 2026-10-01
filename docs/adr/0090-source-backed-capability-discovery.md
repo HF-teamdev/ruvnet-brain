@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-09-19
 updated: 2026-10-01
 updated_source: derived-from-git
-reviewed_digest: 7af07f8b7386
+reviewed_digest: af4418a4d6d5
 authors: [Stuart Kerr, Codex]
 tags: [retrieval, routing, source-grounding, capability-discovery]
 relates: [ADR-060, ADR-074]
@@ -131,7 +131,13 @@ separate.
        - The three recall-gate wins came where dense was strong (best dense CE 1.9–5.2), so a
          gate that saves time drops them.
      - **The fix belongs to the corpus build.** It is an index built with the corpus and loaded at
-       query time, deferred to 4.6.
+       query time.
+     - **Next step: the first 4.6 item**, together with ADR-099 arm A.
+       - CI builds the BM25 index with each store and seals it in the bundle.
+       - The reader loads it at query time instead of building it.
+       - E2 turns on only if both hold on the same paired 69-question latency set:
+         - added p50 ≤ +1.0 s;
+         - the gains survive (recall ≥ +2, needs gold within 5 ≥ 8/206).
    - **Why it does not breach the rest of this decision.** The lane changes which files the reranker
      reads. It does not change supplements, reviewed passages, capability-family routing, CE scores or
      grounding receipts. A supplement's file can now be retrieved on its own merit by this primary
@@ -149,6 +155,7 @@ Fresh held-out semantic and actual MCP latency evaluation remain required before
 quality improvement. No universal 98% quality or deployed-runtime claim is made here.
 
 ## Currency log
+| 2026-10-01 | Reviewed and amended §9 (4.5): the first 4.6 item is now explicit. CI builds the BM25 index with each store and the reader loads it, never builds it. E2 turns on only if added p50 is at most +1.0 s and the gains survive (recall +2 or more, needs gold within 5 at 8/206 or more) on the same paired 69-question set. Code is unchanged since the previous row. reviewed_digest af4418a4d6d5. | Reviewed `kb/forge-ask-all.mjs` and `kb/keyword-lane.mjs` against `evals/runs/2026-10-01-retrieval-4.5/e2-mitigation/cost-sim.jsonl`. |
 | 2026-10-01 | Amended and reviewed §9 (4.5): the keyword lane ships off and RUVNET_BRAIN_KEYWORD_LANE=1 turns it on. Paired warm latency cost +2.1 s median per question [1.4-2.9] and +5.9 s at p90. Almost all of it is the query-time index build: the lane alone took p50 1.5 s and p90 5.1 s. Neither a dense-weak gate nor a read cap recovers that time without losing the gate gains. The deferred fix is an index built with the corpus. reviewed_digest 7af07f8b7386. | Reviewed `kb/keyword-lane.mjs` and `kb/forge-ask-all.mjs` against `evals/runs/2026-10-01-retrieval-4.5/e2-mitigation/gate-analysis.txt` and `evals/runs/2026-10-01-retrieval-4.5/e2-mitigation/cost-sim.jsonl`. |
 | 2026-10-01 | Currency review (4.5 merge of 4.4.1): decision unchanged. In `kb/forge-ask-all.mjs`, a deployed store's key or alias is no longer an identifier for widening or boosting. This fixes "RuVector HNSW vector search overview" answering from agentdb. Discovery supplements and the amended §9 keyword lane are unchanged. reviewed_digest d0219ff74a7b. | Reviewed `kb/forge-ask-all.mjs` against `evals/runs/2026-10-01-retrieval-4.5/capability-battery/npm-test-candidate-on-4.4.0.out`. |
 | 2026-10-01 | Amended §9 (4.5): repository stores add up to 8 keyword-matched files per question through the cap-exempt bm25 lane (`kb/keyword-lane.mjs`). Measured paired on the 4.3.37 corpus: recall 162 → 165/182 with 0 lost; off-topic 19/20 unchanged; held-out routed 48 → 51/80 with 0 lost; needs gold or alternative within 5 went 4 → 10/206. Supplements, reviewed passages and family routing are unchanged. `kb/forge-ask-all.mjs` also merges the quoted-claim flag onto already-pooled files (E3), and wires the learned judge, which stays off without trained weights (ADR-099). reviewed_digest c0c016b2aecb. | Reviewed `kb/forge-ask-all.mjs` and `kb/keyword-lane.mjs` against `evals/runs/2026-10-01-retrieval-4.5/e2e3-f725e0e7/recall.json`. |
