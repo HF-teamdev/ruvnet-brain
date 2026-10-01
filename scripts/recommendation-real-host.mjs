@@ -112,11 +112,12 @@ if (isMain) {
       for (const line of String(r.stdout || '').split('\n')) {
         let o; try { o = JSON.parse(line); } catch { continue; }
         const blob = JSON.stringify(o);
-        const m = blob.match(/\[RuvNet Brain — rUv (?:may already ship|already ships) this\][^"]*/);
+        // All three advocacy copies: the package lanes AND the closed catalogue ("capability advocacy").
+        const m = blob.match(/\[RuvNet Brain — (?:rUv (?:may already ship|already ships) this|capability advocacy)\][^"]*/);
         if (m && !injected) injected = m[0];
         if (o.type === 'result' && typeof o.result === 'string') answer = o.result;
       }
-      const offered = injected ? [...new Set([...injected.matchAll(/(@[a-z0-9-]+\/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]+) — /gi)].map((x) => x[1]))] : [];
+      const offered = injected ? [...new Set([...injected.matchAll(/(?:Consider )?(@[a-z0-9-]+\/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]+) — /gi)].map((x) => x[1]))] : [];
       rows.push({ qid: k.qid, set: k.set, id: k.id, category: k.category, load1m: +os.loadavg()[0].toFixed(1), exit: r.status, injected: Boolean(injected), offered, said: mentioned(answer, offered), answer: answer.slice(0, 1200) });
       console.log(`${k.qid} ${k.category.padEnd(9)} hint=${injected ? 'yes' : 'no '} said=${rows.at(-1).said || '-'}`);
     }

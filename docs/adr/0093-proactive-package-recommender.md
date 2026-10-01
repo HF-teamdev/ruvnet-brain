@@ -15,6 +15,50 @@ amends: [ADR-040, ADR-052]
 **Status**: Proposed (2026-10-01). Implementation exists on branch `recommender-4.6`, **default off**.
 Revision 2 (same day, below) adds the warm semantic lane; rev 1's lexical lane is now its cold fallback.
 
+## Decision run — all 88 blind prompts on a real host (2026-10-01)
+
+**Rule, fixed before the run:** flip the default ON only if, over all 88 blind prompts on a real host,
+family-aware precision ≥ 90%, false firing ≤ 5% and recall ≥ 50%; otherwise stay opt-in.
+
+**Run:** `scripts/recommendation-real-host.mjs --all-blinds --max-load 60 --batch 11`: 88 fresh `claude -p`
+sessions (Claude Code 2.1.286), same isolation as the 22-prompt run (no session persistence, no
+settings sources, no MCP, no tools, auto-memory off, temp brain home, warm worker with idle-exit off for
+the harness only). No batch started above 1-minute load 60; the gate waited six times (21 min in total
+before the first batch), and load climbed inside batches as other work ran (per-prompt load is recorded).
+No project entry and no `~/.claude.json` entry was created for the run.
+
+| (family-aware, Wilson 95%) | Real host, 88 prompts | Simulated host, same prompts |
+|---|---|---|
+| Recall | **22/52 = 42.3% [29.9–55.8]** | 26/52 = 50.0% |
+| Precision | **22/25 = 88.0% [70.0–95.8]** | 26/27 = 96.3% |
+| False firing | **0/36 = 0% [0–9.6]** | 0/36 |
+| Agreement, same prompt | 82/88 = 93.2%; 59/65 = 90.8% where both saw a hint | — |
+
+**Outcome: the rule is NOT met (recall 42.3% < 50%, precision 88.0% < 90%). The recommender stays
+opt-in (`RUVNET_PACKAGE_RECOMMENDER=1`); the default was not flipped.** The real model is quieter than the
+simulated one: it declined 3 hinted needs the simulated host took (e.g. a browser-only vector search, a
+prompt-injection need, a demand-forecasting need), and its 3 wrong picks were siblings outside the
+accepted product (`@agentic-flow/ephemeral-memory` for a need labelled `agentdb`/`@claude-flow/memory`;
+`@claude-flow/memory` for one labelled `ruvector-agent-memory`/`ruvector-temporal-coherence`;
+`wifi-densepose-calibration` for WiFi presence). Correction recorded in the run file: the first
+parser did not see the closed catalogue's "capability advocacy" copy, so 2 catalogue rows (Q088
+agentic-flow, Q141 agentic-qe) were re-derived from the stored answers; `real-host-88.raw.json` keeps the
+original, and the harness parser is fixed.
+
+**Hint delivery vs load** (a hint the pipeline would give, actually injected by the real hook):
+
+| 1-min load at the prompt | Delivered |
+|---|---|
+| 0–60 | 14/14 |
+| 60–120 | 19/19 |
+| 120–240 | 5/5 |
+| ≥ 240 | not sampled in this run (load gate) |
+
+Earlier ungated runs give the busy-laptop end: 13/16 at load 130–190 (22-prompt real-host run) and
+64/75 semantic hints inside the 250 ms budget at load 259–345 (`timing-default-budget-load259.json`).
+Below roughly load 120 delivery was complete; it degrades to ~80–85% under very heavy load, by falling
+back to the lexical lane or silence, never by waiting.
+
 ## Revision 3 — products, the core-tier fix, and a real host
 
 ### What changed

@@ -47,7 +47,8 @@ export function scoreRealHost(real, key, simPicks, cards) {
     recall: pct(pos.filter((r) => r.right).length, pos.length),
     precision: pct(said.filter((r) => POS.has(r.category) && r.right).length, said.length),
     falseFiring: pct(neg.filter((r) => r.said).length, neg.length),
-    hintDeliveredWhereExpected: pct(rows.filter((r) => r.injected).length, rows.filter((r) => r.expectHint).length),
+    hintDeliveredWhereExpected: pct(rows.filter((r) => r.expectHint && r.injected).length, rows.filter((r) => r.expectHint).length),
+    hintsNotExpected: rows.filter((r) => !r.expectHint && r.injected).length,   // catalogue/lexical lanes, which the floor does not govern
     agreement: pct(rows.filter((r) => r.agree).length, rows.length),
     agreementSameInput: pct(sameInput.filter((r) => r.agree).length, sameInput.length),
     rows,
