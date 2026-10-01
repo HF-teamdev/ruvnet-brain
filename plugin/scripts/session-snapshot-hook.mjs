@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { ProgressionOutbox } from './project-progression-outbox.mjs';
 import {
   captureProjectTransition,
   hasProjectProgression,
@@ -18,6 +20,23 @@ import { captureTurnOutcome } from './turn-outcome-capture.mjs';
  * time" rather than to a hung turn. Capture is advisory: it fails open, always.
  */
 export const CAPTURE_BUDGET_MS = 8_000;
+
+/**
+ * Replaying an interrupted session's outbox costs one `ruflo` write per pending snapshot, each ~3s
+ * cold (project-progression-store.mjs). Under this budget there is room for the NEW snapshot or the
+ * old ones, not both — and the new one is the one nothing else will ever write.
+ */
+export const REPLAY_MIN_BUDGET_MS = 4_000;
+
+/**
+ * The budget this invocation really has. The Codex wrapper hands its own kill deadline down as
+ * RUVNET_CODEX_BUDGET_MS (2200ms at SessionEnd, which Codex caps at 3s); planning for 8s there meant
+ * being SIGKILLed mid-write with nothing reported. 300ms is left for the adapter → shim → body spawns.
+ */
+export function effectiveBudgetMs(env = process.env) {
+  const handed = Number(env.RUVNET_CODEX_BUDGET_MS);
+  return Number.isFinite(handed) && handed > 0 ? Math.max(0, Math.min(CAPTURE_BUDGET_MS, handed - 300)) : CAPTURE_BUDGET_MS;
+}
 
 function regularOrAbsent(file) {
   try {
@@ -96,9 +115,11 @@ export function runSessionSnapshotHook(projectDir, event, {
   host = process.env.RUVNET_HOOK_HOST || 'claude',
   captureProgression = captureProjectTransition,
   produce = buildProjectProgression,
-  budgetMs = CAPTURE_BUDGET_MS,
+  budgetMs = effectiveBudgetMs(),
   now = Date.now,
   captureTurn = captureTurnOutcome,
+  makeStoreFactory = boundedStoreFactory,
+  spawnReplay = replayOutboxDetached,
 } = {}) {
   const metadataWritten = writeSessionSnapshot(projectDir, event);
   let payload;
@@ -135,25 +156,22 @@ export function runSessionSnapshotHook(projectDir, event, {
   }
 
   const deadlineAt = now() + budgetMs;
-  const storeFactory = boundedStoreFactory(deadlineAt);
+  const storeFactory = makeStoreFactory(deadlineAt);
 
-  // Commit anything a previously interrupted session left durable-but-uncommitted. SessionStart is
-  // forbidden from doing this (ADR-073 §5) because replay is a write; a capture boundary already
-  // owns a write budget, so this is where that debt is settled.
-  let replayed = 0;
-  try {
-    replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
-  } catch { /* the new capture below is still worth attempting */ }
-
+  // THE NEW SNAPSHOT FIRST (4.4.0). It used to run after the outbox replay, so on a short budget
+  // (Codex SessionEnd: 3s host cap) the replay of OLD snapshots spent the whole deadline and this
+  // session's own state never even reached the outbox. capture() fsyncs to the outbox before it
+  // touches the store, so going first guarantees it is at least durable.
   let produced;
   try {
     produced = produce({ resolution, payload, host, trigger: event });
   } catch (error) {
-    return { ...idle, replayed, skipped: `producer failed: ${error.message}` };
+    return { ...idle, replayed: 0, skipped: `producer failed: ${error.message}` };
   }
-  if (produced.skipped) return { ...idle, replayed, skipped: produced.skipped.reason };
+  if (produced.skipped) return { ...idle, replayed: 0, skipped: produced.skipped.reason };
 
   let result;
+  let deferred = null;
   try {
     result = captureProgression({
       host,
@@ -166,9 +184,31 @@ export function runSessionSnapshotHook(projectDir, event, {
     // the store, so a budget overrun here leaves the evidence on disk and the next capture boundary
     // (or /checkpoint) commits it. Reporting that plainly is the whole difference between a bounded
     // hook and a lossy one, so the reason is returned rather than thrown at a lifecycle boundary.
-    return { ...idle, replayed, skipped: `capture deferred: ${error.message}` };
+    deferred = `capture deferred: ${error.message}`;
   }
+
+  // THEN commit anything a previously interrupted session left durable-but-uncommitted. SessionStart
+  // stays write-free (its budget goes to restore); a capture boundary owns a write budget, so this is
+  // where the debt is settled. Under REPLAY_MIN_BUDGET_MS the replay cannot fit in THIS process, and
+  // on Codex no boundary ever has that much (Stop 3700ms effective, SessionEnd 1900ms, no PreCompact),
+  // so "wait for the next boundary" meant never (4.4.0 review S1). The debt is handed to a DETACHED,
+  // bounded, single-instance replayer instead: the host waits for none of it.
+  let replayed = 0;
+  let replaySkipped;
+  if (budgetMs < REPLAY_MIN_BUDGET_MS) {
+    let pending = 0;
+    try { pending = new ProgressionOutbox({ projectRoot: resolution.projectRoot }).pendingSnapshots().length; } catch { pending = 0; }
+    const handed = pending > 0 && spawnReplay({ projectDir: resolution.projectRoot });
+    replaySkipped = `outbox replay deferred: budget ${budgetMs}ms < ${REPLAY_MIN_BUDGET_MS}ms`
+      + (pending ? `; ${pending} pending ${handed ? 'handed to a detached replayer' : '(a replayer is already running)'}` : '');
+  } else if (!deferred) {
+    try {
+      replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
+    } catch { /* the debt stays durable in the outbox for the next boundary */ }
+  }
+  if (deferred) return { ...idle, replayed, skipped: deferred, ...(replaySkipped ? { replaySkipped } : {}) };
   return {
+    ...(replaySkipped ? { replaySkipped } : {}),
     metadataWritten,
     progressionCaptured: true,
     turn,
@@ -178,7 +218,57 @@ export function runSessionSnapshotHook(projectDir, event, {
   };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs')) {
+/** How long the detached replayer may spend. Nobody waits for it; the bound only stops a stuck ruflo. */
+export const DETACHED_REPLAY_BUDGET_MS = 60_000;
+const REPLAY_LOCK = '.progression-replay.lock';
+const lockPath = (projectDir) => path.join(projectDir, '.swarm', REPLAY_LOCK);
+
+/** Take the single-replayer lock (stale after twice the replay budget). True when this caller holds it. */
+export function takeReplayLock(projectDir, now = Date.now()) {
+  const lock = lockPath(projectDir);
+  try {
+    fs.writeFileSync(lock, `${process.pid} ${now}\n`, { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch {
+    try {
+      if (now - fs.statSync(lock).mtimeMs > 2 * DETACHED_REPLAY_BUDGET_MS) {
+        fs.writeFileSync(lock, `${process.pid} ${now}\n`, { mode: 0o600 });
+        return true;
+      }
+    } catch { /* vanished between the two calls: the other replayer finished */ }
+    return false;
+  }
+}
+
+/** Spawn the detached replayer if none holds the lock. Returns whether one was started. Never throws. */
+export function replayOutboxDetached({ projectDir, spawnFn = spawn } = {}) {
+  try {
+    if (!takeReplayLock(projectDir)) return false;
+    const child = spawnFn(process.execPath, [fileURLToPath(import.meta.url), '--replay-outbox'], {
+      cwd: projectDir, detached: true, stdio: 'ignore', env: { ...process.env, RUVNET_REPLAY_LOCK_HELD: '1' },
+    });
+    child.unref?.();
+    return true;
+  } catch {
+    try { fs.rmSync(lockPath(projectDir), { force: true }); } catch { /* best effort */ }
+    return false;
+  }
+}
+
+/** The detached replayer's body: replay the outbox within its own deadline, then release the lock. */
+export function runOutboxReplay({ projectDir, budgetMs = DETACHED_REPLAY_BUDGET_MS, makeStoreFactory = boundedStoreFactory, now = Date.now } = {}) {
+  try {
+    const resolution = resolveProjectStore({ projectDir });
+    const store = makeStoreFactory(now() + budgetMs)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath });
+    return store.replay().length;
+  } finally {
+    try { fs.rmSync(lockPath(projectDir), { force: true }); } catch { /* best effort */ }
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs') && process.argv[2] === '--replay-outbox') {
+  try { runOutboxReplay({ projectDir: process.cwd() }); } catch { /* the debt stays durable in the outbox */ }
+} else if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs')) {
   // projectDirectory() is the SAME derivation the Console's detector uses. Deriving it here
   // independently is what let this hook write a receipt the Console then reported as missing (#85).
   const rawInput = fs.readFileSync(0, 'utf8');
