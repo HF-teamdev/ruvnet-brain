@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { evaluateFullSuite, globToRegExp, listTestFiles, redFiles } from '../../scripts/full-suite-gate.mjs';
+import { evaluateFullSuite, globToRegExp, isTimingFailure, listTestFiles, MAX_FLAKY, redFiles, summaryMarkdown } from '../../scripts/full-suite-gate.mjs';
 import config from '../../vitest.config.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -37,17 +37,52 @@ describe('full-suite gate', () => {
     expect(run(green(), quarantine).problems).toEqual([`stale quarantine (now passes, remove it): ${files[1]} :: b works`]);
   });
 
-  it('a red that passes its one isolated retry is FLAKY (listed, not blocking); red in both runs stays RED', () => {
+  const failedWith = (file, name, message) => ({ name: path.join(ROOT, file), status: 'failed',
+    assertionResults: [{ fullName: name, status: 'failed', failureMessages: [message] }] });
+  const judge = (report, retry, extra = {}) => evaluateFullSuite({ report, quarantine: { tests: [] }, files, include, root: ROOT, retry, ...extra });
+  const timeout = 'Error: Test timed out in 20000ms.';
+
+  it('FLAKY only for a timing/budget failure that passes its one isolated retry, recorded with its message', () => {
     const report = green();
-    report.testResults[1] = result(files[1], [['b works', 'failed']]);
+    report.testResults[1] = failedWith(files[1], 'b works', timeout);
     expect(redFiles(report, { tests: [] }, ROOT)).toEqual([files[1]]);
     const passedAlone = { testResults: [result(files[1], [['b works', 'passed']])] };
-    expect(evaluateFullSuite({ report, quarantine: { tests: [] }, files, include, root: ROOT, retry: passedAlone }))
-      .toMatchObject({ verdict: 'PASS', flaky: [`${files[1]} :: b works`] });
-    const redAgain = { testResults: [result(files[1], [['b works', 'failed']])] };
-    expect(evaluateFullSuite({ report, quarantine: { tests: [] }, files, include, root: ROOT, retry: redAgain }).verdict).toBe('FAIL');
-    // A retry that did not run the test at all cannot launder it.
-    expect(evaluateFullSuite({ report, quarantine: { tests: [] }, files, include, root: ROOT, retry: { testResults: [] } }).verdict).toBe('FAIL');
+    expect(judge(report, passedAlone)).toMatchObject({ verdict: 'PASS', counts: { flaky: 1 },
+      flaky: [{ test: `${files[1]} :: b works`, retry: 'passed', failure: timeout }] });
+    // Red in both runs, or absent from the retry, stays RED.
+    expect(judge(report, { testResults: [failedWith(files[1], 'b works', timeout)] }).verdict).toBe('FAIL');
+    expect(judge(report, { testResults: [] }).verdict).toBe('FAIL');
+  });
+
+  it('SABOTAGE: a value-assertion red that passes alone stays RED (possible shared-state bug), even in a budget-named test', () => {
+    const report = green();
+    report.testResults[1] = failedWith(files[1], 'stays inside its declared budget', 'AssertionError: expected +0 to be 4');
+    const verdict = judge(report, { testResults: [result(files[1], [['stays inside its declared budget', 'passed']])] });
+    expect(verdict.verdict).toBe('FAIL');
+    expect(verdict.flaky).toEqual([]);
+  });
+
+  it('classifies the measured load failures as timing, and plain assertion diffs as not', () => {
+    for (const m of [timeout, 'Error: Hook timed out in 20000ms.', 'AssertionError: restore took 3745ms over 30 snapshots',
+      "expected '[decision-gate] 2000ms budget exhausted' to be ''", 'even the contention tail must stay within 2x the ceiling',
+      "expected 'render probe exceeded 250ms process deadline' to match /x/"]) expect(isTimingFailure(m), m).toBe(true);
+    for (const m of ['AssertionError: expected +0 to be 4', "expected [] to deeply equal [ 'hang' ]",
+      'Error: ENOENT: no such file or directory', "expected 'request timed out' to be 'ok'"]) expect(isTimingFailure(m), m).toBe(false);
+  });
+
+  it('more than the flaky ceiling in one run fails the gate, and the summary lists every flaky test', () => {
+    const many = ['t1', 't2', 't3', 't4'];
+    const report = { testResults: [result(files[0], [['a works', 'passed']]), result(files[2], [['c works', 'passed']]),
+      { name: path.join(ROOT, files[1]), status: 'failed', assertionResults: many.map((n) => ({ fullName: n, status: 'failed', failureMessages: [timeout] })) }] };
+    const retry = { testResults: [result(files[1], many.map((n) => [n, 'passed']))] };
+    expect(MAX_FLAKY).toBe(3);
+    const over = judge(report, retry);
+    expect(over.verdict).toBe('FAIL');
+    expect(over.problems).toEqual(['too many flaky tests: 4 > 3 timing failures that passed alone']);
+    expect(judge(report, retry, { maxFlaky: 4 }).verdict).toBe('PASS');
+    const md = summaryMarkdown(over);
+    for (const n of many) expect(md).toContain(`${files[1]} :: ${n}`);
+    expect(md).toContain('## Full suite: FAIL');
   });
 
   it('rejects a quarantine entry without class, reason and owner', () => {
