@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-09-19
 updated: 2026-10-01
 updated_source: derived-from-git
-reviewed_digest: c0c016b2aecb
+reviewed_digest: d0219ff74a7b
 authors: [Stuart Kerr, Codex]
 tags: [retrieval, routing, source-grounding, capability-discovery]
 relates: [ADR-060, ADR-074]
@@ -129,6 +129,7 @@ Fresh held-out semantic and actual MCP latency evaluation remain required before
 quality improvement. No universal 98% quality or deployed-runtime claim is made here.
 
 ## Currency log
+| 2026-10-01 | Currency review (4.5 merge of 4.4.1): decision unchanged. In `kb/forge-ask-all.mjs`, a deployed store's key or alias is no longer an identifier for widening or boosting. This fixes "RuVector HNSW vector search overview" answering from agentdb. Discovery supplements and the amended §9 keyword lane are unchanged. reviewed_digest d0219ff74a7b. | Reviewed `kb/forge-ask-all.mjs` against `evals/runs/2026-10-01-retrieval-4.5/capability-battery/npm-test-candidate-on-4.4.0.out`. |
 | 2026-10-01 | Amended §9 (4.5): repository stores add up to 8 keyword-matched files per question through the cap-exempt bm25 lane (`kb/keyword-lane.mjs`). Measured paired on the 4.3.37 corpus: recall 162 → 165/182 with 0 lost; off-topic 19/20 unchanged; held-out routed 48 → 51/80 with 0 lost; needs gold or alternative within 5 went 4 → 10/206. Supplements, reviewed passages and family routing are unchanged. `kb/forge-ask-all.mjs` also merges the quoted-claim flag onto already-pooled files (E3), and wires the learned judge, which stays off without trained weights (ADR-099). reviewed_digest c0c016b2aecb. | Reviewed `kb/forge-ask-all.mjs` and `kb/keyword-lane.mjs` against `evals/runs/2026-10-01-retrieval-4.5/e2e3-f725e0e7/recall.json`. |
 | 2026-10-01 | Currency review (4.4 routing and 4.4.1 apostrophes): decision unchanged. In `kb/forge-ask-all.mjs`, the source route planner is exported, up to 3 tied metadata stores are kept, rUv provenance needs an authorship shape and curly apostrophes are folded. In `kb/card-lane.mjs`, phrase normalisation folds curly apostrophes. `kb/identifier-lane.mjs` scans are cached per KB build and sidecar fingerprint. Discovery supplements, reviewed passages and capability-family routing are untouched. reviewed_digest a5bac6a4e60f. | Reviewed `kb/forge-ask-all.mjs`, `kb/card-lane.mjs` and `kb/identifier-lane.mjs` against `evals/runs/2026-10-01-routing-4.4/README.md` and `evals/runs/2026-10-01-routing-4.4.1/README.md`. |
 

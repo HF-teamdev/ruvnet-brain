@@ -110,3 +110,4 @@ line), first clause only — see each ADR for the full, dated status history.
 | [0089](0089-installed-search-identity-health.md) | Installed search identity health | Accepted |
 | [0090](0090-source-backed-capability-discovery.md) | Additive source-verified capability discovery | Accepted |
 | [0092](0092-knowledge-is-data-only.md) | ADR-092 — Knowledge is data only — build each store once, ship only what changed, never through a code release | Proposed |
+| [0099](0099-self-learning-retrieval.md) | Self-learning newcomer retrieval with rUv's own learning tools | Proposed |

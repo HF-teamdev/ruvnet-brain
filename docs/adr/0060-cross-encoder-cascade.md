@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-07-27
 updated: 2026-10-01
 updated_source: derived-from-git
-reviewed_digest: 00a5321cc332
+reviewed_digest: 2411179fff01
 authors: [Stuart Kerr, Claude Code]
 tags: [retrieval, latency, cross-encoder, cascade, measurement]
 supersedes: [ADR-059]
@@ -233,6 +233,7 @@ opt in with `KB_CE_CASCADE_K=64`; this ADR does not accept that value as the def
   number in this ADR is therefore a **real** measurement, never a replay.
 
 ## Currency log
+| 2026-10-01 | Currency review (4.5 merge of 4.4.1): decision unchanged. In `kb/forge-ask-all.mjs`, the store-name identifier fix drops a deployed store's key or alias from identifier widening and boosts. The keyword lane, quoted-claim merge and flag-gated judge are as reviewed in the earlier 2026-10-01 row. Cascade stages, thresholds and worker protocol are unchanged. reviewed_digest 2411179fff01. | Reviewed `kb/forge-ask-all.mjs` against `evals/runs/2026-10-01-retrieval-4.5/capability-battery/npm-test-candidate-on-4.4.0.out`. |
 | 2026-10-01 | Currency review (4.5): decision unchanged. `kb/forge-ask-all.mjs` pools up to 8 keyword-lane files per repository store; these ride the cap-exempt bm25 lane, so the cross-encoder reads more pairs. The quoted-claim flag now merges onto pooled files. A learned judge (off by default, ADR-099) can re-score the pool after the cross-encoder. Cascade stages, `CE_CASCADE_K_DEFAULT`, thresholds and worker protocol are unchanged. reviewed_digest 00a5321cc332. | Reviewed `kb/forge-ask-all.mjs` against `evals/runs/2026-10-01-retrieval-4.5/e2e3-f725e0e7/recall.json`. |
 | 2026-10-01 | Currency review (4.4.1 apostrophes): decision unchanged. Before the router reads a possessive or contraction, a curly apostrophe (U+2019, U+2018, U+02BC) is folded to a straight one by `normalizeApostrophes` in `kb/card-lane.mjs`. This is used by the rUv provenance rule, card phrase normalisation, the source-card negation guard and version intent. Route-only on 488 questions: 0 route changes. Cascade stages, pool, thresholds and worker protocol are unchanged. reviewed_digest d94fcb13523b. | Reviewed `kb/forge-ask-all.mjs` against `evals/runs/2026-10-01-routing-4.4.1/README.md`. |
 | 2026-10-01 | Currency review (routing 4.4 review fixes): decision unchanged. Status Accepted. In `kb/forge-ask-all.mjs`, "rUv" means gist provenance only in an authorship shape (`ruvAuthorshipIntent`). The router metadata index is now compact (one token dictionary per KB directory build plus typed-array CSR per store) and bounded to 2 directories. Measured retained memory on 199 stores went from 162.5 MB to 43.9 MB (`scripts/route-index-memory.mjs`). Cold build is 2.2–2.5 s and a warm call 2–3 ms, both unchanged. `kb/identifier-lane.mjs` scan keys add a fingerprint of every passage sidecar and are LRU-bounded at 64 entries. There are 0 route changes on 488 measured questions. Cascade stages, `CE_CASCADE_K_DEFAULT`, pool, thresholds and worker protocol are unchanged. reviewed_digest 478494ccfb4c. | Reviewed `kb/forge-ask-all.mjs` against `evals/runs/2026-10-01-routing-4.4/README.md`; `kb/forge-rerank.mjs`, `kb/forge-mcp-all.mjs` and `plugin/mcp/server.mjs` did not change. |
