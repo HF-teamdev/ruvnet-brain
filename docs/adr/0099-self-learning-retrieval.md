@@ -133,9 +133,18 @@ trajectories and patterns, and runs the EWC++ consolidation.
 
 Measured 2026-10-01; outputs are in `evals/runs/2026-10-01-retrieval-4.5/`.
 
-- **E3 (quoted-claim merge) and the store-name identifier fix: ON.** With E2 on as well, the
-  identifier fix leaves every gate unchanged (`final-e11b8838/`). It also fixes the capability
-  battery's "RuVector HNSW vector search overview" question, which now passes 58/58.
+- **E3 (quoted-claim merge) and the store-name identifier rule: ON.**
+  - **The rule:** a deployed store's key or alias never widens the route and never adds
+    identifier candidates in another store.
+  - **What it fixes:** the capability battery's "RuVector HNSW vector search overview" question
+    is no longer answered from agentdb.
+  - **The first version over-reached.** It dropped store names everywhere (e11b8838):
+    - With E2 off, the recall gate lost "In LatentMesh ADR-001, …": 161 vs 162/182
+      (`final-a2adf94a/`). Dense never pools that ADR, and the identifier lane had reached
+      it through the store name.
+    - With E2 on, the keyword lane had masked the loss.
+  - **The shipped rule** keeps a store's own name as an identifier while that store is searched
+    (ba9af6f7).
 - **E2 (keyword lane): OFF, behind `RUVNET_BRAIN_KEYWORD_LANE=1`** (ADR-090 §9).
   - Gains with the lane on:
     - recall gate 162 → 165/182;
