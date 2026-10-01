@@ -1711,13 +1711,18 @@ async function main() {
   if (!signature.ok) { fs.rmSync(tmp, { recursive: true, force: true }); die(`✗ SIGNATURE VERIFICATION FAILED: ${signature.reason}`, 4); }
   console.log(`  ✓ signature verified — ${signature.reason}`);
   // DISK-SPACE PREFLIGHT, before a single byte is unpacked: the bundle unpacks in temp, then a whole
-  // candidate generation (bundle + the live node_modules carried into it) is built beside the live one.
+  // candidate generation is built beside the live one: the bundle, plus what prepareCandidate carries into
+  // it from live — node_modules, and every private/local-ingest store file (restorePrivateFilesIntoCandidate
+  // copies them, so a brain with a large private store needs that much more; review S6). The downloaded
+  // zip itself is already on disk at this point, so free space already reflects it.
   let space;
   try {
     const unpacked = zipDeclaredBytes(zipPath);
+    const privateBytes = Object.values(privateOverlay?.files || {}).reduce((sum, file) => sum + (Number(file?.bytes) || 0), 0);
     space = checkDiskSpace([
-      { dir: extractDir, bytes: unpacked, purpose: 'unpacked bundle' },
+      { dir: extractDir, bytes: unpacked, purpose: 'unpacked bundle', brain: false },
       { dir: path.dirname(KB_DIR), bytes: unpacked + directoryBytes(path.join(KB_DIR, 'node_modules')), purpose: 'new generation' },
+      ...(privateBytes ? [{ dir: path.dirname(KB_DIR), bytes: privateBytes, purpose: 'private stores carried into it' }] : []),
     ]);
   } catch (error) { space = { ok: true, skipped: error.message }; } // unmeasurable: extraction's own limits still apply
   if (!space.ok) { fs.rmSync(tmp, { recursive: true, force: true }); die(space.message, 6); }
