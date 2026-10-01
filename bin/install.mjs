@@ -1492,7 +1492,7 @@ function wirePlugin({ expectedVersion = PACKAGE_VERSION, requireManaged = false 
     } else if (before.installed && before.version !== installed.version) {
       info('  body-only update: the Stable Spine is live on the next hook/MCP call; no restart is required.');
     }
-    info(`  commands available${shellBoundary.restartRequired ? ' in new sessions' : ' immediately'}: ${c.bold('/rvbc')}, ${c.bold('/ruvnet-brain:configure')}`);
+    info(`  commands available${shellBoundary.restartRequired ? ' in new sessions' : ' immediately'}: ${c.bold('/rnbc')} (also /rnb, /rvbc), ${c.bold('/ruvnet-brain:configure')}`);
     return {
       host: true, wired: true, version: installed.version, manualMarketplace, manualInstall,
       shellChanged: shellBoundary.changed, shellChangedPaths: shellBoundary.paths,
@@ -1512,7 +1512,7 @@ function wirePlugin({ expectedVersion = PACKAGE_VERSION, requireManaged = false 
     ? `Claude installed the plugin with ${installedHookRetirement.registrations.length} retired lifecycle registration(s); refusing to call this host converged.`
     : mismatch
       ? `Claude installed ${installed.version || 'an unknown version'}, not required ${expectedVersion}; refusing to call this host converged.`
-      : `the plugin did NOT land — so slash commands like ${c.bold('/rvbc')} will not exist yet.`);
+      : `the plugin did NOT land — so slash commands like ${c.bold('/rnbc')} will not exist yet.`);
   info(`${c.green('Your brain still works')}: search_ruvnet is wired and Claude will ground answers with it.`);
   info(`Only the plugin extras (slash commands, the Console, skills, and MCP declaration) are missing.`);
   info(`Run these two yourself to finish:`);
@@ -3241,7 +3241,7 @@ function feedbackHealthLines(cacheDir) {
   const env = detectEnvironment();
   const allGreen = s.repos > 0 && s.reader && s.mcp;
   return [
-    `${s.repos} repo stores on disk · reader ${s.reader ? 'ok' : 'MISSING'} · search_ruvnet ${s.mcp ? 'ok' : 'MISSING'} · plugin ${s.plugin ? 'ok' : 'NOT INSTALLED (no /rvbc)'}`,
+    `${s.repos} repo stores on disk · reader ${s.reader ? 'ok' : 'MISSING'} · search_ruvnet ${s.mcp ? 'ok' : 'MISSING'} · plugin ${s.plugin ? 'ok' : 'NOT INSTALLED (no /rnbc)'}`,
     `toolkit: Ruflo ${env.ruflo ? 'present' : 'not found'} · RuVector ${env.ruvector ? 'present' : 'not found'} · claude CLI ${env.claude ? 'present' : 'not found'}`,
     // NOT called a "verdict": this reads only repos/reader/mcp, while --doctor's verdict also weighs
     // grounding, Codex wiring, nightly health, host convergence and the hook policy. Two lines both
@@ -5758,7 +5758,7 @@ the installer reports that boot-level declarations changed.
   } catch (error) {
     die(
       `the Brain Console runtime could not be installed (${error.message})`,
-      `The knowledge base is present, but /rvbc would be broken. Re-run the installer from a complete package.`,
+      `The knowledge base is present, but /rnbc would be broken. Re-run the installer from a complete package.`,
     );
   }
   retireManagedHookRegistrations();

@@ -756,7 +756,7 @@ describe('wireCodexPlugin — install is idempotent, state-driven, and disable-p
 
 // ── native plugin skills: the actual current Codex surface ───────────────────────────────────────
 describe('plugin/skills/*/SKILL.md — native, self-contained Codex skills', () => {
-  const native = ['brain-console', 'rvbc', 'whats-new'];
+  const native = ['brain-console', 'rnbc', 'rvbc', 'whats-new'];
 
   for (const name of native) {
     it(`${name} has matching frontmatter and no absent sibling dependency`, () => {
