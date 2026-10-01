@@ -41,6 +41,7 @@ INPUT=""
 # exactly why a hook that CAN hang forever survives unnoticed. -t bounds the wait, and the string
 # is truncated AFTER the loop because a hook payload is one line with no newline, so `read` hands
 # the whole thing back at once and a per-iteration cap never fires.
+_l=""   # set -u: a read that times out before any byte leaves _l unset ("unbound variable" on stderr)
 while IFS= read -r -t 2 _l; do
   INPUT+="$_l"
   [ ${#INPUT} -ge 65536 ] && break
@@ -51,26 +52,57 @@ INPUT="${INPUT:0:65536}"
 
 shopt -s nocasematch 2>/dev/null || true
 
-# ── 1. REFUSE the known non-answers, before anything else. Each of these minted a real 24h stamp. ──
-case "$INPUT" in
-  # ADR-054: the brain is switched off. The exact phrase is pinned to the producer by test.
-  *"RuvNet Brain is disabled"*) exit 0 ;;
-  # The GONG: every repo failed. An outage is not grounding.
-  *"RUVNET BRAIN IS DOWN"*)     exit 0 ;;
-  # A thrown error inside the tool.
-  *"search_ruvnet error:"*)     exit 0 ;;
-  # The search ran and matched nothing. A real answer to the wrong question — but the brain showed
-  # the model no source, so there is nothing for a stamp to attest to.
-  *"(no results"*)              exit 0 ;;
-esac
+# ── 0. WHAT A SUCCESSFUL ANSWER LOOKS LIKE (2026-09-30 — tests/unit/grounding-success-shapes.test.mjs).
+# The heavy lane prints `Searched <n> RuvNet repos`. Two other REAL answers never do, and were graded
+# as failures (measured on 240 real results: 22 false failures):
+#   · the FAST LANE (kb/card-lane.mjs renderCardHit) — `evidence=curated-capability-card`;
+#   · a result the HOST replaced with `Error: result (N characters) exceeds maximum allowed tokens.
+#     Output has been saved to <file>` — the answer is in that file, so read it (bounded), and only
+#     from the host's own tool-results directory, so a forged path cannot open the gate.
+# grounding-turn-evidence.mjs sourceOf() applies the same predicate at Stop; keep them in step.
+HAS_BANNER=0
+case "$INPUT" in *"Searched "*"RuvNet repos"*) HAS_BANNER=1 ;; esac
+HAS_CARD=0
+case "$INPUT" in *"evidence=curated-capability-card"*) HAS_CARD=1 ;; esac
+if [ $HAS_BANNER -eq 0 ] && [ $HAS_CARD -eq 0 ]; then
+  saved_re='exceeds maximum allowed tokens\. Output has been saved to ([^[:space:]\\"]+/tool-results/[^[:space:]\\"]+\.txt)'
+  if [[ $INPUT =~ $saved_re ]]; then
+    saved="${BASH_REMATCH[1]}"
+    if [ -f "$saved" ] && case "$saved" in *..*) false ;; *) true ;; esac; then
+      head=$(head -c 16384 "$saved" 2>/dev/null) || head=""
+      case "$head" in *"Searched "*"RuvNet repos"*) HAS_BANNER=1 ;; esac
+      case "$head" in *"evidence=curated-capability-card"*) HAS_CARD=1 ;; esac
+    fi
+  fi
+fi
 
-# ── 2. REQUIRE the success banner. No banner ⇒ no successful search happened in this payload ⇒ no
-# stamp. This is what makes a missing or empty tool_response mint nothing, which is the query-only
-# behaviour finally gone.
-case "$INPUT" in
-  *"Searched "*"RuvNet repos"*) ;;
-  *) exit 0 ;;
-esac
+# ── 1. REFUSE the known non-answers, before anything else. Each of these minted a real 24h stamp. ──
+# Only when NOTHING above proved an answer: a real result can QUOTE these phrases (the corpus holds
+# this repo's own docs), and a substring anywhere in the payload is not the tool speaking.
+if [ $HAS_CARD -eq 0 ]; then
+  case "$INPUT" in
+    # The search ran and matched nothing. A real answer to the wrong question — but the brain showed
+    # the model no source, so there is nothing for a stamp to attest to. A genuine result carries a
+    # `#1  repo=` block; the empty answer never does, so a document quoting "(no results" cannot
+    # masquerade as one.
+    *"(no results"*) case "$INPUT" in *"#1  repo="*) ;; *) exit 0 ;; esac ;;
+  esac
+fi
+if [ $HAS_BANNER -eq 0 ] && [ $HAS_CARD -eq 0 ]; then
+  case "$INPUT" in
+    # ADR-054: the brain is switched off. The exact phrase is pinned to the producer by test.
+    *"RuvNet Brain is disabled"*) exit 0 ;;
+    # The GONG: every repo failed. An outage is not grounding.
+    *"RUVNET BRAIN IS DOWN"*)     exit 0 ;;
+    # A thrown error inside the tool.
+    *"search_ruvnet error:"*)     exit 0 ;;
+  esac
+fi
+
+# ── 2. REQUIRE an answer. Neither the banner nor a card ⇒ no successful search happened in this
+# payload ⇒ no stamp. This is what makes a missing or empty tool_response mint nothing, which is the
+# query-only behaviour finally gone.
+[ $HAS_BANNER -eq 1 ] || [ $HAS_CARD -eq 1 ] || exit 0
 
 DIR="$HOME/.cache/ruvnet-brain/grounded"
 mkdir -p "$DIR" 2>/dev/null || exit 0

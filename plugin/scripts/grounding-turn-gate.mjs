@@ -145,6 +145,10 @@ export function decide({ hookInput, marker, markerMs, env = process.env, read = 
     if (host === 'claude' && typeof tp === 'string' && /\.jsonl$/i.test(tp)) {
       try { turn = turnSources(read(tp, { maxMs: 0 })); } catch { turn = null; }
     }
+    // The transcript is read as a bounded TAIL. When the turn's opening prompt is not inside it
+    // (a long turn), the tail is a suffix of the turn and cannot prove a search did NOT happen
+    // earlier — absence of evidence there must not become a "no search" correction.
+    if (turn && !turn.boundaryFound) return null;
     const sources = turn ? turn.sources : null;
     const message = String(hookInput.last_assistant_message || '');
 
