@@ -1108,19 +1108,6 @@ function writeSnapshotReceipt(backupPath, { state, reason = null, recoveryComman
 }
 
 /**
- * Release rollback copies after the new KB has verified (issue #35, Dr. Mark Allen).
- *
- * Exported and pure-ish because it DELETES MULTI-GIGABYTE DIRECTORIES — a bug here destroys user
- * data, so it is tested directly rather than exercised only through a full update run.
- *
- * Refuses to delete any backup holding a `.rvf` store the live KB does not have. That is the
- * private/local-store case: the public bundle does not ship those, the update replaces the directory,
- * and forge-guard still passes because it verifies the store it was asked about — not what went
- * missing. In that situation the backup is the only surviving copy, so it is kept and reported.
- *
- * @returns {{removed: string[], kept: [string, string][], freed: number}}
- */
-/**
  * WHY a guard run failed. forge-guard prints its `[FAIL] ...` lines to STDOUT, and execFileSync puts only
  * STDERR in error.message, so a refused store used to read "Command failed: node .../forge-guard.mjs --name X"
  * with the cause dropped (measured 2026-09-30: the customer canary refused a generation and its log did not
@@ -1137,6 +1124,19 @@ export function describeGuardFailure(error) {
   return `${message.slice(0, 1600)}${cause}`;
 }
 
+/**
+ * Release rollback copies after the new KB has verified (issue #35, Dr. Mark Allen).
+ *
+ * Exported and pure-ish because it DELETES MULTI-GIGABYTE DIRECTORIES — a bug here destroys user
+ * data, so it is tested directly rather than exercised only through a full update run.
+ *
+ * Refuses to delete any backup holding a `.rvf` store the live KB does not have. That is the
+ * private/local-store case: the public bundle does not ship those, the update replaces the directory,
+ * and forge-guard still passes because it verifies the store it was asked about — not what went
+ * missing. In that situation the backup is the only surviving copy, so it is kept and reported.
+ *
+ * @returns {{removed: string[], kept: [string, string][], freed: number}}
+ */
 export function reclaimBackups({
   kbDir,
   backupsMade = [],

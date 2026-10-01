@@ -84,6 +84,14 @@ that only an already-preflighted head of `main` can be published, and `main` mov
 required checks that admins cannot bypass. Strengthening a gate is a code change to the workflow, never a person
 in the loop.
 
+The same holds for the two recovery rails. `recover-public-verification.yml` and `abandon-public-verification.yml`
+are started by `repository_dispatch`, which any token with write access can send, and both bind
+`Production – ruvnet-brain` (the environment holding `RUVNET_SIGNING_KEY` and `NPM_TOKEN`) with no human pause.
+Recover re-runs public verification on an already-published release and, if all three OS lanes pass, signs its
+`install-verified` aggregate — the receipt that arms the corpus nightly. Abandon records a published release as
+not verified. Neither can publish new bytes: both act only on a release `protected-release.yml` already sealed
+and published from a preflighted head of `main`.
+
 ## The knowledge corpus
 
 **Built in CI only.** `corpus-seed.yml` observes every public rUv repository (exclusions are
