@@ -3021,8 +3021,14 @@ async function doctorRun({ json }) {
   cleanupStrayRuvectorDb(); // issue #39: sweep a leftover empty scaffold from before this fix, if one's here
   const env = detectEnvironment();
   let rufloOperational = null;
-  if (env.ruflo) {
-    rufloOperational = probeRufloOperationalHealth();
+  const rufloAt = locateRuflo();
+  if (env.ruflo && !rufloAt.cli) {
+    // Wired into ~/.claude/settings.json (npx) but no CLI to ask: the probe used to spawn a missing `ruflo`,
+    // read the empty output as "operational", and print a ✓ it had not measured.
+    rufloOperational = { configuredOnly: true };
+    info('Ruflo is configured in ~/.claude/settings.json but no ruflo CLI is on PATH — not probed');
+  } else if (env.ruflo) {
+    rufloOperational = probeRufloOperationalHealth({ cli: rufloAt.cli });
     if (rufloOperational.notInitialized) {
       info('Ruflo CLI present; this directory has not run `ruflo init`, so there is no project learning to judge here (not a failure)');
     } else if (rufloOperational.healthy) {
@@ -5218,18 +5224,29 @@ function detectEnvironment() {
     platform: process.platform,
     arch: process.arch,
     claude: have('claude'),
-    ruflo: have('ruflo') || have('claude-flow'),
+    ruflo: (() => { const r = locateRuflo(); return Boolean(r.cli || r.configured); })(),
     ruvector: have('ruvector') || hasUserScopeMcpServer('ruvector'),
   };
-  // Also honor a toolkit that's wired into the Claude config even if the CLI isn't on PATH (npx users).
-  try {
-    const settings = path.join(os.homedir(), '.claude', 'settings.json');
-    if (fs.existsSync(settings)) {
-      const s = fs.readFileSync(settings, 'utf8');
-      if (/claude-flow|\bruflo\b/i.test(s)) env.ruflo = true;
-    }
-  } catch { /* ignore — detection is best-effort */ }
   return env;
+}
+
+/**
+ * THE Ruflo locator — the only way the installer and --doctor decide whether Ruflo is here. Every route it
+ * uses is a parameter, so a caller (or a test) controls all of them: the CLI is `ruflo` (or the legacy
+ * `claude-flow`) found by the shell on `env.PATH`, and `configured` means `~/.claude/settings.json`
+ * mentions it (npx users with no CLI on PATH). Nothing else is consulted — not node's own directory, not the
+ * npm prefix — unless it is on that PATH. (CI run 36919727923: `npm i -g ruflo` puts ruflo beside node, so a
+ * test PATH that kept node's directory still "had" ruflo.)
+ */
+export function locateRuflo({ env = process.env, home = os.homedir() } = {}) {
+  const which = (cmd) => {
+    const r = IS_WIN ? spawnSync('where', [cmd], { env, encoding: 'utf8' })
+      : spawnSync('sh', ['-c', `command -v -- ${cmd}`], { env, encoding: 'utf8' });
+    return !r.error && r.status === 0 ? (String(r.stdout || '').trim().split(/\r?\n/)[0] || null) : null;
+  };
+  let configured = false;
+  try { configured = /claude-flow|\bruflo\b/i.test(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')); } catch { /* none */ }
+  return { cli: which('ruflo') || which('claude-flow'), configured };
 }
 
 export function classifyRufloOperationalHealth({ status = '', memory = '', metrics = '' } = {}) {
@@ -5257,11 +5274,11 @@ export function classifyRufloOperationalHealth({ status = '', memory = '', metri
 }
 
 const RUFLO_NOT_INITIALIZED = /not initialized in this directory/i;
-const rufloProbeRun = (args) => {
+const rufloProbeRun = (args, cli = 'ruflo') => {
   // Every `ruflo` invocation auto-starts a project background daemon unless this is set
   // (verified live: ~/.npm-global/lib/node_modules/ruflo/node_modules/@claude-flow/cli/dist/src/
   // services/daemon-autostart.js:85) — a read-only health probe must not leave one running.
-  const result = spawnSync('ruflo', args, { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000,
+  const result = spawnSync(cli, args, { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000, shell: IS_WIN && /\.(?:cmd|bat)$/i.test(cli),
     env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' } });
   return `${result.stdout || ''}\n${result.stderr || ''}`;
 };
@@ -5274,7 +5291,7 @@ const rufloProbeRun = (args) => {
  * learning (✗), every later one saw "[STOPPED]" (direct mode, ✓) — text and --json disagreed on CI Linux,
  * run 36915686695. An uninitialized directory is now "not applicable" and the writing commands never run.
  */
-export function probeRufloOperationalHealth({ run = rufloProbeRun } = {}) {
+export function probeRufloOperationalHealth({ cli = 'ruflo', run = (args) => rufloProbeRun(args, cli) } = {}) {
   const status = run(['status']);
   if (RUFLO_NOT_INITIALIZED.test(status)) {
     return { healthy: true, notInitialized: true, directMode: false, stopped: false, zeroLearning: false, memoryContradiction: false, memoryEntries: 0 };
@@ -5288,6 +5305,9 @@ export function probeRufloOperationalHealth({ run = rufloProbeRun } = {}) {
 
 /** THE Ruflo line of the doctor's one verdict: derived only from the probe result, for text and --json alike. */
 export function rufloCheckLine(health) {
+  if (health.configuredOnly) {
+    return { id: 'ruflo', label: 'Ruflo', state: 'unknown', detail: 'configured in ~/.claude/settings.json; no ruflo CLI on PATH (not probed)', fix: null };
+  }
   if (health.notInitialized) {
     return { id: 'ruflo', label: 'Ruflo', state: 'unknown', detail: 'CLI present; not initialized in this directory (no project learning to judge)', fix: null };
   }

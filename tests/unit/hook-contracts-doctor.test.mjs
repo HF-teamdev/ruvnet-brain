@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { classifyCodexLifecycle, codexLifecycleGuidance } from '../../bin/install.mjs';
+import { classifyCodexLifecycle, codexLifecycleGuidance, locateRuflo } from '../../bin/install.mjs';
 import { continuityRegistrations } from '../../plugin/scripts/continuity-hook-policy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -147,10 +147,14 @@ process.exit(0);
       fs.mkdirSync(project);
       const stubBin = path.join(home, 'stub-bin');
       fs.mkdirSync(stubBin);
+      // node's OWN directory is deliberately NOT on PATH: on CI `npm i -g ruflo` installs ruflo right beside
+      // node (setup-node's prefix bin), so including it made "ruflo absent" false there (run 36919727923).
+      // node is reached through this link instead; ruflo is present only as the stub, when asked for.
+      fs.symlinkSync(process.execPath, path.join(stubBin, 'node'));
       if (ruflo) fs.writeFileSync(path.join(stubBin, 'ruflo'), `#!${process.execPath}\n${STUB_RUFLO}`, { mode: 0o755 });
       const emptyGit = path.join(home, 'empty-gitconfig');
       fs.writeFileSync(emptyGit, '');
-      const env = { PATH: [stubBin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: home,
+      const env = { PATH: [stubBin, '/usr/bin', '/bin'].join(path.delimiter), HOME: home,
         CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), npm_config_cache: path.join(home, '.npm'),
         RUVNET_BRAIN_TEST: '1', RUVNET_BRAIN_TEST_NPM_LATEST: VERSION, RUVNET_NO_TELEMETRY: '1', RUFLO_DAEMON_AUTOSTART: '0',
         GIT_CONFIG_GLOBAL: emptyGit, GIT_CONFIG_NOSYSTEM: '1' };
@@ -159,13 +163,18 @@ process.exit(0);
       const runText = () => { const raw = run(['--doctor']); return { ...raw, stdout: String(raw.stdout).replace(/\u001b\[[0-9;]*m/g, '') }; }; // eslint-disable-line no-control-regex
       let text; let json;
       if (order === 'text-first') { text = runText(); json = run(['--doctor', '--json']); } else { json = run(['--doctor', '--json']); text = runText(); }
-      return { text, json, projectEntries: fs.readdirSync(project).sort() };
+      return { text, json, projectEntries: fs.readdirSync(project).sort(), located: locateRuflo({ env, home }), stubBin };
     } finally { fs.rmSync(home, { recursive: true, force: true }); }
   };
   for (const ruflo of [true, false]) {
     for (const order of ['text-first', 'json-first']) {
       it(`text, --json and the exit code agree on a Knowledge ✗ machine (ruflo ${ruflo ? 'on PATH' : 'absent'}, ${order})`, () => {
-        const { text, json, projectEntries } = doctorTwice({ ruflo, order });
+        const { text, json, projectEntries, located, stubBin } = doctorTwice({ ruflo, order });
+        // GUARD on the premise, with the doctor's OWN locator in the very environment the doctor ran in: if this
+        // machine leaks a ruflo by any route the locator uses, this fails here, loudly, instead of a later
+        // assertion claiming the product is wrong.
+        expect(located, `ruflo ${ruflo ? 'stub not found' : 'leaked into the "absent" fixture'}: ${JSON.stringify(located)}`)
+          .toEqual(ruflo ? { cli: path.join(stubBin, 'ruflo'), configured: false } : { cli: null, configured: false });
         const verdictLines = text.stdout.split('\n').filter((l) => /✓ Healthy\.|✗ FAILING/.test(l));
         expect(verdictLines, text.stdout.slice(-3000)).toHaveLength(1);
         expect(verdictLines[0]).toMatch(/✗ FAILING — /);
