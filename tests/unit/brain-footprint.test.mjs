@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { FOOTPRINT_POLICY, inventoryFootprint, kbCopyPrefixes, sweepFootprint, footprintRoots } from '../../plugin/scripts/brain-footprint.mjs';
 // (kbCopyProof is imported below; the S7 tests also spy on it through sweepFootprint's proveCopy seam.)
 import { kbCopyProof } from '../../plugin/scripts/kb-copy-proof.mjs';
@@ -484,6 +485,101 @@ describe('positive confirmation', () => {
 // An interrupted `--move-brain` (scripts/move-brain.mjs) leaves full Brain copies and links under names the
 // inventory never looked at, so Knowledge said "1 copy" beside three. They are REPORTED (never removed), each
 // with what it is and the exact next step, and only when their pid is dead (a live move is not flagged).
+const q = (p) => `'${String(p).replace(/'/g, `'\\''`)}'`;
+
+// Re-review a6 BLOCKER: the advised commands were `rm -rf ${path}` with the path UNQUOTED, so a volume named
+// 'Backup 1' (macOS names a second same-named drive that way) made the pasted command `rm -rf /…/Backup …` —
+// another drive wiped. Every emitted command is now quoted and EXECUTED here by the real shell, beside a
+// sibling 'Backup' with a sentinel that must survive.
+describe.skipIf(process.platform === 'win32')('advised commands are safe to paste (re-review a6 blocker)', () => {
+  const DEAD = 2 ** 30;
+  const linkedBrain = (volumeName) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-quote-')));
+    dirs.push(root);
+    write(path.join(root, 'Backup', 'SENTINEL'), 'another drive');
+    const disk = path.join(root, volumeName, 'ruvnet-brain');
+    kbTree(path.join(disk, 'kb'), { publicStores: { alpha: 'a' }, privateStores: { secret: 's' } });
+    fs.mkdirSync(path.join(root, 'home', '.cache'), { recursive: true });
+    fs.symlinkSync(disk, path.join(root, 'home', '.cache', 'ruvnet-brain'));
+    const staging = path.join(root, volumeName, `.ruvnet-brain.moving-${DEAD}`);
+    write(path.join(staging, 'kb', 'SOURCE.json'), '{}');
+    return { root, disk, staging, env: { HOME: path.join(root, 'home') }, home: path.join(root, 'home') };
+  };
+  for (const volumeName of ['Backup 1', "it's Backup", 'Backup $HOME', 'Backup `id`', 'Backup;rm -rf x']) {
+    it(`the staging-copy delete for a volume named ${JSON.stringify(volumeName)} removes ONLY that copy`, () => {
+      const b = linkedBrain(volumeName);
+      const it_ = inventoryFootprint({ env: b.env, home: b.home, now: Date.now() }).items.find((i) => i.path === b.staging);
+      expect(it_.fix).toBe(`rm -rf -- ${q(b.staging)}`);
+      expect(spawnSync('sh', ['-n', '-c', it_.fix]).status).toBe(0);
+      const r = spawnSync('sh', ['-c', it_.fix], { cwd: b.root, encoding: 'utf8' });
+      expect(r.status, r.stderr).toBe(0);
+      expect(fs.existsSync(b.staging)).toBe(false);
+      expect(fs.readFileSync(path.join(b.root, 'Backup', 'SENTINEL'), 'utf8')).toBe('another drive');
+      expect(fs.existsSync(path.join(b.disk, 'kb', 'SOURCE.json'))).toBe(true);
+    });
+  }
+  it('a path with a control character (a newline in the volume name) gets NO command, only "inspect it"', () => {
+    const b = linkedBrain('Backup\nX');
+    const it_ = inventoryFootprint({ env: b.env, home: b.home, now: Date.now() }).items.find((i) => i.path === b.staging);
+    expect(it_.fix).toMatch(/^inspect it by hand: /);
+    expect(it_.fix).not.toMatch(/rm |mv /);
+  });
+  it('on Windows the commands are cmd syntax with quoted paths; a path with a double quote gets none', async () => {
+    const { assessMoveLeftovers } = await import('../../plugin/scripts/footprint-io.mjs');
+    const b = linkedBrain('Backup 1');
+    const loc = { state: 'linked', real: b.disk, path: path.join(b.home, '.cache', 'ruvnet-brain') };
+    const [s] = assessMoveLeftovers({ brainHome: loc.path, location: loc, isAlive: () => false, platform: 'win32' });
+    expect(s.fix).toBe(`rmdir /s /q "${b.staging}"`);
+    const dq = linkedBrain('Backup "1"');
+    const dqLoc = { state: 'linked', real: dq.disk, path: path.join(dq.home, '.cache', 'ruvnet-brain') };
+    const [t] = assessMoveLeftovers({ brainHome: dqLoc.path, location: dqLoc, isAlive: () => false, platform: 'win32' });
+    expect(t.fix).toMatch(/^inspect it by hand: /);
+  });
+});
+
+// Re-review a6 SHOULD-FIX 1: with the Brain's own path MISSING, every leftover is assessed; one that holds or
+// points at a Brain is RESTORED there (never rm, never "install"), and the restore really works.
+describe.skipIf(process.platform === 'win32')('the Brain path missing: restore from the leftover that holds it', () => {
+  const DEAD = 2 ** 30;
+  const setup = () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-restore-')));
+    dirs.push(root);
+    const other = path.join(root, 'Other Disk', 'ruvnet-brain');
+    kbTree(path.join(other, 'kb'), { publicStores: { alpha: 'a' }, privateStores: { secret: 'private-bytes' } });
+    const cache = path.join(root, 'home', '.cache'); fs.mkdirSync(cache, { recursive: true });
+    return { root, other, cache, brainHome: path.join(cache, 'ruvnet-brain'), env: { HOME: path.join(root, 'home') }, home: path.join(root, 'home') };
+  };
+  const leftovers = (b) => inventoryFootprint({ env: b.env, home: b.home, now: Date.now() }).items.filter((i) => i.kind === 'move-leftover');
+  it('an interrupted --back: link-old points at the real Brain, a staging copy sits beside — restore the link, rm nothing', () => {
+    const b = setup();
+    const linkOld = `${b.brainHome}.link-old-${DEAD}`; fs.symlinkSync(b.other, linkOld);
+    const staging = path.join(b.cache, `.ruvnet-brain.moving-${DEAD}`); kbTree(path.join(staging, 'kb'), { publicStores: { alpha: 'a' } });
+    const items = leftovers(b);
+    const restore = items.find((i) => i.onlyCopy);
+    expect(restore.path).toBe(linkOld);
+    expect(restore.fix).toBe(`mv -- ${q(linkOld)} ${q(b.brainHome)}`);
+    for (const i of items) expect(i.fix).not.toMatch(/\brm /);
+    const r = confirm({ footprint: inventoryFootprint({ env: b.env, home: b.home, now: Date.now() }), env: b.env, home: b.home, now: Date.now(), readiness: [] });
+    expect(r.lines.find((l) => l.id === 'knowledge').fix).toBe(restore.fix);
+    expect(spawnSync('sh', ['-c', restore.fix]).status).toBe(0);
+    expect(fs.realpathSync(b.brainHome)).toBe(b.other); // the private Brain is back where every reader looks
+  });
+  for (const what of ['link', 'old', 'moving']) {
+    it(`a ${what} leftover holding the Brain is the restore candidate`, () => {
+      const b = setup();
+      const p = what === 'moving' ? path.join(b.cache, `.ruvnet-brain.moving-${DEAD}`) : `${b.brainHome}.${what}-${DEAD}`;
+      if (what === 'link') fs.symlinkSync(b.other, p); else kbTree(path.join(p, 'kb'), { publicStores: { alpha: 'a' } });
+      const [only] = leftovers(b);
+      expect(only).toMatchObject({ path: p, onlyCopy: true, fix: `mv -- ${q(p)} ${q(b.brainHome)}` });
+    });
+  }
+  it('a link-N whose target is gone is not a restore candidate', () => {
+    const b = setup();
+    fs.symlinkSync(path.join(b.root, 'Gone Disk', 'ruvnet-brain'), `${b.brainHome}.link-${DEAD}`);
+    expect(leftovers(b)[0].onlyCopy).toBe(false);
+  });
+});
+
 describe('interrupted --move-brain leftovers are reported, never removed', () => {
   const DEAD = 2 ** 30;
   const brainCopy = (dir) => kbTree(path.join(dir, 'kb'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
@@ -499,9 +595,9 @@ describe('interrupted --move-brain leftovers are reported, never removed', () =>
     const leftovers = fp.items.filter((i) => i.kind === 'move-leftover');
     expect(leftovers.map((i) => i.path).sort()).toEqual([old, staging, link, linkOld].sort());
     for (const i of leftovers) expect(i).toMatchObject({ class: 'unowned', action: 'report' });
-    expect(item(fp, old).fix).toBe(`rm -rf ${old}`);
-    expect(item(fp, staging).fix).toBe(`rm -rf ${staging}`);
-    expect(item(fp, link).fix).toBe(`rm ${link}`);
+    expect(item(fp, old).fix).toBe(`rm -rf -- ${q(old)}`);
+    expect(item(fp, staging).fix).toBe(`rm -rf -- ${q(staging)}`);
+    expect(item(fp, link).fix).toBe(`rm -- ${q(link)}`);
     expect(fp.kbCopies).toBe(1);
     const r = confirm({ footprint: fp, env: m.env, home: m.home, now: Date.now(), readiness: [] });
     const move = r.lines.filter((l) => l.id === 'move-leftover');
@@ -517,10 +613,10 @@ describe('interrupted --move-brain leftovers are reported, never removed', () =>
     const m = machine(); fs.mkdirSync(path.dirname(m.brainHome), { recursive: true });
     const old = path.join(path.dirname(m.brainHome), `ruvnet-brain.old-${DEAD}`); brainCopy(old);
     const fp = inventoryFootprint(opts(m, { now: Date.now() }));
-    expect(item(fp, old)).toMatchObject({ kind: 'move-leftover', onlyCopy: true, fix: `mv ${old} ${m.brainHome}` });
+    expect(item(fp, old)).toMatchObject({ kind: 'move-leftover', onlyCopy: true, fix: `mv -- ${q(old)} ${q(m.brainHome)}` });
     const r = confirm({ footprint: fp, env: m.env, home: m.home, now: Date.now(), readiness: [] });
-    expect(r.lines.find((l) => l.id === 'move-leftover')).toMatchObject({ state: 'fail', fix: `mv ${old} ${m.brainHome}` });
-    expect(r.lines.find((l) => l.id === 'knowledge').fix).toBe(`mv ${old} ${m.brainHome}`);
+    expect(r.lines.find((l) => l.id === 'move-leftover')).toMatchObject({ state: 'fail', fix: `mv -- ${q(old)} ${q(m.brainHome)}` });
+    expect(r.lines.find((l) => l.id === 'knowledge').fix).toBe(`mv -- ${q(old)} ${q(m.brainHome)}`);
     expect(r.ok).toBe(false);
   });
 
@@ -540,7 +636,7 @@ describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain i
     const staging = path.join(path.dirname(m.disk), `.ruvnet-brain.moving-${2 ** 30}`);
     kbTree(path.join(staging, 'kb'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 's' } });
     const fp = inventoryFootprint({ env: m.env, home: m.home, now: Date.now() });
-    expect(item(fp, staging)).toMatchObject({ kind: 'move-leftover', action: 'report', fix: `rm -rf ${staging}` });
+    expect(item(fp, staging)).toMatchObject({ kind: 'move-leftover', action: 'report', fix: `rm -rf -- ${q(staging)}` });
   });
   function moved() {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-moved-')));

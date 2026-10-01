@@ -235,9 +235,13 @@ describe('the doctor names an interrupted move\'s set-aside Brain', () => {
       const text = b.doctor([], { extraEnv });
       const json = JSON.parse(b.doctor(['--json'], { extraEnv }).stdout);
       const move = json.lines.find((l) => l.id === 'move-leftover');
-      expect(move).toMatchObject({ state: 'fail', fix: `mv ${old} ${brainHome}` });
+      const restore = `mv -- '${old}' '${brainHome}'`;
+      expect(move).toMatchObject({ state: 'fail', fix: restore });
       expect(text.text).toMatch(new RegExp(`✗ Move\\s+the original Brain set aside by an interrupted move — the ONLY copy of the Brain: ${old.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
-      expect(text.text).toContain(`fix: mv ${old} ${brainHome}`);
+      expect(text.text).toContain(`fix: ${restore}`);
+      // Never "run the installer": a fresh install there would build a second, public-only Brain.
+      expect(text.text).not.toMatch(/run the installer first|npx ruvnet-brain\s*$/m);
+      expect(json.lines.find((l) => l.id === 'install').fix).toBe(restore);
       expect(json.failing).toEqual(expect.arrayContaining(['install', 'move-leftover']));
       expect(text.status).toBe(1);
       expect(fs.existsSync(path.join(old, 'kb', 'SOURCE.json'))).toBe(true); // reported, never touched

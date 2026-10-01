@@ -2967,7 +2967,6 @@ async function doctorRun({ json }) {
   }
   const present = fs.existsSync(path.join(cacheDir, 'forge-mcp-all.mjs'));
   if (!present) {
-    warn('brain not found here — run the installer first:  npx ruvnet-brain');
     // "not installed" is a FAILING doctor, not a neutral one — and the same verdict in both outputs. An
     // interrupted --move-brain may have left the ONLY copy at <home>.old-<pid>: its Move line names the `mv`
     // back (a fresh install over it would build a second, public-only Brain).
@@ -2976,6 +2975,10 @@ async function doctorRun({ json }) {
       moveLines = confirm({ footprint: inventoryFootprint({ now: footprintNow(), measure: false }), installedVersion: PACKAGE_VERSION, now: footprintNow() })
         .lines.filter((l) => l.id === 'move-leftover');
     } catch { /* the install line stands */ }
+    // A Brain an interrupted move set aside is RESTORED, never reinstalled over (re-review a6 SHOULD-FIX 1).
+    const restore = moveLines.find((l) => l.state === 'fail');
+    if (restore) warn(`the Brain is not at its path, but an interrupted move left it here — restore it, do NOT reinstall:  ${restore.fix}`);
+    else warn('brain not found here — run the installer first:  npx ruvnet-brain');
     const verdict = doctorVerdict({ schemaVersion: 1, kind: 'ruvnet-brain-confirmation', lines: moveLines },
       [{ id: 'install', label: 'Install', state: 'fail', detail: `brain not found at ${cacheDir}`,
         fix: moveLines.find((l) => l.state === 'fail')?.fix || 'npx ruvnet-brain' }]);
