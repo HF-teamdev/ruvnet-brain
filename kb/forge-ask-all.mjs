@@ -3111,6 +3111,28 @@ async function reviewedCapabilityWitness({ dir, repo, family }) {
   };
 }
 
+// A bare "rUv" names the AUTHOR, not a provenance request. Newcomers write "which rUv tool gives my
+// agents memory?" or "rUv's agent orchestration framework": product questions that the old rule
+// sent to the gist store ALONE (measured 2026-10-01: 5 of 6 such probes on the 4.3.37 corpus).
+// A first fix matched any authorship WORD anywhere in the question, and review found that product
+// questions still contain those words ("lets my agents SHARE memory", "how many THREADS",
+// "hardware SPECS", "WRITES vectors to disk", "WRITING tests", "POST a task"). So "rUv" signals
+// provenance only in an authorship SHAPE:
+//   - rUv as the subject of an act of saying or publishing: "did/has rUv write|say|post|announce|
+//     share|publish ...", "has rUv been working on", or "rUv wrote|published|announced ...";
+//   - rUv's written artifact: "rUv's tutorial|blog post|article|essay|gist|write-up|announcement|
+//     newsletter|tweet|specification" (up to four words between), or "rUv's posts|talks|threads|
+//     notes|videos ABOUT/ON ...".
+export function ruvAuthorshipIntent(query) {
+  const q = String(query || '');
+  if (!/\brUv(?:'s)?(?!-)\b/i.test(q)) return false;
+  const actVerb = String.raw`(?:publish(?:ed)?|wr(?:ite|ote|itten)|post(?:ed)?|sa(?:y|id)|announc(?:e|ed)|shar(?:e|ed)|tweet(?:ed)?|blog(?:ged)?|talk(?:ed)?\s+about)`;
+  return new RegExp(String.raw`\b(?:did|has|have)\s+rUv\s+(?:\w+\s+){0,2}?(?:${actVerb}|been\s+(?:working|building|posting|writing))\b`, 'i').test(q)
+    || /\brUv\s+(?:has\s+|had\s+)?(?:published|wrote|written|posted|said|announced|tweeted|blogged)\b/i.test(q)
+    || /\brUv's\s+(?:[\w-]+\s+){0,4}?(?:tutorials?|blog(?:\s+posts?)?|articles?|essays?|gists?|write[- ]?ups?|announcements?|newsletters?|tweets?|specification)\b/i.test(q)
+    || /\brUv's\s+(?:posts?|talks?|threads?|notes|videos?)\s+(?:about|on)\b/i.test(q);
+}
+
 // The source-route plan for an unscoped question: which stores the bounded search opens, and why.
 // Pure routing (cards, deployed inventory, source metadata, intent owners, identifier widening); it
 // loads no model and retrieves nothing, so a route-only measurement calls exactly what search runs.
@@ -3218,13 +3240,7 @@ export function planSourceRoute({ dir, query, discovered, identifierScanTokens =
       + '(?:\\s+\\S+){0,3}?\\s+(?:of|for|by)\\b',
     'i',
   ).test(String(query || ''));
-  // A bare "rUv" names the AUTHOR, not a provenance request. Newcomers write "which rUv tool gives
-  // my agents memory?" or "rUv's agent orchestration framework" -- product questions that the old
-  // rule sent to the gist store ALONE (measured 2026-10-01: 5 of 6 such probes on the 4.3.37 corpus
-  // routed to ruv-gists only). "rUv" now signals provenance only next to something rUv authored or
-  // said: a publish/write/post/announce verb or a written-artifact noun (tutorial, spec, post ...).
-  const ruvAuthorship = /\brUv(?:'s)?(?!-)\b/i.test(String(query || ''))
-    && /\b(?:publish(?:es|ed|ing)?|wr(?:ote|ites?|itten|iting)|post(?:s|ed|ing)?|announc(?:e|es|ed|ing|ement|ements)|shar(?:e|es|ed|ing)|said|says|tweet(?:s|ed)?|tutorials?|blog(?:s|ged)?|articles?|threads?|essays?|specs?|specifications?|notes?|talks?|videos?)\b/i.test(String(query || ''));
+  const ruvAuthorship = ruvAuthorshipIntent(query);
   const gistIntent = (
     /\b(?:gist|write[- ]up|announcement|fable\.md|first\s+to\s+market|agentbbs|jacobian[- ]lens|workspace[- ]lens|interpretability\s+package)\b/i.test(String(query || ''))
     || ruvAuthorship
