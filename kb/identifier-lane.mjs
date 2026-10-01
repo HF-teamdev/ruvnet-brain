@@ -29,6 +29,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { kbBuildIdentity } from './kb-build-identity.mjs';
 
 // English words that happen to be camelCase-ish or dotted in prose. Kept tiny on purpose: the
@@ -100,13 +101,35 @@ export function exactMemberIndexPresence(dir, repos, member) {
   return { present: false, scannedRepos };
 }
 
-// One scan per (KB build, identifier set) per process. The MCP worker is warm and long-lived, so a
-// repeated question costs nothing after the first. Keyed by the KB BUILD IDENTITY, not the directory
-// path: an update swaps kb/ under the same path, and a path-keyed scan kept answering with the
-// previous build's stores and passages until the process exited. A new build also drops every scan
-// cached for the old one, so the map cannot grow across updates.
+// One scan per (store contents, identifier set) per process. The MCP worker is warm and long-lived,
+// so a repeated question costs nothing after the first. NEVER A STALE SCAN:
+//   - the KB BUILD IDENTITY covers an update that swaps kb/ under the same path (a path-keyed scan
+//     kept answering with the previous build until the process exited);
+//   - the STORE FINGERPRINT (every *.passages.jsonl name plus its dev/inode/mtime/size) covers the
+//     writers that change sidecars WITHOUT touching manifest.json: the private overlay
+//     (scripts/private-overlay.mjs), on-demand ingest (scripts/ingest-repo.mjs) and forge-refresh.
+// The fingerprint is one readdir plus one stat per store, paid on every call.
+// Bounded: least-recently-used scans beyond SCAN_CACHE_MAX are dropped.
+export const SCAN_CACHE_MAX = 64;
 const _scans = new Map();
-const _scanBuild = new Map(); // dir -> the build identity its cached scans belong to
+
+function storeFingerprint(dir, files) {
+  const h = createHash('sha256');
+  for (const f of files) {
+    try {
+      const s = fs.statSync(path.join(dir, f));
+      h.update(`${f}:${s.dev}:${s.ino}:${s.mtimeMs}:${s.size}\n`);
+    } catch { h.update(`${f}:missing\n`); }
+  }
+  return h.digest('hex').slice(0, 16);
+}
+
+function remember(key, value) {
+  _scans.delete(key);
+  _scans.set(key, value);
+  while (_scans.size > SCAN_CACHE_MAX) _scans.delete(_scans.keys().next().value);
+  return value;
+}
 
 /**
  * Which stores literally contain these identifiers, and the matching passages from each.
@@ -116,22 +139,15 @@ const _scanBuild = new Map(); // dir -> the build identity its cached scans belo
  * 466 MB), not by JSON.
  */
 export function identifierScan(dir, identifiers, { perRepo = 8, maxRepos = 6 } = {}) {
-  const build = kbBuildIdentity(dir);
-  const previous = _scanBuild.get(dir);
-  if (previous !== build) {
-    if (previous !== undefined) for (const k of _scans.keys()) if (k.startsWith(`${previous}|`)) _scans.delete(k);
-    _scanBuild.set(dir, build);
-  }
-  const key = `${build}|${[...identifiers].sort().join(' ')}|${perRepo}|${maxRepos}`;
-  const cached = _scans.get(key);
-  if (cached) return cached;
-  const needles = identifiers.filter((t) => typeof t === 'string' && t.length >= 3);
   const empty = { repos: [], byRepo: new Map(), scannedMs: 0 };
-  if (!needles.length) { _scans.set(key, empty); return empty; }
-
+  const needles = identifiers.filter((t) => typeof t === 'string' && t.length >= 3);
+  if (!needles.length) return empty;
   let files;
-  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.passages.jsonl')); }
-  catch { _scans.set(key, empty); return empty; }
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.passages.jsonl')).sort(); }
+  catch { return empty; }
+  const key = `${kbBuildIdentity(dir)}|${storeFingerprint(dir, files)}|${[...identifiers].sort().join(' ')}|${perRepo}|${maxRepos}`;
+  const cached = _scans.get(key);
+  if (cached) return remember(key, cached);
 
   const t0 = Date.now();
   const scored = [];
@@ -166,7 +182,7 @@ export function identifierScan(dir, identifiers, { perRepo = 8, maxRepos = 6 } =
   const byRepo = new Map();
   for (const { repo, rows } of top) byRepo.set(repo, rows.slice(0, perRepo * 6));
   const result = { repos: top.map((s) => s.repo), byRepo, scannedMs: Date.now() - t0 };
-  _scans.set(key, result);
+  remember(key, result);
   return result;
 }
 

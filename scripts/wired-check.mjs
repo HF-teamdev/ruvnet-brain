@@ -76,6 +76,8 @@ const STANDALONE = [
     + 'produce-questions, validate-labels) are each wired to a real caller; this driver is the human entry point.'],
   ['gate', 'retired automatic-hook helper and manual benchmark retained for explicit human use; no workflow or scheduler invokes this expensive command'],
   ['route-gold-rank', 'human-run measurement harness: routes question sets through kb/forge-ask-all.mjs planSourceRoute (no model) and reports where the gold store lands, with Wilson intervals; nothing to schedule'],
+  ['route-latency-warm', 'human-run measurement harness: paired warm latency of two or more search runtimes in one process, load-gated, with paired bootstrap intervals; minutes to hours of model time, never scheduled'],
+  ['route-index-memory', 'human-run measurement harness: retained memory and cold/warm time of the router metadata index (needs node --expose-gc); nothing to schedule'],
   ['dream-issue-gate','pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
   ['sync-census', 'explicit maintainer census writer; a destructive source-to-surface refresh is never scheduled'],
   ['customer-state-matrix', 'human-run release-qualification harness (2026-09-30): applies ONE published release through the real '

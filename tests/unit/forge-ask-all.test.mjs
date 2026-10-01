@@ -273,6 +273,13 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
     'Which rUv library runs vector search inside the browser?',
     "What is rUv's agent orchestration framework and how do I install it?",
     "I want to cut my LLM bill; what does rUv ship for routing cheap models first?",
+    // Review 2026-10-01: authorship WORDS inside product questions must not count.
+    'Which rUv tool lets my agents share memory?',
+    "How many threads does rUv's HNSW index use?",
+    "What are the hardware specs for rUv's Cognitum seed?",
+    'Which rUv package writes vectors to disk?',
+    'What does rUv ship for writing tests?',
+    "How do I post a task to rUv's agent queue?",
   ])('does NOT send a product question that merely names rUv to the gist store: %s', async (query) => {
     // THE BUG THIS CATCHES (2026-10-01). A bare "rUv" was read as provenance intent, so a newcomer's
     // product question was routed to ruv-gists ALONE (5 of 6 probes on the 4.3.37 corpus).
@@ -283,11 +290,17 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
   });
 
   it.each([
-    'What did rUv write about being first to market?',
+    // Each of these reaches the gist store ONLY through the authorship rule: none contains another
+    // gist trigger (gist, write-up, announcement, fable.md, first to market, published ...).
+    'What did rUv write about agent swarms?',
     'What did rUv announce this week?',
+    'What has rUv been working on lately?',
+    'What did rUv say about ONNX runtimes?',
+    'rUv wrote something about coherence gates, where is it?',
     "How can I train AI models for free using Google AI Studio, per rUv's tutorial?",
     "What is rUv's TikTok-like recommender algorithm specification?",
-  ])('control: rUv next to something rUv authored still routes to the gist store: %s', async (query) => {
+    "Where are rUv's posts about the self-learning flywheel?",
+  ])('control: rUv in an authorship shape still routes to the gist store: %s', async (query) => {
     const d = mkdirWith(['ruv-fann.rvf', 'ruv-gists.rvf']);
     vi.mocked(searchKb).mockImplementation(async ({ name }) => [hit({ repo: name })]);
     const out = await searchAll({ dir: d, query });
