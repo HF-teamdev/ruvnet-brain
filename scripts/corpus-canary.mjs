@@ -372,6 +372,27 @@ async function runCase({ name, spec, repo, tag, approvedVersion, release, work, 
   return { updater, checks: judged.checks, runtime };
 }
 
+const physical = (dir) => { try { return fs.realpathSync(dir); } catch { return path.resolve(dir); } };
+
+/**
+ * `--installed-kb`: the clean case runs on the supplied KB (as before); every extra case gets its OWN copy
+ * of that KB as it was BEFORE the clean case touched it, under the case's work dir, so the supplied brain
+ * never gains the overlay case's private store or a rewritten PRIVATE-STORES.json.
+ */
+export function suppliedKbInstaller({ installedKb, work, cases }) {
+  const supplied = path.resolve(installedKb);
+  const snapshot = path.join(work, 'supplied-kb-snapshot');
+  const copy = (from, to) => fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true, mode: fs.constants.COPYFILE_FICLONE });
+  if (cases.length > 1) { fs.rmSync(snapshot, { recursive: true, force: true }); copy(supplied, snapshot); }
+  return ({ work: caseWork, home }) => {
+    if (path.resolve(caseWork) === path.resolve(work)) return { kbDir: supplied };
+    const kbDir = path.join(home, '.cache', 'ruvnet-brain', 'kb');
+    fs.mkdirSync(path.dirname(kbDir), { recursive: true });
+    copy(snapshot, kbDir);
+    return { kbDir, home };
+  };
+}
+
 export async function runCanary({
   repo, tag, approvedVersion, work, apiBase = PUBLIC_API, install = installCustomer, home = path.join(work, 'home'),
   env = process.env, now = () => Date.now(), retryDelayMs = 30_000, maxAttempts = 3, log = () => {},
@@ -400,14 +421,23 @@ export async function runCanary({
   });
   const common = { repo, tag, approvedVersion, release, apiBase, install, now, retryDelayMs, maxAttempts, log, writerRoot,
     approvedInstaller: resolveInstaller };
-  const clean = await runCase({ ...common, name: 'clean', spec: CANARY_CASES.clean, work, home });
+  let cleanKb = null;
+  const clean = await runCase({ ...common, name: 'clean', spec: CANARY_CASES.clean, work, home,
+    install: async (args) => { const installed = await install(args); cleanKb = physical(installed.kbDir); return installed; } });
   const { updater } = clean;
   const judged = { checks: [...clean.checks] };
   for (const name of cases.slice(1)) {
     const caseWork = path.join(work, `case-${name}`);
     let outcome;
     try {
-      outcome = await runCase({ ...common, name, spec: CANARY_CASES[name], work: caseWork, home: path.join(caseWork, 'home') });
+      // An extra case adds a private store and rewrites PRIVATE-STORES.json: it must never do that to the
+      // clean case's KB (with --installed-kb, the caller's own brain). Each case gets its own tree.
+      const caseInstall = async (args) => {
+        const installed = await install(args);
+        if (physical(installed.kbDir) === cleanKb) throw new Error(`case ${name} was handed the clean case's KB (${installed.kbDir}); refusing to mutate it`);
+        return installed;
+      };
+      outcome = await runCase({ ...common, install: caseInstall, name, spec: CANARY_CASES[name], work: caseWork, home: path.join(caseWork, 'home') });
     } catch (error) {
       outcome = { checks: [{ name: 'case-ran', ok: false, detail: error.message }] };
     }
@@ -447,8 +477,8 @@ async function main(argv = process.argv.slice(2)) {
   const logFile = path.join(work, 'canary.log');
   const log = (text) => { fs.appendFileSync(logFile, `${text}\n`); };
   const installedKb = opt('--installed-kb');
-  const install = installedKb ? () => ({ kbDir: path.resolve(installedKb) }) : installCustomer;
   const cases = String(opt('--cases') || 'clean').split(',').map((name) => name.trim()).filter(Boolean);
+  const install = installedKb ? suppliedKbInstaller({ installedKb, work, cases }) : installCustomer;
   let record;
   try {
     record = await runCanary({ repo: opt('--repo'), tag: opt('--tag'), approvedVersion: opt('--approved-version'), work,

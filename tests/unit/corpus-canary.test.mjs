@@ -27,7 +27,7 @@ import { extractZip } from '../../kb/zip-extract.mjs';
 import { getVersion } from '../../scripts/version.mjs';
 import { evaluateCanaryVerdict, REQUIRED_CANARY_CHECKS } from '../../scripts/corpus-promotion.mjs';
 import {
-  customerEnv, pointUpdaterAtCandidate, runCanary, storeFreshness, FRESHNESS_LIMIT_MS,
+  customerEnv, pointUpdaterAtCandidate, runCanary, storeFreshness, suppliedKbInstaller, FRESHNESS_LIMIT_MS,
 } from '../../scripts/corpus-canary.mjs';
 import { SEED_IDENTITY, buildCorpus, buildRuntimeRoot, readJson, sha256File, tempDir, writeCoverage } from '../helpers/assemble-bundle-fixture.mjs';
 
@@ -327,9 +327,43 @@ describe('the canary asks more than one customer state (--cases)', () => {
       expect(names).toContain(`private-overlay:${name}`);
     }
     expect(names).toContain('private-overlay:private-store-preserved');
-    expect(verdict.checks.filter((entry) => !entry.name.includes(':')).every((entry) => entry.ok)).toBe(true);
-    expect(verdict.verdict).toBe(verdict.checks.every((entry) => entry.ok) ? 'PASS' : 'FAIL');
+    // Every check of BOTH cases is green on a correct updater — named, not inferred from the verdict.
+    const failing = verdict.checks.filter((entry) => !entry.ok).map((entry) => `${entry.name}: ${entry.detail}`);
+    expect(failing).toEqual([]);
+    const preserved = verdict.checks.find((entry) => entry.name === 'private-overlay:private-store-preserved');
+    expect(preserved).toMatchObject({ ok: true });
+    expect(preserved.detail).toMatch(/^[1-9]\d* private file\(s\) byte-identical$/);
+    expect(verdict.verdict).toBe('PASS');
   }, 300_000);
+
+  it('an extra case is never run on the clean case\'s KB (the --installed-kb brain is not mutated)', async () => {
+    stage(nightly.zip);
+    const shared = customerInstall(); // the SAME KB handed to every case, as --installed-kb used to
+    const fenceFile = path.join(shared.kbDir, 'PRIVATE-STORES.json');
+    const fenceBefore = fs.existsSync(fenceFile) ? fs.readFileSync(fenceFile, 'utf8') : null;
+    const verdict = await casesCanary(() => shared, ['clean', 'private-overlay']);
+    expect(verdict.checks.find((entry) => entry.name === 'private-overlay:case-ran'))
+      .toMatchObject({ ok: false, detail: expect.stringMatching(/handed the clean case's KB/) });
+    expect(verdict.verdict).toBe('FAIL');
+    expect(fs.existsSync(fenceFile) ? fs.readFileSync(fenceFile, 'utf8') : null).toBe(fenceBefore);
+    expect(fs.readdirSync(shared.kbDir).filter((name) => name.startsWith('acme-private-notes'))).toEqual([]);
+  }, 300_000);
+
+  it('--installed-kb gives each extra case its own copy of the KB as it was before the clean case ran', () => {
+    const work = tempDir(dirs, 'supplied-work');
+    const supplied = tempDir(dirs, 'supplied-kb');
+    fs.writeFileSync(path.join(supplied, 'PRIVATE-STORES.json'), '{"privateStores":[]}\n');
+    fs.writeFileSync(path.join(supplied, 'store.big.rvf'), 'original');
+    const install = suppliedKbInstaller({ installedKb: supplied, work, cases: ['clean', 'private-overlay'] });
+    expect(install({ work, home: path.join(work, 'home') })).toEqual({ kbDir: path.resolve(supplied) });
+    fs.writeFileSync(path.join(supplied, 'store.big.rvf'), 'updated by the clean case');
+    const caseWork = path.join(work, 'case-private-overlay');
+    const own = install({ work: caseWork, home: path.join(caseWork, 'home') });
+    expect(path.relative(caseWork, own.kbDir).startsWith('..')).toBe(false);
+    expect(fs.readFileSync(path.join(own.kbDir, 'store.big.rvf'), 'utf8')).toBe('original');
+    fs.writeFileSync(path.join(own.kbDir, 'PRIVATE-STORES.json'), '{"privateStores":["acme-private-notes"]}\n');
+    expect(fs.readFileSync(path.join(supplied, 'PRIVATE-STORES.json'), 'utf8')).toBe('{"privateStores":[]}\n');
+  });
 
   it('BREAK IT (overlay dropped): an updater that stops restoring private files passes clean but FAILS the overlay case', async () => {
     stage(nightly.zip);
@@ -340,6 +374,8 @@ describe('the canary asks more than one customer state (--cases)', () => {
     } }), ['clean', 'private-overlay']);
     expect(verdict.checks.filter((entry) => !entry.name.includes(':')).every((entry) => entry.ok)).toBe(true);
     expect(verdict.checks.filter((entry) => entry.name.startsWith('private-overlay:') && !entry.ok).length).toBeGreaterThan(0);
+    expect(verdict.checks.find((entry) => entry.name === 'private-overlay:private-store-preserved'))
+      .toMatchObject({ ok: false, detail: expect.stringMatching(/^private files changed or lost: /) });
     expect(verdict.verdict).toBe('FAIL');
     expect(promotable(verdict).allowed).toBe(false);
   }, 300_000);
