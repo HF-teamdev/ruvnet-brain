@@ -2767,7 +2767,14 @@ async function smokeQuery(cacheDir) {
     return { ran: true, grounded: null, reason: 'verifier-missing' };
   }
 
-  const v = await verifier.verifyGrounding(out, cacheDir);
+  // A verifier that throws when CALLED is as broken as one that will not load: a named ✗, never a crash that
+  // leaves --doctor --json with nothing to parse (re-review a6 SF4).
+  let v;
+  try { v = await verifier.verifyGrounding(out, cacheDir); } catch (error) {
+    const why = String(error?.message || error).slice(0, 200);
+    warn(`the installed citation verifier failed while checking the answer (${why}) — reinstall to repair it`);
+    return { ran: true, grounded: false, reason: `reader-broken: verify-citation.mjs threw (${why})` };
+  }
   const evidence = classifySmokeEvidence(v, out);
   if (v.grounded && !evidence.usable) {
     warn(`the citation resolves, but the question was not answered with sufficient evidence (${evidence.reason})`);
@@ -5377,7 +5384,10 @@ export function groundingCheckLine({ smoke = {}, persisted = null, coverageSha25
       : line('fail', `not verifiable live (${smoke.reason || 'no verifier'}) and never proven for these bytes`, 'npx ruvnet-brain');
   }
   if (smoke.warmupTimeout) return line('warn', `not proven in time (${smoke.reason || 'slow'})`, 'npx ruvnet-brain --doctor (again, when the machine is less busy)');
-  return line('fail', `not proven (${smoke.reason || (smoke.ran === false ? 'the live question did not run' : 'unknown')})`, 'npx ruvnet-brain');
+  // The reader's own deadline ("slow on this machine, not broken") is ✗, but its fix is to run it again: a
+  // reinstall does not make a machine faster (and the narration says so).
+  return line('fail', `not proven (${smoke.reason || (smoke.ran === false ? 'the live question did not run' : 'unknown')})`,
+    smoke.slow ? 'npx ruvnet-brain --doctor (again, when the machine is less busy)' : 'npx ruvnet-brain');
 }
 
 /** THE Ruflo line of the doctor's one verdict: derived only from the probe result, for text and --json alike. */

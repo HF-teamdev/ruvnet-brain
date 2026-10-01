@@ -162,12 +162,28 @@ describe('the doctor runs the warm-up only for a cold cache, before the timed qu
     } finally { b.cleanup(); }
   }, 120_000);
 
+  // Re-review a6 SF4: a verifier that throws when CALLED (not on import) crashed the doctor — exit 1 with no
+  // parseable --json, breaking the one-verdict contract.
+  it('a verifier that throws at call time is ✗ reader-broken, and text, --json and the exit code agree', () => {
+    const b = completeBrain({ verifier: 'throwsAtCall', modelsReady: true });
+    try {
+      const text = b.doctor();
+      const jsonRun = b.doctor(['--json']);
+      const verdict = JSON.parse(jsonRun.stdout);
+      expect(verdict.lines.find((l) => l.id === 'grounding')).toMatchObject({ state: 'fail', detail: expect.stringMatching(/reader-broken: verify-citation\.mjs threw/) });
+      expect(text.text).toMatch(/✗ Grounding\s+not proven \(reader-broken: verify-citation\.mjs threw/);
+      expect([text.status, jsonRun.status, verdict.exitCode]).toEqual([1, 1, 1]);
+    } finally { b.cleanup(); }
+  }, 120_000);
+
   it('the timed question hitting the reader\'s own deadline is ✗ (only a WARM-UP timeout is advisory)', () => {
     const b = completeBrain({ ask: 'deadline', modelsReady: true });
     try {
       const r = b.doctor();
       expect(r.status).toBe(1);
       expect(r.text).toMatch(/✗ Grounding\s+not proven \(no-answer: still answering \(phase "rerank"\)/);
+      // The detail says "slow, not broken", so the fix is to run it again — never a reinstall (re-review a6 NIT).
+      expect(r.text).toMatch(/✗ Grounding[^\n]*\n\s+fix: npx ruvnet-brain --doctor \(again, when the machine is less busy\)/);
     } finally { b.cleanup(); }
   }, 120_000);
 });

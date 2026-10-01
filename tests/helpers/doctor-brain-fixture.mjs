@@ -39,10 +39,11 @@ process.exit(${DEADLINE_EXIT_CODE});`,
 const VERIFIERS = {
   proves: "export async function verifyGrounding() { return { grounded: true, receipt: { path: 'source/package.json', file: 'passages.jsonl' } }; }\n",
   throws: "throw new Error('fixture: this verifier is broken');\n",
+  throwsAtCall: "export async function verifyGrounding() { throw new Error('fixture: verifier fails at call time'); }\n",
 };
 
 /**
- * @param warm 'noop' | 'abort'   @param ask 'answer' | 'deadline'   @param verifier 'proves' | 'throws' | 'absent'
+ * @param warm 'noop' | 'abort'   @param ask 'answer' | 'deadline'   @param verifier 'proves' | 'throws' | 'throwsAtCall' | 'absent'
  * @param modelsReady true = the reranker is already in the model cache (no warm-up needed)
  */
 export function completeBrain({ warm = 'noop', ask = 'answer', verifier = 'proves', modelsReady = false } = {}) {
