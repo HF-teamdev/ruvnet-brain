@@ -16,6 +16,15 @@
   { "id": "pos-store-writes-cwd", "label": "asserts-ruv-capability", "category": "asserts-ruv-capability", "searchedOk": false, "expectFire": true, "synthetic": true,
     "message": "A trespass bug I found and fixed: ruflo memory store still writes its index files into whatever directory it is run from." },
 
+  { "id": "pos-review-recency", "label": "asserts-ruv-capability", "category": "asserts-ruv-capability", "searchedOk": false, "expectFire": true, "synthetic": true,
+    "message": "Ruflo now supports Windows natively." },
+  { "id": "pos-review-negative-later-condition", "label": "asserts-ruv-capability", "category": "asserts-ruv-capability", "searchedOk": false, "expectFire": true, "synthetic": true,
+    "message": "RuVector cannot run on Windows, so if you need it use WSL." },
+  { "id": "pos-review-coreference", "label": "asserts-ruv-capability", "category": "asserts-ruv-capability", "searchedOk": false, "expectFire": true, "synthetic": true,
+    "message": "Ruflo is the orchestration layer and it has no hooks API." },
+  { "id": "pos-will-not", "label": "asserts-ruv-capability", "category": "asserts-ruv-capability", "searchedOk": false, "expectFire": true, "synthetic": true,
+    "message": "AgentDB will not open a store written by a newer release." },
+
   { "id": "miss-table-cells", "label": "asserts-ruv-capability", "category": "asserts-ruv-capability", "searchedOk": false, "expectFire": false,
     "knownMiss": "claims live only in table cells with no verb",
     "message": "| **AgentDB** | Append-only audit trail | Concurrent-write safe KB |" },
@@ -101,6 +110,10 @@
     "message": "Defer the SONA queue pipeline or ship it defaulted off and say so." },
   { "id": "neg-mem-what-ships", "label": "no-ruv-capability-claim", "category": "memory-write", "searchedOk": false, "expectFire": false,
     "message": "What not to build, so nothing duplicates what rUv or your repo already ships." },
+  { "id": "neg-mem-our-change-now", "label": "no-ruv-capability-claim", "category": "memory-write", "searchedOk": false, "expectFire": false,
+    "message": "AgentDB now records every turn automatically, in every repo, with no reliance on me remembering." },
+  { "id": "neg-release-they-list", "label": "no-ruv-capability-claim", "category": "release-status", "searchedOk": false, "expectFire": false,
+    "message": "The other native binaries are N-API builds (ruvector, rvf, onnxruntime napi-v6, sharp), so they don't depend on the Node version." },
   { "id": "neg-mem-non-firing", "label": "no-ruv-capability-claim", "category": "memory-write", "searchedOk": false, "expectFire": false,
     "message": "I cannot let you or Ruv ship with non-firing hooks." }
  ]

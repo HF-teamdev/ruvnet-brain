@@ -112,7 +112,15 @@ describe('ruvCapabilityClaims: each rule, with the claim it must still catch', (
     expect(claims('Does ruflo support that?')).toEqual([]);
     expect(claims('I will check whether ruflo supports it.')).toEqual([]);
     expect(claims('Nothing duplicates what rUv already ships.')).toEqual([]);
-    expect(claims('AgentDB now records every turn automatically, in every repo.')).toEqual([]);
+    expect(claims('AgentDB now records every turn automatically, with no reliance on me remembering.')).toEqual([]);
+    expect(claims('Ruv can\'t use Brain if every update breaks his swarms.')).toEqual([]);
+  });
+  it('4.4.0 review S2: recency, later-clause conditions, will-not and same-sentence pronouns ARE claims', () => {
+    expect(claims('Ruflo now supports Windows natively.')).toEqual(['ruflo']);
+    expect(claims('RuVector cannot run on Windows, so if you need it use WSL.')).toEqual(['ruvector']);
+    expect(claims('Ruflo is the orchestration layer and it has no hooks API.')).toEqual(['ruflo']);
+    expect(claims('AgentDB will not open a store written by a newer release.')).toEqual(['agentdb']);
+    expect(claims('The builds (ruvector, rvf) are native, so they don\'t depend on Node.')).toEqual([]);
   });
   it('this product and paths are not rUv products', () => {
     expect(claims('RuvNet Brain supports private overlays.')).toEqual([]);
