@@ -3352,12 +3352,12 @@ const TRUST_INFO = {
   signature: [
     { k: 'What is this?', t: 'The sha256 fingerprint of the release bundle, published as its own asset on every GitHub release.' },
     { k: 'Why does it matter?', t: 'If your download’s fingerprint matches the published one, the bundle is byte-identical to what was released — nothing altered, nothing truncated.' },
-    { k: 'How do I use it?', t: 'Run shasum -a 256 ruvnet-brain.zip on your download and compare. v3.3 adds a one-click local check right here.' },
+    { k: 'How do I use it?', t: 'Run shasum -a 256 ruvnet-brain.zip on your download and compare. A one-click local check here is planned.' },
   ],
   sbom: [
     { k: 'What is this?', t: 'A Software Bill of Materials — the complete, machine-readable list of every package inside the bundle.' },
     { k: 'Why does it matter?', t: 'You can see what’s in the box without unzipping it, and scanners can watch it for known vulnerabilities.' },
-    { k: 'How does it help me?', t: 'v3.3 attaches a CycloneDX SBOM to every release; this row will then show its package count and digest, measured from the published asset.' },
+    { k: 'How does it help me?', t: 'Attaching a CycloneDX SBOM to every release is planned; this row will then show its package count and digest, measured from the published asset.' },
   ],
   channel: [
     { k: 'What is this?', t: 'How your plugin updates: riding the latest release, or pinned to a version you chose.' },
@@ -3394,7 +3394,7 @@ function renderTrust(t) {
     rel.ok ? chip('sha256 published ✓', 'green', 'The release bundle’s fingerprint is published and was read live this session')
            : chip('digest unreachable', 'warn', 'Couldn’t read the published digest this session'),
     sb.present ? chip(`SBOM · ${sb.componentCount} component${sb.componentCount === 1 ? '' : 's'} ✓`, 'green', 'A local CycloneDX SBOM was found and read live this session')
-                : chip('SBOM — v3.3', 'coming', 'A CycloneDX SBOM ships with every release from v3.3'),
+                : chip('SBOM — planned', 'coming', 'Releases do not carry a CycloneDX SBOM yet; it is planned'),
     ch.installed ? chip(ch.channel === 'pinned' ? 'pinned' : 'latest channel', 'cyan') : chip('no plugin install', 'grey'),
   ]);
 
@@ -3424,7 +3424,7 @@ function renderTrust(t) {
   /* 2 · SBOM — real once `npm run sbom` has been run locally; honest empty state until then */
   rows.push(trustRow({
     name: 'SBOM', info: TRUST_INFO.sbom, coming: !sb.present,
-    status: sb.present ? chip(`${sb.componentCount} component${sb.componentCount === 1 ? '' : 's'}`, 'green') : chip('coming · v3.3', 'coming'),
+    status: sb.present ? chip(`${sb.componentCount} component${sb.componentCount === 1 ? '' : 's'}`, 'green') : chip('planned', 'coming'),
     value: sb.present ? [
       el('p', {}, 'A ', el('b', {}, `CycloneDX ${sb.specVersion || ''}`.trim()), ' SBOM exists on this machine: ',
         el('b', {}, `${sb.componentCount} component${sb.componentCount === 1 ? '' : 's'}`),
@@ -3437,9 +3437,8 @@ function renderTrust(t) {
       el('p', {}, sb.error
         ? `Found sbom/ruvnet-brain.cdx.json but couldn’t read it (${sb.error}).`
         : 'Not generated yet on this machine — nothing to show, so nothing is shown.'),
-      el('p', {}, 'Run ', el('code', {}, 'npm run sbom'),
-        ' to produce a CycloneDX SBOM of the shipped dependency tree right now. From ', el('b', {}, 'v3.3'),
-        ' every published release carries one too, measured from the release asset itself.'),
+      el('p', {}, 'Published releases do not carry an SBOM yet — attaching one, measured from the release asset itself, is planned. ',
+        'From a source checkout, ', el('code', {}, 'npm run sbom'), ' produces a CycloneDX SBOM of the shipped dependency tree.'),
     ],
   }));
 
@@ -3505,7 +3504,7 @@ function renderTrust(t) {
         el('button', { class: 'adv-opt on', type: 'button', title: 'Your current behavior — consent-gated changes with undo' },
           el('span', { class: 'pc-dot', 'aria-hidden': 'true' }), 'Full — recommended'),
         advisorBtn,
-        el('span', { class: 'preview-tag' }, 'preview · v3.3')),
+        el('span', { class: 'preview-tag' }, 'preview · planned')),
       advNote,
     ],
   }));
@@ -3513,7 +3512,7 @@ function renderTrust(t) {
   body.replaceChildren(
     el('p', { class: 'lead-stat' },
       'Provenance you can check, not take on faith — ', el('b', {}, String(liveCount)),
-      ` measurement${liveCount === 1 ? ' is' : 's are'} live today; the rest of this card names exactly what v3.3 will measure.`,
+      ` measurement${liveCount === 1 ? ' is' : 's are'} live today; the rest of this card names exactly what is planned and not yet measured.`,
       infoBtn('Trust & provenance', TRUST_CARD_INFO)),
     el('div', { class: 'trust-list', 'data-trust-ready': '1' }, ...rows),
   );
