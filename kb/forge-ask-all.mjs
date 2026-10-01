@@ -20,6 +20,8 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { searchKb } from './forge-ask.mjs';
 import { kbBuildIdentity } from './kb-build-identity.mjs';
+import { keywordCandidates, keywordLaneEnabled } from './keyword-lane.mjs';
+import { applyJudge, loadJudge } from './judge-rank.mjs';
 import { describeSearchFailure } from './search-outcome.mjs';
 import { prepareRelatedSources, renderRelatedSources } from './grounded-response.mjs';
 import { rerankPairs, cePrefilterScores } from './forge-rerank.mjs';
@@ -3177,7 +3179,37 @@ export function ruvAuthorshipIntent(query) {
 // The source-route plan for an unscoped question: which stores the bounded search opens, and why.
 // Pure routing (cards, deployed inventory, source metadata, intent owners, identifier widening); it
 // loads no model and retrieves nothing, so a route-only measurement calls exactly what search runs.
-export function planSourceRoute({ dir, query, discovered, identifierScanTokens = scannableIdentifiers(query), deadline = null }) {
+// A REPOSITORY NAME IS NOT AN IDENTIFIER. "RuVector" is PascalCase, so the identifier lane read it as
+// a rare symbol, scanned every sidecar for "ruvector" and WIDENED the route to the stores that merely
+// depend on it (agentdb, agentic-flow). Their manifests declare `"ruvector": "^x"`, which the lane
+// counts as a definition (+5), so "RuVector HNSW vector search overview" was answered from agentdb
+// at 9.336 (plugin/test/capability-selection-questions.json; found 2026-10-01 on the 4.4.0 corpus).
+// The name routers already handle a named store; the identifier lane is for rare tokens. A token
+// that is the key or a registered alias of a deployed store therefore never widens the route and
+// never adds candidates in ANOTHER store. Inside the store it names it is still an identifier:
+// "In LatentMesh ADR-001, ..." finds latentmesh's own ADR-001 through it (the recall gate lost
+// that question when store names were dropped everywhere; measured 2026-10-01, final-a2adf94a).
+// `forStore(name)` gives the tokens the identifier lane may use while searching `name`.
+export function queryIdentifiers(dir, query) {
+  const owner = new Map(); // lower-cased store key or alias -> lower-cased store key
+  for (const r of discoverRepos(dir)) owner.set(r.toLowerCase(), r.toLowerCase());
+  for (const [canonical, aliases] of Object.entries(loadRepoAliases(dir) || {})) {
+    const c = String(canonical).toLowerCase();
+    owner.set(c, c);
+    for (const a of aliases || []) owner.set(String(a).toLowerCase(), c);
+  }
+  const exact = exactIdentifiers(query);
+  const scan = scannableIdentifiers(query);
+  const keep = (t) => !owner.has(String(t).toLowerCase());
+  const forStore = (store) => {
+    const own = String(store).toLowerCase();
+    const ok = (t) => keep(t) || owner.get(String(t).toLowerCase()) === own;
+    return { identifierTokens: exact.filter(ok), identifierScanTokens: scan.filter(ok) };
+  };
+  return { identifierTokens: exact.filter(keep), identifierScanTokens: scan.filter(keep), forStore };
+}
+
+export function planSourceRoute({ dir, query, discovered, identifierScanTokens = queryIdentifiers(dir, query).identifierScanTokens, deadline = null }) {
   const inventoryDirective = inventoryReposFromQuery(query, dir, discovered);
   let planned = inventoryDirective && (
     inventoryDirective.familyScope
@@ -3409,8 +3441,7 @@ async function searchAllPrimary({
   const fullCorpusLane = (!repos || !repos.length) && !_routeStage;
   // Rare, exact tokens the question names (a dotted filename, a camelCase symbol, an issue ref).
   // Ordinary prose yields none, scans nothing, and pays nothing.
-  const identifierTokens = exactIdentifiers(query);
-  const identifierScanTokens = scannableIdentifiers(query);
+  const { identifierScanTokens, forStore } = queryIdentifiers(dir, query);
   deadline?.check('route');
   const discovered = (repos && repos.length) ? repos : discoverRepos(dir);
   let routing = null;
@@ -3656,10 +3687,20 @@ async function searchAllPrimary({
         cands = cands.concat(inventory);
       }
       {
-        const seen = new Set(cands.map((candidate) => candidate.path));
-        const claims = quotedClaimCandidates(dir, name, query)
-          .filter((candidate) => !seen.has(candidate.path));
-        cands = cands.concat(claims);
+        // A file that carries every quoted claim earns the quoted-claim boost whether or not dense
+        // retrieval already pooled it. This used to ADD only the files dense missed and DROP the
+        // flag on files dense found, so the claim-bearing file dense ranked HIGHER lost the +10
+        // that a lower-ranked copy would have earned -- an inversion. Merge the flag onto the
+        // existing candidate, exactly as the ADR lane below does (E3, need-baseline 2026-10-01).
+        const byPath = new Map(cands.map((candidate) => [candidate.path, candidate]));
+        for (const claim of quotedClaimCandidates(dir, name, query)) {
+          const existing = byPath.get(claim.path);
+          if (existing) existing._quotedClaims = true;
+          else {
+            cands.push(claim);
+            byPath.set(claim.path, claim);
+          }
+        }
       }
       {
         const byPath = new Map(cands.map((candidate) => [candidate.path, candidate]));
@@ -3684,12 +3725,21 @@ async function searchAllPrimary({
       // The identifier lane rides the exempt `rescue` lane for the same reason #33 Part A does: a
       // boost cannot rescue a candidate that never reached the pool, and an identifier's own
       // document is routinely buried past rank 40 by dense retrieval.
-      if (identifierScanTokens.length) {
+      // A store's own name counts as an identifier only while searching that store (queryIdentifiers).
+      const own = forStore(name);
+      if (own.identifierScanTokens.length) {
         const seen = new Set(cands.map((candidate) => candidate.path));
-        const scan = identifierScan(dir, identifierScanTokens, { maxRepos: 2 });
-        const byIdentifier = identifierCandidates(scan, name, identifierTokens, 8, knownRepos)
+        const scan = identifierScan(dir, own.identifierScanTokens, { maxRepos: 2 });
+        const byIdentifier = identifierCandidates(scan, name, own.identifierTokens, 8, knownRepos)
           .filter((candidate) => !seen.has(candidate.path));
         cands = cands.concat(byIdentifier);
+      }
+      // THE KEYWORD LANE (kb/keyword-lane.mjs; ADR-090 §9 amended 2026-10-01). Off unless
+      // RUVNET_BRAIN_KEYWORD_LANE=1, because its query-time index build cost +2.1 s median (see
+      // keyword-lane.mjs). When on, repository stores add up to REPO_KEYWORD_TOPN keyword-matched
+      // files that dense did not pool; transcript stores keep their own deeper BM25 lane below.
+      if (!isTranscriptStore(name) && keywordLaneEnabled()) {
+        cands = cands.concat(keywordCandidates(dir, name, query, { exclude: new Set(cands.map((c) => c.path)) }));
       }
       if (isTranscriptStore(name)) {
         const seen = new Set(hits.map((h) => h.path));
@@ -3783,7 +3833,10 @@ async function searchAllPrimary({
       })),
     }) + '\n');
   }
-  const { results, adrCollision, evidence, implementation } = selectResults({ query, ranked, k });
+  // THE LEARNED JUDGE (kb/judge-rank.mjs, ADR-099 arm C): off unless RUVNET_BRAIN_JUDGE=1 and a
+  // trained kb/judge-weights.json is present; then it re-scores the pool with its threshold at 0.
+  const judged = applyJudge(loadJudge(dir), query, ranked);
+  const { results, adrCollision, evidence, implementation } = selectResults({ query, ranked: judged, k });
 
   // `pooled` stays the number of pairs the cross-encoder read IN FULL — that is what the count
   // has always meant to a reader. `pooledAll`/`cappedOut` report what the cap withheld, because a
