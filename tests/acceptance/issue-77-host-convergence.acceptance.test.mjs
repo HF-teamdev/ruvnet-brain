@@ -166,7 +166,7 @@ describe('issue #77 installed host convergence boundary', () => {
       expect(fs.readFileSync(path.join(storeDir, '.swarm', 'user-notes.md'), 'utf8')).toBe('mine');
     } finally { console.log = original; }
     const text = lines.join('\n');
-    expect(text).toContain(`legacy ruflo debris from 4.3.40 in ${path.join(storeDir, 'ruvector.db')} (removed by the next --update or capture)`);
+    expect(text).toContain(`legacy ruflo debris from 4.3.40 in ${path.join(storeDir, 'ruvector.db')}: passes every check; --update removes it unless it is written to before then`);
     expect(text).toContain(`removed legacy ruflo debris from 4.3.40: ${path.join(storeDir, 'ruvector.db')}`);
     expect(text.match(/left legacy ruflo debris in place — .*\.swarm\/\.swarm: unexpected entries: user-notes\.md/g)).toHaveLength(2);
   });
