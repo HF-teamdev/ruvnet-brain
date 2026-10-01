@@ -454,7 +454,7 @@ export const CAPABILITIES = [
           ? `the memory store is currently held by another process (${d.unreadable}) — that is a passing lock, not a fault; re-checking in a moment should clear it`
           : `the memory store could not be read (${d.unreadable}) — this is not a transient lock, so re-checking will not clear it; the store or its journal files need attention before distillation state can be established`);
       }
-      if (d.schemaless) return row(STATE.UNKNOWN, 'the store exists but has no memory_entries table (pre-AgentDB schema, never initialised) — nothing to distill yet, and nothing is broken');
+      if (d.schemaless) return row(STATE.UNKNOWN, 'cannot measure distillation: the store exists but has no memory_entries table (pre-AgentDB schema, never initialised) — nothing to distill yet, and nothing is broken');
       if (typeof d.total !== 'number') return row(STATE.UNKNOWN, 'the store opened but returned no countable rows — distillation state not established');
 
       if (d.total === 0) return row(STATE.ABSENT, 'the memory store is empty, so there is nothing to distill yet');
