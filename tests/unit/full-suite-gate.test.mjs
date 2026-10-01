@@ -70,6 +70,16 @@ describe('full-suite gate', () => {
       'Error: ENOENT: no such file or directory', "expected 'request timed out' to be 'ok'"]) expect(isTimingFailure(m), m).toBe(false);
   });
 
+  it('a file-level failure (beforeAll/collect error, zero failed cases) is never retried away and is listed in the summary', () => {
+    const report = green();
+    report.testResults[2] = { ...result(files[2], [['c works', 'skipped']], 'failed'),
+      message: 'global Ruflo is required; this acceptance must not vacuously skip: expected null to be truthy' };
+    expect(redFiles(report, { tests: [] }, ROOT)).toEqual([]);
+    const verdict = judge(report, { testResults: [result(files[2], [['c works', 'passed']])] });
+    expect(verdict.verdict).toBe('FAIL');
+    expect(summaryMarkdown(verdict)).toContain(`file-level failure: ${files[2]}: global Ruflo is required`);
+  });
+
   it('more than the flaky ceiling in one run fails the gate, and the summary lists every flaky test', () => {
     const many = ['t1', 't2', 't3', 't4'];
     const report = { testResults: [result(files[0], [['a works', 'passed']]), result(files[2], [['c works', 'passed']]),
