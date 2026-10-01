@@ -70,6 +70,8 @@ import {
   CONSOLE_RUNTIME_SURFACE, CONSOLE_RUNTIME_IDENTITY_FILE, consoleRuntimeDigest,
 } from '../scripts/console-runtime-identity.mjs';
 import { shellDiff as pluginShellDiff } from '../plugin/scripts/host-shell-boundary.mjs';
+import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
+import { runHostCli, waitForHostCli } from '../scripts/host-cli.mjs';
 import {
   writeInstalledRuntimeIdentity, recordCorpusTransportIdentity, isCorpusReleaseTag, rejectedReleasePath,
 } from '../kb/corpus-release-identity.mjs';
@@ -227,6 +229,13 @@ function run(cmd, args, opts = {}) {
 function tryRun(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { stdio: 'inherit', shell: IS_WIN, ...opts });
   return !r.error && r.status === 0;
+}
+// The claude/codex CLIs update themselves and can be absent for seconds (scripts/host-cli.mjs):
+// retried with a bounded backoff, then ONE clear line instead of raw shell errors.
+function tryHostCli(cmd, args, opts = {}) {
+  const r = runHostCli(cmd, args, opts);
+  if (r.missingBinary) warn(r.message);
+  return !r.missingBinary && !r.error && r.status === 0;
 }
 
 // ── download with redirect-following + progress ──────────────────────────────────────────────────
@@ -1271,24 +1280,20 @@ export function installConsoleRuntime(cacheDir, sourceRoot = REPO_ROOT) {
   }
 }
 
+// Receipts of Consoles that died (pid gone, port silent) are pruned, not counted: the owner's Mac
+// reported pending-console-restart forever from two receipts left on 2026-09-16/17
+// (scripts/console-instances.mjs).
 export function consoleRestartState(identity, {
   receiptDir = path.join(process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'), 'console-instances'),
+  alive, probe,
 } = {}) {
-  let receipts = [];
-  try {
-    receipts = fs.readdirSync(receiptDir)
-      .filter((name) => name.endsWith('.json'))
-      .map((name) => {
-        try { return JSON.parse(fs.readFileSync(path.join(receiptDir, name), 'utf8')); }
-        catch { return null; }
-      })
-      .filter((receipt) => receipt?.product === 'ruvnet-brain-console' && receipt.schema === 1);
-  } catch { /* no running Console receipts is the ordinary ready state */ }
-  const staleInstances = receipts.filter((receipt) => receipt.sourceSha256 !== identity.sourceSha256).length;
+  const { live, pruned } = readConsoleReceipts(receiptDir, { ...(alive ? { alive } : {}), ...(probe ? { probe } : {}) });
+  const staleInstances = live.filter(({ receipt }) => receipt.sourceSha256 !== identity.sourceSha256).length;
   return {
     state: staleInstances > 0 ? 'pending-console-restart' : 'ready',
-    instanceReceipts: receipts.length,
+    instanceReceipts: live.length,
     staleInstances,
+    ...(pruned.length ? { prunedDeadReceipts: pruned.length } : {}),
   };
 }
 
@@ -1406,7 +1411,9 @@ function wirePlugin({ expectedVersion = PACKAGE_VERSION, requireManaged = false 
   const manualMarketplace = `claude plugin marketplace add ${marketplaceSource}`;
   const manualInstall = 'claude plugin install ruvnet-brain@ruvnet-brain --scope user';
 
-  if (!have('claude')) {
+  const claudeCli = waitForHostCli('claude');
+  if (!claudeCli.present) {
+    if (claudeCli.message) warn(claudeCli.message);
     warn(`I couldn't run the \`claude\` command from this shell.`);
     info(`That's normal if you use Claude Code as the ${c.bold('VS Code extension')} or ${c.bold('desktop app')} — the`);
     info(`command just isn't on your terminal's PATH. ${c.green('The brain itself is fully downloaded.')}`);
@@ -1423,15 +1430,15 @@ function wirePlugin({ expectedVersion = PACKAGE_VERSION, requireManaged = false 
     ? inspectPluginShellBoundary(before.installPath)
     : { known: true, changed: false, paths: [], restartRequired: false, reason: 'new host installation' };
   const addedMarket = before.managed
-    ? tryRun('claude', ['plugin', 'marketplace', 'update', 'ruvnet-brain'])
-    : tryRun('claude', ['plugin', 'marketplace', 'add', marketplaceSource]);
+    ? tryHostCli('claude', ['plugin', 'marketplace', 'update', 'ruvnet-brain'])
+    : tryHostCli('claude', ['plugin', 'marketplace', 'add', marketplaceSource]);
   // Deliberately NOT reassuring here. This used to say "it may already be added — that's fine",
   // which is a GUESS about someone else's machine, and when it was wrong the user finished the
   // install with a working search_ruvnet, no slash commands, and a message telling them all was
   // well. The real state is checked below; nothing is declared fine until it has been looked at.
   if (!addedMarket) info(`marketplace add didn't report success — checking what actually landed…`);
 
-  tryRun('claude', before.installed
+  tryHostCli('claude', before.installed
     ? ['plugin', 'update', 'ruvnet-brain@ruvnet-brain', '--scope', 'user']
     : ['plugin', 'install', 'ruvnet-brain@ruvnet-brain', '--scope', 'user']);
 
@@ -1856,13 +1863,16 @@ function runCodexJson(args, {
   codexHome = codexHomeDir(),
   cwd = process.cwd(),
 } = {}) {
-  const r = spawnSync(codexBin, args, {
+  const r = runHostCli(codexBin, args, {
+    stdio: 'pipe',
+    shell: false,
     cwd,
     env: { ...process.env, CODEX_HOME: codexHome },
     encoding: 'utf8',
     timeout: 30_000,
     maxBuffer: 20 * 1024 * 1024,
   });
+  if (r.missingBinary) return { ok: false, error: r.message };
   if (r.error || r.status !== 0) {
     const detail = String(r.stderr || r.stdout || r.error?.message || `exit ${r.status}`).trim();
     return { ok: false, error: detail };
@@ -2754,7 +2764,16 @@ async function doctor() {
   let hostConvergence = { healthy: true, state: 'not-recorded' };
   if (fs.existsSync(convergencePath)) {
     try {
-      hostConvergence = classifyHostConvergence(JSON.parse(fs.readFileSync(convergencePath, 'utf8')));
+      const recorded = JSON.parse(fs.readFileSync(convergencePath, 'utf8'));
+      // The recorded Console state is a snapshot from the last sync. Re-read the live receipts so a
+      // Console that has since exited (or a receipt it left when it died) stops failing --doctor.
+      if (recorded?.consoleRuntime?.state === 'pending-console-restart' && recorded.consoleRuntime.sourceSha256) {
+        const { replacementFailures: _old, ...kept } = recorded.consoleRuntime;
+        recorded.consoleRuntime = { ...kept, ...consoleRestartState(recorded.consoleRuntime,
+          { receiptDir: path.join(path.dirname(convergencePath), 'console-instances') }) };
+        if (recorded.consoleRuntime.state !== 'ready' && _old) recorded.consoleRuntime.replacementFailures = _old;
+      }
+      hostConvergence = classifyHostConvergence(recorded);
       if (hostConvergence.healthy) ok(`host convergence receipt: ${hostConvergence.state}`);
       else {
         warn(`host convergence incomplete: ${hostConvergence.state}`);
@@ -3370,6 +3389,7 @@ export function syncHostsAfterUpdate(cacheDir = resolvedKbDir(), {
   wireCodexHost: detectCodexHost = wireCodexHost,
   wireCodexPlugin: installCodexPlugin = wireCodexPlugin,
   hostLockPath = path.join(brainHome, 'host-convergence.lock'),
+  replaceConsoles = null, // test seam; production runs replaceStaleConsoles
   runStableSpine = (apply) => spawnSync(
     process.execPath,
     [apply, '--auto', '--expected-version', PACKAGE_VERSION],
@@ -3455,12 +3475,7 @@ export function syncHostsAfterUpdate(cacheDir = resolvedKbDir(), {
       warn(`stale plugin generations were not pruned (${e.message}); nothing was removed`);
     }
     const receiptPath = path.join(brainHome, 'host-convergence.json');
-    try {
-      runtimeTransaction.activate();
-      results.consoleRuntime = {
-        ...runtimeTransaction.identity,
-        ...consoleRestartState(runtimeTransaction.identity, { receiptDir: consoleReceiptDir }),
-      };
+    const writeConvergenceReceipt = () => {
       fs.mkdirSync(brainHome, { recursive: true });
       const tmp = `${receiptPath}.tmp-${process.pid}`;
       fs.writeFileSync(tmp, JSON.stringify({
@@ -3473,9 +3488,38 @@ export function syncHostsAfterUpdate(cacheDir = resolvedKbDir(), {
         consoleRuntime: results.consoleRuntime,
       }, null, 2));
       fs.renameSync(tmp, receiptPath);
+    };
+    try {
+      runtimeTransaction.activate();
+      results.consoleRuntime = {
+        ...runtimeTransaction.identity,
+        ...consoleRestartState(runtimeTransaction.identity, { receiptDir: consoleReceiptDir }),
+      };
+      writeConvergenceReceipt();
       runtimeTransaction.commit();
     } catch (error) {
       return fail({ applyStatus: applied.status, error: `Console runtime convergence failed: ${error.message}` });
+    }
+    // A Console still serving the previous runtime is replaced here, by the activated runtime's own
+    // launcher (the 'stale-running' path of scripts/onboarding-console.mjs, without --open), so an
+    // update never ends with "restart Console". Anything it could not replace is recorded with why.
+    if (results.consoleRuntime.state === 'pending-console-restart') {
+      try {
+        const replaceArgs = { entry: runtimeTransaction.entry, identity: runtimeTransaction.identity, receiptDir: consoleReceiptDir };
+        results.consoleReplacement = replaceConsoles ? replaceConsoles(replaceArgs) : replaceStaleConsoles(replaceArgs);
+        const failures = results.consoleReplacement.filter((item) => !item.replaced);
+        for (const item of results.consoleReplacement) {
+          if (item.replaced) ok(`Console on port ${item.port} replaced with the current runtime (pid ${item.newPid})`);
+        }
+        results.consoleRuntime = {
+          ...runtimeTransaction.identity,
+          ...consoleRestartState(runtimeTransaction.identity, { receiptDir: consoleReceiptDir }),
+          ...(failures.length ? { replacementFailures: failures.map((item) => `port ${item.port ?? '?'}: ${item.reason}`) } : {}),
+        };
+        writeConvergenceReceipt();
+      } catch (error) {
+        warn(`could not replace the running Console automatically (${error.message})`);
+      }
     }
   }
   if (!okApplied) return fail({ applyStatus: applied.status, error: applied.error?.message || 'Stable Spine activation failed' });
@@ -3508,7 +3552,9 @@ export function classifyHostConvergence(receipt, expectedVersion = PACKAGE_VERSI
   }
   if (badHost) return { healthy: false, state: 'host-pending', action: 're-run host synchronization' };
   if (receipt.consoleRuntime?.state !== 'ready') {
-    return { healthy: false, state: receipt.consoleRuntime?.state || 'console-unproven', action: 'restart Console, then re-run --doctor' };
+    const why = Array.isArray(receipt.consoleRuntime?.replacementFailures) && receipt.consoleRuntime.replacementFailures.length
+      ? `the installer could not replace the running Console (${receipt.consoleRuntime.replacementFailures.join('; ')}); ` : '';
+    return { healthy: false, state: receipt.consoleRuntime?.state || 'console-unproven', action: `${why}restart Console, then re-run --doctor` };
   }
   return { healthy: true, state: 'channels-converged' };
 }
@@ -4951,7 +4997,7 @@ async function offerStack(env) {
   for (const m of missing) {
     if (m.shell) {
       info(`installing ${m.what} … ${c.dim(m.say)}`);
-      const ran = tryRun(m.shell[0], m.shell[1]);
+      const ran = ['claude', 'codex'].includes(m.shell[0]) ? tryHostCli(m.shell[0], m.shell[1]) : tryRun(m.shell[0], m.shell[1]);
       // Don't trust the exit code alone — e.g. `claude mcp add` exits non-zero on "already exists",
       // which is functionally success. Re-check the real state (m.verify) before warning.
       if (ran || (m.verify && m.verify())) ok(`${m.what} added`);

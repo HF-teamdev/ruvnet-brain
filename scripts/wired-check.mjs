@@ -352,6 +352,11 @@ const CALLER_ROOTS = [
 ];
 const CALLER_EXTS = new Set(['.mjs', '.js', '.sh', '.json', '.html', '.yml', '.yaml']);
 export const REQUIRED_OPERATIONAL_EXPORTS = [
+  // 4.4 update robustness (2026-09-30): bin/install.mjs syncHostsAfterUpdate replaces an owned stale
+  // Console and prunes dead Console receipts through these; host claude/codex calls go through runHostCli.
+  { rel: 'scripts/console-instances.mjs', symbol: 'replaceStaleConsoles' },
+  { rel: 'scripts/console-instances.mjs', symbol: 'readConsoleReceipts' },
+  { rel: 'scripts/host-cli.mjs', symbol: 'runHostCli' },
   { rel: 'scripts/corpus-reconcile.mjs', symbol: 'syncCorpusInputs' },
   { rel: 'scripts/corpus-aggregates.mjs', symbol: 'rebuildCorpusAggregates' },
   { rel: 'scripts/corpus-reconcile.mjs', symbol: 'acquireCorpusGeneration' },
