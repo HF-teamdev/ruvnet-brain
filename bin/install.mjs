@@ -72,6 +72,8 @@ import {
 } from '../scripts/console-runtime-identity.mjs';
 import { shellDiff as pluginShellDiff } from '../plugin/scripts/host-shell-boundary.mjs';
 import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
+import { cleanLegacyRufloDebris } from '../plugin/scripts/project-progression-store.mjs';
+import { resolveProjectStore } from '../plugin/scripts/project-store-resolver.mjs';
 import { runHostCli, waitForHostCli } from '../scripts/host-cli.mjs';
 import {
   writeInstalledRuntimeIdentity, recordCorpusTransportIdentity, isCorpusReleaseTag, rejectedReleasePath,
@@ -1297,6 +1299,26 @@ export function withLiveConsoleState(recorded, { receiptDir, alive, probe } = {}
   return { ...recorded, consoleRuntime: live };
 }
 
+/**
+ * 4.3.40's ruflo leftovers inside this project's `.swarm` (cleanLegacyRufloDebris). --update removes
+ * them; --doctor only reports (dryRun). Either way a REFUSED artifact (unexpected contents, a symlink) is
+ * printed, never dropped silently. Not a project (or no .swarm): nothing to say.
+ */
+export function reportLegacyRufloDebris({ projectDir = process.cwd(), dryRun = false } = {}) {
+  let storeDir;
+  try { storeDir = path.dirname(resolveProjectStore({ projectDir }).canonicalAgentDbPath); } catch { return null; }
+  if (!fs.existsSync(storeDir)) return null;
+  const result = cleanLegacyRufloDebris(storeDir, { dryRun });
+  for (const entry of result.removed) {
+    if (dryRun) info(`legacy ruflo debris from 4.3.40 in ${entry} (removed by the next --update or capture)`);
+    else ok(`removed legacy ruflo debris from 4.3.40: ${entry}`);
+  }
+  for (const { path: entry, reason } of result.refused) {
+    warn(`left legacy ruflo debris in place — ${entry}: ${reason}. Inspect it; remove it yourself if it is ruflo's.`);
+  }
+  return result;
+}
+
 export function consoleRestartState(identity, {
   receiptDir = path.join(process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'), 'console-instances'),
   alive, probe,
@@ -2006,10 +2028,8 @@ export function wireCodexPlugin({
   }
   if (announce) {
     ok(`Codex Brain plugin installed and enabled (${after.version || 'version unknown'}).`);
-    if (shellBoundary.restartRequired && shellBoundary.known) {
-      info(`  boot-level plugin declarations changed (${shellBoundary.paths.join(', ')}): new Codex sessions load them; already-open Codex windows keep the old hook definitions until they are reopened.`);
-    } else if (shellBoundary.restartRequired) {
-      warn(`could not verify the plugin's boot-level declarations (${shellBoundary.reason}); restart Codex once to be sure they are loaded.`);
+    if (shellBoundary.restartRequired) {
+      warn(`boot-level plugin declarations changed; restart Codex, then review them in /hooks (${shellBoundary.paths.join(', ') || shellBoundary.reason}).`);
     } else if (before.installed && before.version !== after.version) {
       info('  body-only update: the Stable Spine is live on the next hook/MCP call; no restart is required.');
     }
@@ -2024,7 +2044,10 @@ export function wireCodexPlugin({
     ...(shellBoundary.restartRequired ? {
       sessionSafety: 'restart-required',
       sessionSafetyReason: shellBoundary.reason,
-      restartScope: shellBoundary.known ? 'open-sessions' : 'unproven',
+      // Never 'open-sessions' for Codex: changed hook definitions show as PENDING until reviewed in
+      // /hooks (doctor fails closed on pending trust; the SessionStart notice says to trust them), and no
+      // measurement shows a fresh Codex session running them without that step. Unproven = restart.
+      restartScope: 'unproven',
     } : {}),
   };
 }
@@ -2802,6 +2825,7 @@ async function doctor() {
       warn(`host convergence receipt is invalid: ${error.message}`);
     }
   }
+  try { reportLegacyRufloDebris({ dryRun: true }); } catch (error) { warn(`legacy ruflo debris check failed: ${error.message}`); }
   const brainHome = process.env.RUVNET_BRAIN_HOME || path.dirname(cacheDir);
   const nightlyHealth = schedulerStatus({ platform: process.platform, env: process.env,
     brainHome, kbDir: cacheDir });
@@ -3856,6 +3880,7 @@ async function runUpdate() {
       warn(`host synchronization is incomplete — runtime stays on the prior verified generation${convergence.error ? ` (${convergence.error})` : ''}`);
       updateStatus = 1;
     } else if (convergence.convergence?.notice) info(convergence.convergence.notice);
+    try { reportLegacyRufloDebris(); } catch (error) { warn(`legacy ruflo debris cleanup failed: ${error.message}`); }
     recordRefreshPhase(refreshReceipt, 'host-convergence', convergence.ok && convergence.convergence?.healthy === true ? 'PASS' : 'FAIL', {
       state: convergence.convergence?.state || null, error: convergence.error || null,
       ...(convergence.convergence?.openSessions ? { openSessions: convergence.convergence.openSessions } : {}),

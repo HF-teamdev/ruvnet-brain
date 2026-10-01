@@ -100,6 +100,15 @@ describe('a reused pid is recognised by process start time', () => {
     expect(readConsoleReceipts(unknown.receiptDir, { probe: () => null, startMs: () => null }).live).toHaveLength(1);
   });
 
+  it('on Linux, start time is boot-relative (/proc/<pid>/stat starttime + /proc/stat btime), not ps lstart', () => {
+    // comm with spaces and parentheses must not shift the fields; starttime is field 22.
+    const fields = ['S', ...Array.from({ length: 18 }, (_, i) => String(i)), '123456']; // fields 3..22
+    const files = { '/proc/4242/stat': `4242 (node (worker) x) ${fields.join(' ')} 0 0\n`, '/proc/stat': 'cpu 1 2 3\nbtime 1790000000\nprocesses 9\n' };
+    const readFile = (file) => { if (!(file in files)) throw new Error(`ENOENT ${file}`); return files[file]; };
+    const spawn = (cmd) => (cmd === 'getconf' ? { status: 0, stdout: '100\n' } : (() => { throw new Error('ps must not be used on Linux'); })());
+    expect(processStartMs(4242, { platform: 'linux', readFile, spawn })).toBe(1790000000 * 1000 + 1_234_560);
+  });
+
   it('pidReused needs the process to start more than 2s after startedAt', () => {
     const at = Date.parse('2026-10-01T06:00:00.000Z');
     const receipt = { pid: 4242, startedAt: new Date(at).toISOString() };
