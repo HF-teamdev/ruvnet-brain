@@ -1151,6 +1151,14 @@ function publishSettingsToCache() {
     if (!c || !c.data || !c.data.sections) return;
     c.data.sections.config = gatherConfig();
     c.data.sections.userSettings = gatherAdvocacy();
+    // The Savings card reads two of the same choices (routing, and whether an OpenRouter key exists).
+    // Patching only Settings left the Savings card saying "No key added" / the old routing state on
+    // the next reload, beside a Settings card saying the opposite (RNBC QA 2026-10-01).
+    if (c.data.sections.savings) {
+      const cfgNow = readJSON(CONFIG_PATH) || {};
+      c.data.sections.savings.routing = cfgNow.routing === 'off' ? 'off' : cfgNow.routing === 'auto' ? 'auto' : null;
+      try { c.data.sections.savings.routerEngine = gatherRouterEngine(); } catch { /* the refresh replaces it */ }
+    }
     writeCache(STATE_CACHE, new Date(0).toISOString(), c.data, c.scope ?? null);
   } catch { /* the authoritative stores are already correct; refresh will replace an unreadable cache */ }
 }

@@ -1750,7 +1750,10 @@ function addRecommendations(recs, source) {
  * A full grouped-sections layout is a deliberate follow-up: its group order and whether user/machine
  * split into two visible groups are product decisions the owner reserved. */
 const REC_SCOPE_LABEL = {
-  project: { text: 'Just this project', tone: 'cyan', title: 'Applying this changes only the project you are in right now.' },
+  // "One project", not "Just this project": a reconcile proposal names and changes a DIFFERENT project
+  // from the one the console is serving (RNBC QA 2026-10-01 — the pill said "the project you are in
+  // right now" over a card that rewires npx-project while the console served qa-project).
+  project: { text: 'One project only', tone: 'cyan', title: 'Applying this changes only the one project this proposal names — nothing machine-wide.' },
   user: { text: 'Every project · your account', tone: 'amber', title: 'Applying this changes behaviour for every project under your user account.' },
   machine: { text: 'Every project · this machine', tone: 'amber', title: 'Applying this changes behaviour for every project on this computer.' },
 };
@@ -2717,20 +2720,27 @@ function buildSettingsField(f, values, defaults, refreshDirty, overrides = null)
     // that this is a recommendation and not their current setting.
     const chosen = values[f.key] === true || values[f.key] === false;
     const rec = defaults[f.key] === true;
-    const input = el('input', { type: 'checkbox', 'aria-labelledby': labId, 'aria-describedby': helpId, onchange: refreshDirty });
+    // A NOT-CHOSEN field is sent only once the person has touched it. RNBC QA 2026-10-01: every field
+    // was posted on every save, so changing ONLY "Your model house" on a fresh machine also saved the
+    // pre-filled recommendation nightly:true — and saveConfig() installed the nightly LaunchAgent the
+    // person never touched. A recommendation is not a choice until someone makes it.
+    let touched = false;
+    const input = el('input', { type: 'checkbox', 'aria-labelledby': labId, 'aria-describedby': helpId,
+      onchange: () => { touched = true; refreshDirty(); } });
     input.checked = chosen ? values[f.key] === true : rec;
     initialValue = input.checked;
     ctl.append(el('label', { class: 'switch' }, input, el('span', { class: 'track', 'aria-hidden': 'true' })));
     if (!chosen) ctl.append(notChosenField(rec ? 'on' : 'off'));
-    collector = () => ({ include: true, value: input.checked });
+    collector = () => ({ include: chosen || touched, touched: !chosen && touched, value: input.checked });
   } else if (f.type === 'enum' && Array.isArray(f.options)) {
     const name = `seg-${f.key}`;
     const seg = el('div', { class: 'seg', role: 'radiogroup', 'aria-labelledby': labId, 'aria-describedby': helpId });
     const inputs = [];
     const chosen = f.options.some((opt) => Object.is(values[f.key], opt));
     const rec = f.options.includes(defaults[f.key]) ? defaults[f.key] : f.options[0];
+    let touched = false;
     for (const opt of f.options) {
-      const input = el('input', { type: 'radio', name, value: String(opt), onchange: refreshDirty });
+      const input = el('input', { type: 'radio', name, value: String(opt), onchange: () => { touched = true; refreshDirty(); } });
       input.optionValue = opt;
       input.checked = chosen ? Object.is(values[f.key], opt) : Object.is(opt, rec);
       inputs.push(input);
@@ -2747,7 +2757,7 @@ function buildSettingsField(f, values, defaults, refreshDirty, overrides = null)
     }
     ctl.append(seg);
     if (!chosen) ctl.append(notChosenField(segLabel(f.key, rec)));
-    collector = () => ({ include: true, value: inputs.find((i) => i.checked)?.optionValue });
+    collector = () => ({ include: chosen || touched, touched: !chosen && touched, value: inputs.find((i) => i.checked)?.optionValue });
   } else {
     const input = el('input', {
       type: 'text', class: 'text-input', 'aria-labelledby': labId, 'aria-describedby': helpId, oninput: refreshDirty,
@@ -2782,6 +2792,11 @@ function buildSettingsField(f, values, defaults, refreshDirty, overrides = null)
  * single advocacy field backed by user-settings.mjs — same widget, same save/undo/error handling,
  * only the endpoint and the file it names in its own copy differ.
  */
+// The last save's undo, per form, kept OUTSIDE the form so it survives a repaint. RNBC QA 2026-10-01:
+// the form is rebuilt whenever a background measurement lands, and the "Undo save" button vanished
+// with it — the undo was still in the server's journal, with no way left to reach it.
+const PENDING_SAVE_UNDO = new Map();
+
 function buildSettingsForm(cfg, { endpoint }) {
   const values = cfg.values || {};
   // What the project would pick FOR you, kept strictly apart from what you actually picked. The
@@ -2798,11 +2813,17 @@ function buildSettingsForm(cfg, { endpoint }) {
     for (const [key, get] of Object.entries(collectors)) {
       const g = get();
       if (g.secret) { if (g.include) return true; continue; }
+      if (g.touched) return true;
       if (g.value !== initial[key]) return true;
     }
     return false;
   }
-  function refreshDirty() { if (saveBtn) saveBtn.disabled = !isDirty(); }
+  function refreshDirty() {
+    const dirty = isDirty();
+    if (saveBtn) saveBtn.disabled = !dirty;
+    // read by renderSettings: a repaint must not discard choices the person has not saved yet
+    form.dataset.dirty = dirty ? '1' : '';
+  }
 
   for (const f of cfg.schema) {
     const { row, collector, initialValue } = buildSettingsField(f, values, defaults, refreshDirty, cfg.projectOverrides);
@@ -2818,6 +2839,45 @@ function buildSettingsForm(cfg, { endpoint }) {
       'Saves to ', el('code', {}, cfg.path || '~/.claude/ruvnet-brain/config.json'),
       ' in your user folder. Each choice is enforced by its named runtime; encrypted secrets and scheduler state never live in this browser response.')),
     resultSlot);
+
+  // Renders the saved note and its Undo. Called on a successful save AND whenever this form is
+  // rebuilt while an undo is still pending, so a repaint cannot strand the undo.
+  function showSaved(data) {
+    // Not every store behind this form has an undo token — so the button only appears when one exists.
+    const undoBtn = data.undoToken ? el('button', {
+      class: 'btn btn-undo btn-sm', type: 'button',
+      // try/catch, because this is an async onclick with a network call in it. The server's own
+      // explanation is shown verbatim on failure: "this undo has already been used" and "your
+      // settings were saved again after this point" are the two cases people will actually hit.
+      onclick: async (ev) => {
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        try {
+          const r = await postJSON('/api/undo', { undoToken: data.undoToken });
+          const ok = r.ok && r.data?.ok;
+          if (!ok) btn.disabled = false;
+          if (ok || /already been used|saved again after/.test(r.data?.log || '')) PENDING_SAVE_UNDO.delete(endpoint);
+          resultSlot.replaceChildren(el('div', { class: `form-note ${ok ? 'n-ok' : 'n-err'}`, role: 'status' },
+            ok
+              ? 'Settings restored from the backup. Reload to see the restored values.'
+              : (r.status === 403 ? TOKEN_MSG
+                : `Undo didn’t complete — ${r.data?.log || 'the backup file still exists, nothing is lost.'}`)));
+        } catch (err) {
+          btn.disabled = false;
+          resultSlot.replaceChildren(el('div', { class: 'form-note n-err', role: 'alert' },
+            `Undo couldn’t reach the console server: ${err.message || err}. Nothing was changed.`));
+        }
+      },
+    }, 'Undo save') : null;
+    resultSlot.replaceChildren(el('div', { class: 'form-note n-ok', role: 'status' },
+      frag(BADGE_OK),
+      el('div', { class: 'fn-body' },
+        el('b', {}, 'Saved.'), ' Your choices are in ',
+        el('span', { class: 'fn-path' }, cfg.path || 'your user folder'), '.',
+        data.backup ? el('span', {}, ' Backup kept at ', el('span', { class: 'fn-path' }, data.backup), '.') : ''),
+      undoBtn));
+  }
+  if (PENDING_SAVE_UNDO.has(endpoint)) showSaved(PENDING_SAVE_UNDO.get(endpoint));
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -2835,46 +2895,12 @@ function buildSettingsForm(cfg, { endpoint }) {
       if (code === 403) {
         resultSlot.replaceChildren(el('div', { class: 'form-note n-err', role: 'alert' }, TOKEN_MSG));
       } else if (data && data.ok) {
-        // Not every store behind this form has an undo token — saveAdvocacy() (user-settings.mjs)
-        // returns a real backup path but no journalled undoToken the way saveConfig() does, so this
-        // button simply does not appear for that form rather than pretending a capability exists.
-        const undoBtn = data.undoToken ? el('button', {
-          class: 'btn btn-undo btn-sm', type: 'button',
-          // try/catch, because this is an async onclick with a network call in it. Without one, a
-          // dropped connection rejected the promise, left the button permanently disabled and printed
-          // NOTHING — the user is looking at a dead undo button with no idea whether it ran. The
-          // server's own explanation is shown verbatim on failure: "this undo has already been used"
-          // and "your settings were saved again after this point" are the two cases people will
-          // actually hit, and both are worth reading.
-          onclick: async (ev) => {
-            const btn = ev.currentTarget;
-            btn.disabled = true;
-            try {
-              const r = await postJSON('/api/undo', { undoToken: data.undoToken });
-              const ok = r.ok && r.data?.ok;
-              if (!ok) btn.disabled = false;
-              resultSlot.replaceChildren(el('div', { class: `form-note ${ok ? 'n-ok' : 'n-err'}`, role: 'status' },
-                ok
-                  ? 'Settings restored from the backup. Reload to see the restored values.'
-                  : (r.status === 403 ? TOKEN_MSG
-                    : `Undo didn’t complete — ${r.data?.log || 'the backup file still exists, nothing is lost.'}`)));
-            } catch (err) {
-              btn.disabled = false;
-              resultSlot.replaceChildren(el('div', { class: 'form-note n-err', role: 'alert' },
-                `Undo couldn’t reach the console server: ${err.message || err}. Nothing was changed.`));
-            }
-          },
-        }, 'Undo save') : null;
-        resultSlot.replaceChildren(el('div', { class: 'form-note n-ok', role: 'status' },
-          frag(BADGE_OK),
-          el('div', { class: 'fn-body' },
-            el('b', {}, 'Saved.'), ' Your choices are in ',
-            el('span', { class: 'fn-path' }, cfg.path || 'your user folder'), '.',
-            data.backup ? el('span', {}, ' Backup kept at ', el('span', { class: 'fn-path' }, data.backup), '.') : ''),
-          undoBtn));
+        if (data.undoToken) PENDING_SAVE_UNDO.set(endpoint, data); else PENDING_SAVE_UNDO.delete(endpoint);
+        showSaved(data);
         for (const [key, get] of Object.entries(collectors)) {
           const g = get(); if (!g.secret) initial[key] = g.value;
         }
+        form.dataset.dirty = ''; // saved: nothing left to protect from a repaint
         announce('Settings saved.');
       } else {
         // The server says WHY — a rejected value names itself ("routing: expected one of auto, off").
@@ -2929,6 +2955,11 @@ function nightlyFactsLine(f) {
 
 function renderSettings(cfg, us, bp) {
   const body = $('#body-settings');
+  // UNSAVED CHOICES SURVIVE A REPAINT. RNBC QA 2026-10-01: a background measurement landing while
+  // someone was mid-way through the Settings form rebuilt it and silently threw their selections
+  // away. While any form here has unsaved changes the card is left exactly as the person has it;
+  // the next repaint after they save (or undo their edits) brings it current.
+  if (body && body.querySelector('form.settings-form[data-dirty="1"]')) return;
   // `bp` is NOT counted here any more: its field is rendered by #card-brain at the top of the page,
   // and counting a control this card does not show would make the "N options" chip a lie by one.
   const groups = [cfg, us].filter((c) => c && Array.isArray(c.schema) && c.schema.length);
@@ -3548,10 +3579,15 @@ function renderUpdateGong(t) {
   const latest = t && t.release && t.release.tag ? String(t.release.tag).replace(/^v/, '') : null;
   if (!BRAIN_INSTALLED_VERSION || !latest || cmpVer(latest, BRAIN_INSTALLED_VERSION) <= 0) { btn.hidden = true; return; }
   const cmd = 'npx ruvnet-brain --update';
-  btn.textContent = `⟳ update available · v${latest} — click to update`;
+  // SHORT ON PURPOSE. RNBC QA 2026-10-01: the long label ("⟳ update available · vX — click to update",
+  // then "copied — paste in any terminal: npx …") overflowed the brand block and sat UNDER the
+  // "what's in the brain" link at 1440px, so clicking the gong navigated to the scope page instead.
+  // The full instruction lives in the title and the live region.
+  btn.textContent = `⟳ v${latest} available`;
+  btn.title = `A newer release (v${latest}) is out — click to copy the update command: ${cmd}`;
   btn.onclick = async () => {
-    try { await navigator.clipboard.writeText(cmd); btn.textContent = `copied — paste in any terminal: ${cmd}`; }
-    catch { btn.textContent = `run in any terminal: ${cmd}`; }
+    try { await navigator.clipboard.writeText(cmd); btn.textContent = '✓ update command copied'; announce(`Copied: ${cmd} — paste it in any terminal.`); }
+    catch { btn.textContent = `run: ${cmd}`; announce(`Run in any terminal: ${cmd}`); }
   };
   btn.hidden = false;
 }
