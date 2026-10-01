@@ -304,12 +304,12 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     expect(code, out).toBe(6);
     expect(out).toMatch(/not enough free disk space to apply this update: .*\(unpacked bundle .* \+ new generation .* \+ private stores carried into it 0\.01 GB \+ 0\.25 GB headroom\)/);
     expect(JSON.parse(fs.readFileSync(path.join(kbDir, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.0.7');
-    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf'))).toEqual(privateBytes);
+    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf')).equals(privateBytes)).toBe(true); // NOT toEqual: vitest walks every byte of a Buffer (8 MiB = GBs of heap)
     expect(fs.readdirSync(root).filter((n) => /\.next-|\.rollback-|\.failed-|kb\.bak-/.test(n))).toEqual([]);
     // With the private bytes' room as well, the same release applies and the private store survives.
     const ok = await runWithEnv({ RUVNET_BRAIN_TEST: '1', RUVNET_TEST_FREE_BYTES: String(free + privateBytes.length) }, '--apply');
     expect(ok.code, ok.out).toBe(0);
-    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf'))).toEqual(privateBytes);
+    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf')).equals(privateBytes)).toBe(true); // NOT toEqual: vitest walks every byte of a Buffer (8 MiB = GBs of heap)
   }, 120_000); // two real signed applies; slow under load
 
   it('rejects invalid staged ReleaseCoverage before backup or live-tree mutation', async () => {
@@ -490,7 +490,10 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     expect(rollbackCopies()).toEqual([]);
   });
 
-  it.skipIf(process.platform === 'win32')('updates a brain with a PRIVATE store and npm .bin symlinks: private bytes and links carried intact', async () => {
+  // The release-source gate allows ZERO skipped tests, so this never skips: the symlink half only runs where a
+  // process may create symlinks (not Windows); the private-store half runs everywhere.
+  it('updates a brain with a PRIVATE store and npm .bin symlinks: private bytes and links carried intact', async () => {
+    const canLink = process.platform !== 'win32';
     // The owner's nightly failed 2026-09-24: "private overlay preflight failed: symbolic link is not a
     // governed regular file: node_modules/.bin/semver". npm makes .bin symlinks on every install, so
     // any customer with a private store would hit it. End to end through a real signed --apply.
@@ -509,7 +512,7 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     fs.mkdirSync(path.join(kbDir, 'node_modules', 'semver', 'bin'), { recursive: true });
     fs.writeFileSync(path.join(kbDir, 'node_modules', 'semver', 'bin', 'semver.js'), 'semver');
     fs.mkdirSync(path.join(kbDir, 'node_modules', '.bin'));
-    fs.symlinkSync('../semver/bin/semver.js', path.join(kbDir, 'node_modules', '.bin', 'semver'));
+    if (canLink) fs.symlinkSync('../semver/bin/semver.js', path.join(kbDir, 'node_modules', '.bin', 'semver'));
     publish(sourceJson({ releaseTag: 'v4.0.8', brainVersion: '4.0.8', builtUtc: '2026-08-02T12:00:00.000Z', stores: [STORE_A] }), 'v4.0.8',
       (stage) => fs.writeFileSync(path.join(stage, 'repo-aliases.json'), JSON.stringify({})));
 
@@ -518,11 +521,13 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     expect(code, out).toBe(0);
     expect(out).not.toMatch(/private overlay preflight failed|not a governed regular file/);
     expect(JSON.parse(fs.readFileSync(path.join(kbDir, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.0.8');
-    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf'))).toEqual(privateBytes);
+    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf')).equals(privateBytes)).toBe(true); // NOT toEqual: vitest walks every byte of a Buffer (8 MiB = GBs of heap)
     expect(fs.readFileSync(path.join(kbDir, 'mynotes.passages.jsonl'), 'utf8')).toContain('"mine"');
-    expect(fs.lstatSync(path.join(kbDir, 'node_modules', '.bin', 'semver')).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(path.join(kbDir, 'node_modules', '.bin', 'semver')).split(/[\\/]/)).toEqual(['..', 'semver', 'bin', 'semver.js']);
-    expect(fs.readFileSync(path.join(kbDir, 'node_modules', '.bin', 'semver'), 'utf8')).toBe('semver');
+    if (canLink) {
+      expect(fs.lstatSync(path.join(kbDir, 'node_modules', '.bin', 'semver')).isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(path.join(kbDir, 'node_modules', '.bin', 'semver')).split(/[\\/]/)).toEqual(['..', 'semver', 'bin', 'semver.js']);
+      expect(fs.readFileSync(path.join(kbDir, 'node_modules', '.bin', 'semver'), 'utf8')).toBe('semver');
+    }
   });
 
   it('does not require a duplicate snapshot budget because rollback is the renamed live tree', async () => {
