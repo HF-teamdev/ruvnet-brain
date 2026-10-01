@@ -25,10 +25,10 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash, createPublicKey, verify as verifySignature } from 'node:crypto';
-import { extractZip } from './zip-extract.mjs';
+import { extractZip, zipDeclaredBytes } from './zip-extract.mjs';
 import { applyBrainProfile, discoverStoreFamilies, readBrainProfile } from './brain-profile.mjs';
 import { acquireRefreshLock, releaseRefreshLock } from './refresh-run.mjs';
-import { runStorageTransaction, treeIdentity, managedStorageInventory, storageDelta } from './update-storage-transaction.mjs';
+import { runStorageTransaction, treeIdentity, managedStorageInventory, storageDelta, checkDiskSpace, directoryBytes } from './update-storage-transaction.mjs';
 import { pruneLifecycleEvidence } from './lifecycle-evidence-retention.mjs';
 import {
   isCorpusReleaseTag, assertCorpusReleaseCompatible, readInstalledRuntime,
@@ -1108,19 +1108,6 @@ function writeSnapshotReceipt(backupPath, { state, reason = null, recoveryComman
 }
 
 /**
- * Release rollback copies after the new KB has verified (issue #35, Dr. Mark Allen).
- *
- * Exported and pure-ish because it DELETES MULTI-GIGABYTE DIRECTORIES — a bug here destroys user
- * data, so it is tested directly rather than exercised only through a full update run.
- *
- * Refuses to delete any backup holding a `.rvf` store the live KB does not have. That is the
- * private/local-store case: the public bundle does not ship those, the update replaces the directory,
- * and forge-guard still passes because it verifies the store it was asked about — not what went
- * missing. In that situation the backup is the only surviving copy, so it is kept and reported.
- *
- * @returns {{removed: string[], kept: [string, string][], freed: number}}
- */
-/**
  * WHY a guard run failed. forge-guard prints its `[FAIL] ...` lines to STDOUT, and execFileSync puts only
  * STDERR in error.message, so a refused store used to read "Command failed: node .../forge-guard.mjs --name X"
  * with the cause dropped (measured 2026-09-30: the customer canary refused a generation and its log did not
@@ -1137,6 +1124,19 @@ export function describeGuardFailure(error) {
   return `${message.slice(0, 1600)}${cause}`;
 }
 
+/**
+ * Release rollback copies after the new KB has verified (issue #35, Dr. Mark Allen).
+ *
+ * Exported and pure-ish because it DELETES MULTI-GIGABYTE DIRECTORIES — a bug here destroys user
+ * data, so it is tested directly rather than exercised only through a full update run.
+ *
+ * Refuses to delete any backup holding a `.rvf` store the live KB does not have. That is the
+ * private/local-store case: the public bundle does not ship those, the update replaces the directory,
+ * and forge-guard still passes because it verifies the store it was asked about — not what went
+ * missing. In that situation the backup is the only surviving copy, so it is kept and reported.
+ *
+ * @returns {{removed: string[], kept: [string, string][], freed: number}}
+ */
 export function reclaimBackups({
   kbDir,
   backupsMade = [],
@@ -1710,6 +1710,22 @@ async function main() {
   const signature = verifyDownloadedBundle(zipPath, sigPath);
   if (!signature.ok) { fs.rmSync(tmp, { recursive: true, force: true }); die(`✗ SIGNATURE VERIFICATION FAILED: ${signature.reason}`, 4); }
   console.log(`  ✓ signature verified — ${signature.reason}`);
+  // DISK-SPACE PREFLIGHT, before a single byte is unpacked: the bundle unpacks in temp, then a whole
+  // candidate generation is built beside the live one: the bundle, plus what prepareCandidate carries into
+  // it from live — node_modules, and every private/local-ingest store file (restorePrivateFilesIntoCandidate
+  // copies them, so a brain with a large private store needs that much more; review S6). The downloaded
+  // zip itself is already on disk at this point, so free space already reflects it.
+  let space;
+  try {
+    const unpacked = zipDeclaredBytes(zipPath);
+    const privateBytes = Object.values(privateOverlay?.files || {}).reduce((sum, file) => sum + (Number(file?.bytes) || 0), 0);
+    space = checkDiskSpace([
+      { dir: extractDir, bytes: unpacked, purpose: 'unpacked bundle', brain: false },
+      { dir: path.dirname(KB_DIR), bytes: unpacked + directoryBytes(path.join(KB_DIR, 'node_modules')), purpose: 'new generation' },
+      ...(privateBytes ? [{ dir: path.dirname(KB_DIR), bytes: privateBytes, purpose: 'private stores carried into it' }] : []),
+    ]);
+  } catch (error) { space = { ok: true, skipped: error.message }; } // unmeasurable: extraction's own limits still apply
+  if (!space.ok) { fs.rmSync(tmp, { recursive: true, force: true }); die(space.message, 6); }
   try { await extractZip(zipPath, extractDir); }
   catch (error) { fs.rmSync(tmp, { recursive: true, force: true }); die(`extraction failed: ${error.message} — local files untouched.`); }
   // ── TIER 3: the staged bundle names the runtime that built it; this client names the runtime it

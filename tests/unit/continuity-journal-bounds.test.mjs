@@ -1,0 +1,217 @@
+// continuity-journal-bounds.test.mjs — "Recording ✗" must mean something, and the outbox must stay bounded
+// (independent review S3/S4, 2026-10-01). Every scenario here was RED on the 4.5.0 journal:
+//   S3a  the same event observed by two sessions was quarantined forever (session id in the bytes);
+//   S3b  a quarantined or corrupt line kept the line red forever, with no way to clear it;
+//   S3c  a project with .swarm but no store, or no ruflo, read "stuck" after 10 minutes;
+//   S3d  the Stop line repeated at every turn;
+//   S4   with ruflo missing every Stop appended one failure line per pending event (305 → 910 → 1815
+//        lines in 3 days, measured), and nothing ever aged out.
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import {
+  ContinuityJournal, MAX_EVENT_RECORDS, QUARANTINE_REPORT_MS, RETAIN_COMMITTED_MS, STUCK_AFTER_MS,
+  captureContinuityEvents, drain, recordingLine, runDrain, stopNotice,
+} from '../../plugin/scripts/continuity-journal.mjs';
+import { CONTINUITY_NAMESPACE, eventKey, makeEvent } from '../../plugin/scripts/continuity-events.mjs';
+import { digestCanonical } from '../../plugin/scripts/project-progression-contract.mjs';
+import { WAL_REFUSAL_TEXT, adoptedProject, cleanup, commit, fakeRuflo, rows, tmp } from '../helpers/continuity-fixture.mjs';
+
+const DAY = 86_400_000;
+const noSleep = () => {};
+const fastBackoff = [1, 1, 1, 1];
+let saved;
+beforeAll(() => { saved = process.env.RUVNET_RUFLO_CWD_ROOT; process.env.RUVNET_RUFLO_CWD_ROOT = tmp('cont-cwd-'); });
+afterAll(() => { if (saved === undefined) delete process.env.RUVNET_RUFLO_CWD_ROOT; else process.env.RUVNET_RUFLO_CWD_ROOT = saved; });
+afterEach(cleanup);
+
+const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : []);
+const lesson = (text, at = Date.now()) => makeEvent({ kind: 'lesson', at, source: 'explicit', authoritative: true, summary: text });
+const raw = (event, journaledAt = new Date(Date.parse(event.at)).toISOString()) => ({ type: 'event', key: eventKey(event), digest: digestCanonical(event), journaledAt, event });
+const sameCommit = (session, at) => makeEvent({ kind: 'commit', at, session, source: 'git', authoritative: true, summary: 'abcdef12 fix: one commit', basis: 'a'.repeat(40), detail: { sha: 'a'.repeat(40) } });
+
+describe('S3a: one event seen by two sessions is one event, never a quarantine', () => {
+  it('two concurrent journal lines for the same commit (different session ids) dedupe to ONE pending event', () => {
+    const p = adoptedProject();
+    const at = Date.now() - 60_000;
+    const [a, b] = [sameCommit('session-a', at), sameCommit('session-b', at)];
+    expect(eventKey(a)).toBe(eventKey(b));
+    expect(digestCanonical(a)).not.toBe(digestCanonical(b)); // the bytes differ only by who observed it
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: fakeRuflo().bin });
+    journal.appendRecords([raw(a), raw(b)]); // the race: both boundaries passed knownIds() before either appended
+    const status = journal.status();
+    expect(status).toMatchObject({ pending: 1, quarantined: [], stuck: false });
+    expect(drain(journal, { ruflo: fakeRuflo().bin, backoff: fastBackoff, sleep: noSleep })).toMatchObject({ committed: 1, remaining: 0 });
+    expect(journal.status()).toMatchObject({ pending: 0, quarantined: [], stuck: false });
+  });
+
+  it('a row the OTHER session already stored under the same key commits this one; it is not a conflict', () => {
+    const p = adoptedProject();
+    const ruflo = fakeRuflo();
+    const at = Date.now() - 60_000;
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin });
+    journal.appendRecords([raw(sameCommit('session-a', at))]);
+    const theirs = sameCommit('session-b', at);
+    spawnSync(ruflo.bin, ['memory', 'store', '--key', eventKey(theirs), '--value', JSON.stringify(theirs), '--namespace', CONTINUITY_NAMESPACE, '--path', journal.db]);
+    expect(drain(journal, { ruflo: ruflo.bin, backoff: fastBackoff, sleep: noSleep })).toMatchObject({ committed: 1, remaining: 0 });
+    expect(journal.status()).toMatchObject({ quarantined: [], stuck: false });
+  });
+});
+
+describe('S3b: a real problem is surfaced, then clears itself (or with one command)', () => {
+  it('a genuine conflict is red with the clear command, and ages out after QUARANTINE_REPORT_MS', () => {
+    const p = adoptedProject();
+    const ruflo = fakeRuflo();
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin });
+    const [rec] = journal.record([lesson('One key, one value.')]);
+    spawnSync(ruflo.bin, ['memory', 'store', '--key', rec.key, '--value', '{"other":true}', '--namespace', CONTINUITY_NAMESPACE, '--path', journal.db]);
+    drain(journal, { ruflo: ruflo.bin, backoff: fastBackoff, sleep: noSleep });
+    const red = journal.status();
+    expect(red).toMatchObject({ quarantined: [rec.key], stuck: true, problem: 'quarantined', pending: 0 });
+    expect(recordingLine(red)).toMatch(/recording ✗ .*quarantined.*clears itself .*--clear/);
+    const later = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin, now: () => Date.now() + QUARANTINE_REPORT_MS + DAY });
+    expect(later.status()).toMatchObject({ stuck: false, problem: null, pending: 0 });
+    // …and the one command clears it now.
+    journal.clearProblems();
+    expect(journal.status()).toMatchObject({ stuck: false, problem: null, quarantined: [] });
+    expect(journal.pending()).toHaveLength(0); // a conflicted key is still never retried
+  });
+
+  it('a corrupt outbox line is reported, compacted out of the file, and clears the same way', () => {
+    const p = adoptedProject();
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: fakeRuflo().bin });
+    journal.record([lesson('Survives a torn line.')]);
+    fs.appendFileSync(journal.path, '{"type":"event","key":\n');
+    expect(journal.status()).toMatchObject({ problem: 'corrupt', stuck: true });
+    journal.compact();
+    expect(lines(journal.path).some((l) => l.startsWith('{"type":"event","key":') && !l.endsWith('}'))).toBe(false);
+    expect(journal.pending()).toHaveLength(1); // the good event survived compaction
+    expect(journal.status()).toMatchObject({ problem: 'corrupt' }); // still reported once compacted …
+    const later = new ContinuityJournal({ projectRoot: p.dir, ruflo: fakeRuflo().bin, now: () => Date.now() + QUARANTINE_REPORT_MS + DAY });
+    expect(later.status().problem).not.toBe('corrupt'); // … until it ages out
+  });
+});
+
+describe('S3c: no store or no ruflo is NOT APPLICABLE, never "stuck"', () => {
+  it('.swarm without memory.db: nothing is journalled and the line says n/a', () => {
+    const p = adoptedProject();
+    fs.rmSync(path.join(p.dir, '.swarm', 'memory.db'));
+    commit(p.dir, p.env, 'a.txt', 'feat: a change');
+    const r = captureContinuityEvents({ projectDir: p.dir, event: 'Stop', payload: { session_id: 's' }, env: {}, ruflo: fakeRuflo().bin, launch: () => true });
+    expect(r.skipped).toMatch(/not applicable/);
+    expect(fs.existsSync(path.join(p.dir, '.swarm', 'continuity-events-outbox.jsonl'))).toBe(false);
+    // An outbox left from before the store disappeared is still not "stuck".
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: fakeRuflo().bin });
+    journal.appendRecords([raw(lesson('Old.', Date.now() - STUCK_AFTER_MS * 10))]);
+    const status = journal.status();
+    expect(status).toMatchObject({ stuck: false, applicable: false });
+    expect(recordingLine(status)).toMatch(/^AgentDB: recording n\/a — no AgentDB store/);
+    expect(recordingLine(status)).not.toMatch(/✗/);
+  });
+
+  it('a store but no ruflo: n/a after any time, no drainer is launched', () => {
+    const p = adoptedProject();
+    commit(p.dir, p.env, 'a.txt', 'feat: a change');
+    const launches = [];
+    const r = captureContinuityEvents({ projectDir: p.dir, event: 'Stop', payload: { session_id: 's' }, env: {}, ruflo: null, launch: (x) => { launches.push(x); return true; } });
+    expect(r.recorded).toBe(1);
+    expect(launches).toEqual([]);
+    const status = new ContinuityJournal({ projectRoot: p.dir, ruflo: null, now: () => Date.now() + STUCK_AFTER_MS * 10 }).status();
+    expect(status).toMatchObject({ stuck: false, applicable: false, pending: 1 });
+    expect(recordingLine(status)).toMatch(/^AgentDB: recording n\/a — ruflo is not installed; 1 event\(s\) wait in the outbox/);
+  });
+});
+
+describe('S3d: the Stop line is shown at most once per session per condition', () => {
+  it('throttles by session and condition', () => {
+    const p = adoptedProject();
+    const ruflo = fakeRuflo();
+    const old = Date.now() - STUCK_AFTER_MS - 60_000;
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin, now: () => old });
+    journal.record([lesson('Stuck.', old)]);
+    const live = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin });
+    const status = live.status();
+    expect(status.problem).toBe('stuck-pending');
+    expect(stopNotice({ journal: live, status, session: 's1' })).toMatch(/recording ✗/);
+    expect(stopNotice({ journal: live, status, session: 's1' })).toBe('');
+    expect(stopNotice({ journal: live, status, session: 's2' })).toMatch(/recording ✗/);
+    expect(stopNotice({ journal: live, status: { ...status, problem: 'corrupt', corrupt: 1 }, session: 's1' })).toMatch(/recording ✗/);
+    expect(stopNotice({ journal: live, status: { ...status, stuck: false, problem: null }, session: 's3' })).toBe('');
+  });
+});
+
+describe('S4: the outbox stays bounded', () => {
+  it('three simulated days with ruflo missing: no drainer, no per-Stop lines, a constant file', () => {
+    const p = adoptedProject();
+    const start = Date.now() - 3 * DAY;
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: null, now: () => start });
+    journal.record(Array.from({ length: 300 }, (_, i) => lesson(`Pending lesson number ${i}.`, start)));
+    const launches = [];
+    const sizes = [];
+    for (let day = 0; day < 3; day += 1) {
+      for (let stop = 0; stop < 8; stop += 1) {
+        const at = start + day * DAY + stop * 3 * 3_600_000;
+        captureContinuityEvents({ projectDir: p.dir, event: 'Stop', payload: { session_id: `s${day}` }, env: {}, ruflo: null, now: () => at,
+          launch: (x) => { launches.push(x); return true; } });
+        runDrain(p.dir, { ruflo: null });
+      }
+      sizes.push(lines(journal.path).length);
+    }
+    expect(launches).toEqual([]);
+    expect(sizes[2]).toBeLessThanOrEqual(300 + 5); // 4.5.0 measured 305 → 910 → 1815
+    expect(sizes[2]).toBe(sizes[0]);
+  }, 120_000);
+
+  it('persistent WAL contention: ONE failure record per event (attempts counted), not a line per attempt', () => {
+    const p = adoptedProject();
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: 'ruflo' });
+    journal.record(Array.from({ length: 20 }, (_, i) => lesson(`Contended ${i}.`)));
+    const refuse = () => ({ status: 1, output: WAL_REFUSAL_TEXT });
+    for (let i = 0; i < 72; i += 1) {
+      runDrain(p.dir, { ruflo: 'ruflo', store: refuse, readBack: () => ({ content: null }), backoff: fastBackoff, sleep: noSleep });
+    }
+    const all = lines(journal.path).map((l) => JSON.parse(l));
+    expect(all.filter((r) => r.type === 'event')).toHaveLength(20);
+    const failures = all.filter((r) => r.type === 'failure');
+    expect(failures.length).toBeLessThanOrEqual(20);
+    expect(all.length).toBeLessThanOrEqual(20 + 20 + 3);
+    expect(failures[0]).toMatchObject({ reason: 'wal-contention' });
+    expect(failures[0].attempts).toBeGreaterThanOrEqual(72);
+    expect(failures[0].error).toContain('refusing an unsafe sql.js');
+  });
+
+  it('committed events age out of the outbox after RETAIN_COMMITTED_MS and stay deduped by the store', () => {
+    const p = adoptedProject();
+    const ruflo = fakeRuflo();
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin });
+    const e = lesson('Aged out but remembered.');
+    journal.record([e]);
+    drain(journal, { ruflo: ruflo.bin, backoff: fastBackoff, sleep: noSleep });
+    const later = new ContinuityJournal({ projectRoot: p.dir, ruflo: ruflo.bin, now: () => Date.now() + RETAIN_COMMITTED_MS + DAY });
+    later.compact();
+    expect(lines(journal.path).filter((l) => JSON.parse(l).type === 'event')).toEqual([]);
+    expect(rows(journal.db, CONTINUITY_NAMESPACE)).toHaveLength(1);
+    expect(later.record([e])).toHaveLength(0);
+  });
+
+  it('a hard cap bounds the file even when nothing can ever commit, and the drop is reported', () => {
+    const p = adoptedProject();
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: null });
+    journal.record(Array.from({ length: MAX_EVENT_RECORDS + 500 }, (_, i) => lesson(`Uncommittable ${i}.`, Date.now() + i)));
+    journal.compact();
+    expect(lines(journal.path).length).toBeLessThanOrEqual(MAX_EVENT_RECORDS + 3);
+    expect(journal.status().dropped).toBe(500);
+    expect(journal.pending().at(-1).event.summary).toBe(`Uncommittable ${MAX_EVENT_RECORDS + 499}.`); // newest kept
+  });
+
+  it('an append that lands during a compaction is never lost', () => {
+    const p = adoptedProject();
+    const journal = new ContinuityJournal({ projectRoot: p.dir, ruflo: null });
+    journal.record([lesson('Before compaction.')]);
+    fs.appendFileSync(journal.path, 'torn\n'); // forces a rewrite
+    const other = new ContinuityJournal({ projectRoot: p.dir, ruflo: null });
+    journal.compact({ beforeRename: () => fs.appendFileSync(other.path, `${JSON.stringify(raw(lesson('Landed mid-compaction.')))}\n`) });
+    expect(journal.pending().map((r) => r.event.summary)).toEqual(expect.arrayContaining(['Before compaction.', 'Landed mid-compaction.']));
+  });
+});
