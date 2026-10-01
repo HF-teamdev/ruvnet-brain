@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { renderCardHit } from '../../kb/card-lane.mjs';
 import { brainAnswered } from '../../plugin/scripts/grounding-turn-evidence.mjs';
 import { describeSearchOutcome } from '../../kb/search-outcome.mjs';
+import { resolveBash } from '../../plugin/scripts/hook-shim-bash.mjs';
 import { groundedToolResult } from '../../kb/grounded-response.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -221,7 +222,7 @@ describe.skipIf(!hasBash || process.platform === 'win32')('4.4.0 re-review nits 
       encoding: 'utf8', timeout: 20_000,
     });
     expect(r.status).toBe(0);
-    expect(spawnSync('/bin/bash', ['-c', 'command -v node'], { env: { PATH: '/bin' } }).status, 'precondition: no node on this PATH').not.toBe(0);
+    expect(spawnSync(resolveBash(), ['-c', 'command -v node'], { env: { PATH: '/bin' } }).status, 'precondition: no node on this PATH').not.toBe(0);
     expect(minted(w)).toEqual(expect.arrayContaining(['.any-search', 'ruflo']));
   });
 });
