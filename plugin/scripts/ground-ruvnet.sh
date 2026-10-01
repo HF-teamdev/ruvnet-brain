@@ -127,7 +127,8 @@ SID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/n
 INJ_BASE="${RUVNET_BRAIN_HOME:-$HOME/.cache/ruvnet-brain}/injected"
 INJ_DIR=""
 if [ -n "$SID" ]; then
-  _sid_safe=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-96)
+  # '.' is NOT kept: a session id of '..' became injected/.. — the brain home itself (review NIT).
+  _sid_safe=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-96)
   [ -n "$_sid_safe" ] && INJ_DIR="$INJ_BASE/$_sid_safe"
 fi
 inj_seen() {
