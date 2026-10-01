@@ -36,9 +36,12 @@ describe('customer state matrix derivation', () => {
       { tag_name: 'v4.3.39' }, { tag_name: 'corpus-sha256-' + 'a'.repeat(64) }, { tag_name: 'v4.3.38' },
       { tag_name: 'v4.3.13', draft: true }, { tag_name: 'v4.3.37' }, { tag_name: 'v4.3.9' }, { tag_name: 'v4.3.10' },
     ];
-    expect(resolveRuntime('N-1', { candidateTag: 'v4.3.39', releases })).toBe('4.3.38');
-    expect(resolveRuntime('N-3', { candidateTag: 'v4.3.39', releases })).toBe('4.3.10');
-    expect(resolveRuntime('N-4', { candidateTag: 'v4.3.39', releases })).toBe('4.3.9');
+    // Expected versions are read from the fixture: published semver tags below the candidate, newest first
+    // (v4.3.38, v4.3.37, v4.3.10, v4.3.9 — the draft and the corpus tag are skipped).
+    const fixtureVersion = (tag) => releases.find((r) => r.tag_name === tag).tag_name.slice(1);
+    expect(resolveRuntime('N-1', { candidateTag: 'v4.3.39', releases })).toBe(fixtureVersion('v4.3.38'));
+    expect(resolveRuntime('N-3', { candidateTag: 'v4.3.39', releases })).toBe(fixtureVersion('v4.3.10'));
+    expect(resolveRuntime('N-4', { candidateTag: 'v4.3.39', releases })).toBe(fixtureVersion('v4.3.9'));
     expect(() => resolveRuntime('N-9', { candidateTag: 'v4.3.39', releases })).toThrow(/no published release/);
     expect(() => resolveRuntime('latest', { candidateTag: 'v4.3.39', releases })).toThrow(/N-<k>/);
   });
