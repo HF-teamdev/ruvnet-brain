@@ -150,6 +150,7 @@ async function checkJump(page, name, key, targetSel) {
 
 beforeAll(async () => {
   fx = buildRnbcFixture();
+  fx.consoleDir ??= path.join(REPO, 'console');
   srv = await startRnbc(fx);
   browser = await chromium.launch({ executablePath: chromeExecutable(chromium) });
   ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -744,6 +745,44 @@ describe('RNBC — every element on every page, on an isolated console', () => {
       await page.close();
     }
   }, 180_000);
+
+  // A page can serve HTTP 200, have zero controls, and still be broken: on 2026-10-01 a truncated favicon
+  // line on install-architecture.html left its href quote open, the parser swallowed the whole <style>
+  // block into that attribute, and the page rendered unstyled while this file recorded it PASS
+  // ("served HTTP 200 with zero interactive elements"). So EVERY page the console serves must (a) parse
+  // its <head> to the same tags its source declares — a tag eaten by an unbalanced attribute is missing
+  // from the parsed head — and (b) actually apply a stylesheet: at least one sheet with rules, and a
+  // body whose computed font differs from an unstyled page's.
+  it('every served page loads its stylesheet and parses its <head> intact', async () => {
+    const served = fs.readdirSync(fx.consoleDir).filter((f) => f.endsWith('.html')).sort();
+    expect(served, 'the pages this test clicks are exactly the pages the console serves').toEqual([...PAGES].sort());
+    const blank = await ctx.newPage();
+    await blank.setContent('<!doctype html><html><head></head><body>x</body></html>');
+    const unstyledFont = await blank.evaluate(() => getComputedStyle(document.body).fontFamily);
+    await blank.close();
+    for (const name of served) {
+      const page = await openPage(name);
+      const raw = await (await page.request.get(new URL(name, srv.url).toString())).text();
+      const res = await page.evaluate((src) => {
+        // tags inside comments and inside script bodies are text, not markup
+        const headSrc = src.split(/<body[\s>]/i)[0].replace(/<!--[\s\S]*?-->/g, '')
+          .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '<script></script>');
+        const parsed = new DOMParser().parseFromString(src, 'text/html');
+        const lost = ['style', 'link', 'meta', 'title', 'script'].map((tag) => ({
+          tag, declared: (headSrc.match(new RegExp(`<${tag}\\b`, 'gi')) || []).length, parsed: parsed.head.querySelectorAll(tag).length,
+        })).filter((t) => t.declared !== t.parsed);
+        let rules = 0;
+        for (const s of document.styleSheets) { try { rules += s.cssRules.length; } catch { rules += 1; } }
+        return { lost, sheets: document.styleSheets.length, rules, font: getComputedStyle(document.body).fontFamily };
+      }, raw);
+      const ok = !res.lost.length && res.sheets > 0 && res.rules > 0 && res.font !== unstyledFont;
+      record(name, 'page:stylesheet-and-head', { claim: 'the page is styled and its <head> is well formed', action: 'load; compare declared vs parsed <head> tags; inspect document.styleSheets and computed body font',
+        observed: `${res.sheets} stylesheet(s), ${res.rules} rule(s); body font ${res.font} (unstyled: ${unstyledFont}); head tags lost to the parser: ${res.lost.length ? JSON.stringify(res.lost) : 'none'}`, ok });
+      await page.close();
+    }
+    const broken = served.map((name) => rows.get(`${name}|page:stylesheet-and-head`)).filter((r) => r.verdict !== 'PASS');
+    expect(broken.map((r) => `${r.page}: ${r.observed}`)).toEqual([]);
+  }, 120_000);
 
   it('every element found has a ledger row; nothing failed; no JS errors or failed requests', () => {
     const missing = [...found.keys()].filter((id) => !rows.has(id));
