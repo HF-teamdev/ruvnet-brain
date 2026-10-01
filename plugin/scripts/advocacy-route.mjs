@@ -58,14 +58,23 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { CAPABILITIES, INTENTS, MIN_CUES } from './advocacy-catalog.mjs';
 import {
-  ACTIONS, record, shouldStillOffer, stateHashOf, precision, pendingOffers, reconcileIgnored,
+  ACTIONS, record, shouldStillOffer, stateHashOf, precision, pendingOffers, reconcileIgnored, loadOutcomes,
 } from './advocacy-outcomes.mjs';
+import { recommend as recommendPackage, shortName, buildPackageCandidate } from './package-recommender.mjs';
 
 const HOME = process.env.RUVNET_HOME_OVERRIDE || os.homedir();
 
 /** Every id this route can ever name is namespaced, so it can never collide with a capability-registry
  *  key that anticipate.sh offers into the SAME ledger. One ledger, two producers, disjoint identities. */
 export const FINDING_PREFIX = 'recommend:';
+
+/** Package-card offers (ADR-0093): own sub-prefix, same ledger, dial and session cap. */
+export const PACKAGE_PREFIX = `${FINDING_PREFIX}pkg:`;
+
+/** THE FLAG, DEFAULT OFF (ADR-0093): only an explicit opt-in is on. Read per call, never cached. */
+export function packageRecommenderEnabled(env = process.env) {
+  return ['1', 'on', 'true', 'yes'].includes(String(env.RUVNET_PACKAGE_RECOMMENDER || '').trim().toLowerCase());
+}
 
 export const BUDGET_MS = Number(process.env.RUVNET_ADVOCACY_ROUTE_BUDGET_MS) || 1500;
 
@@ -280,9 +289,12 @@ export function summary({ file } = {}) {
   // resolution here. Seven cheap reads beat a second copy of that logic drifting from the first.
   const counts = { applied: 0, dismissed: 0, ignored: 0 };
   let target = null;
-  for (const capId of Object.keys(CAPABILITIES)) {
+  // Package ids are open-ended: read them from the canonical ledger, not a static list.
+  const ids = new Set(Object.keys(CAPABILITIES).map((capId) => `${FINDING_PREFIX}${capId}`));
+  try { for (const r of loadOutcomes(...(file ? [file] : []))) if (r.id.startsWith(PACKAGE_PREFIX)) ids.add(r.id); } catch { /* catalogue ids only */ }
+  for (const id of ids) {
     try {
-      const p = precision({ ...(file ? { file } : {}), id: `${FINDING_PREFIX}${capId}` });
+      const p = precision({ ...(file ? { file } : {}), id });
       counts.applied += p.applied || 0;
       counts.dismissed += p.dismissed || 0;
       counts.ignored += p.ignored || 0;
@@ -356,26 +368,48 @@ export function buildCandidate({ prompt, match, availability }) {
 }
 
 /**
+ * The two lanes, as one shape: { capability, id, stateHash, intent, extra, build() }. The closed
+ * catalogue keeps precedence — each of its intents was measured missing on a real host. The package
+ * lane (ADR-0093) is consulted ONLY when the catalogue is silent AND the flag is an explicit opt-in.
+ */
+function chooseLane(prompt, env) {
+  const match = classify(prompt);
+  if (match) {
+    return {
+      capability: match.capability, id: `${FINDING_PREFIX}${match.capability}`, intent: match.intent.id, extra: {},
+      stateHash: stateHashOf([`intent:${match.intent.id}`, `capability:${match.capability}`]),
+      build: () => buildCandidate({ prompt, match, availability: availabilityOf(match.capability) }),
+    };
+  }
+  if (!packageRecommenderEnabled(env)) return null;
+  const pick = recommendPackage(prompt);
+  if (!pick) return null;
+  return {
+    capability: shortName(pick.card), id: `${PACKAGE_PREFIX}${pick.card.id}`, intent: 'package-card',
+    extra: { package: pick.card.id }, stateHash: stateHashOf([`package:${pick.card.id}`]),
+    build: () => buildPackageCandidate({ prompt, pick, findingPrefix: PACKAGE_PREFIX }),
+  };
+}
+
+/**
  * The whole decision, minus process IO. Returns the candidate to emit, or null for SILENCE, and says
  * WHY it stayed silent so a test can distinguish "no intent" from "already said" from "suppressed" —
  * three very different bugs that all look identical from the outside.
  */
-export function decide({ prompt, sessionId, file, state, now = Date.now(), startedAt = Date.now() }) {
+export function decide({ prompt, sessionId, file, state, now = Date.now(), startedAt = Date.now(), env = process.env }) {
   if (Date.now() - startedAt > BUDGET_MS) return { candidate: null, reason: 'budget-exceeded' };
-  const match = classify(prompt);
-  if (!match) return { candidate: null, reason: 'no-intent' };
+  const lane = chooseLane(prompt, env);
+  if (!lane) return { candidate: null, reason: 'no-intent' };
   const st = state || readState();
   const offers = offersOf(st, sessionId);
   if (offers.filter((o) => o && o.at).length >= MAX_PER_SESSION) return { candidate: null, reason: 'session-cap' };
-  if (offers.some((o) => o && o.capability === match.capability)) return { candidate: null, reason: 'already-offered' };
+  if (offers.some((o) => o && o.capability === lane.capability)) return { candidate: null, reason: 'already-offered' };
 
-  const id = `${FINDING_PREFIX}${match.capability}`;
-  const stateHash = stateHashOf([`intent:${match.intent.id}`, `capability:${match.capability}`]);
   let allowed = true;
-  try { allowed = shouldStillOffer(id, { severity: 'normal', stateHash, ...(file ? { file } : {}) }); } catch { allowed = false; }
+  try { allowed = shouldStillOffer(lane.id, { severity: 'normal', stateHash: lane.stateHash, ...(file ? { file } : {}) }); } catch { allowed = false; }
   if (!allowed) return { candidate: null, reason: 'suppressed' };
 
-  const candidate = buildCandidate({ prompt, match, availability: availabilityOf(match.capability) });
+  const candidate = lane.build();
   if (!candidate) return { candidate: null, reason: 'no-card' };
   if (Date.now() - startedAt > BUDGET_MS) return { candidate: null, reason: 'budget-exceeded' };
 
@@ -384,7 +418,7 @@ export function decide({ prompt, sessionId, file, state, now = Date.now(), start
   // speaking without remembering it, which repeats on the very next prompt; repeating is what gets a
   // hook switched off for good.
   offers.push({
-    id, capability: match.capability, intent: match.intent.id,
+    id: lane.id, capability: lane.capability, intent: lane.intent, ...lane.extra,
     at: new Date(now).toISOString(), promptHash: candidate.promptHash,
     sessionId, severity: 'normal', resolved: null,
   });

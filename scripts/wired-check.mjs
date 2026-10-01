@@ -78,6 +78,9 @@ const STANDALONE = [
   ['route-gold-rank', 'human-run measurement harness: routes question sets through kb/forge-ask-all.mjs planSourceRoute (no model) and reports where the gold store lands, with Wilson intervals; nothing to schedule'],
   ['route-latency-warm', 'human-run measurement harness: paired warm latency of two or more search runtimes in one process, load-gated, with paired bootstrap intervals; minutes to hours of model time, never scheduled'],
   ['route-index-memory', 'human-run measurement harness: retained memory and cold/warm time of the router metadata index (needs node --expose-gc); nothing to schedule'],
+  ['recommendation-eval', 'human-run measurement harness (ADR-0093): scores the package recommender against evals/recommendation-eval*.json with Wilson intervals; its frozen numbers are asserted by tests/unit/package-recommender.test.mjs, which imports evaluate()'],
+  ['recommendation-latency', 'human-run measurement harness (ADR-0093): paired cold-process latency of advocacy-route with the package flag off vs on; load-sensitive, so never scheduled'],
+  ['package-cards', 'ADR-0093 (Proposed) package-card generator, run by hand to refresh plugin/scripts/package-cards.json from the installed corpus. NOT YET NIGHTLY: the bundle step that would seal package-cards.json into the signed corpus is ADR-0093 phase 2 and is deliberately unbuilt while the recommender is default-off'],
   ['dream-issue-gate','pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
   ['sync-census', 'explicit maintainer census writer; a destructive source-to-surface refresh is never scheduled'],
   ['customer-state-matrix', 'human-run release-qualification harness (2026-09-30): applies ONE published release through the real '
