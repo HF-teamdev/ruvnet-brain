@@ -43,11 +43,18 @@ export function redFiles(report, quarantine, root = ROOT) {
     .some((test) => test.status === 'failed' && !known.has(key(rel(file.name), test.fullName)))).map((file) => rel(file.name)))];
 }
 
-/** A failure whose MESSAGE is a timing/budget failure: vitest's own timeout, or an explicit budget,
- * ceiling or latency assertion. Matched on the failure text only — never on the test's title, so a
- * budget-named test that fails a value assertion is still a plain RED. */
-export const TIMING_FAILURE = /\b(?:Test|Hook) timed out in \d+ ?ms\b|\bbudget\b|\bceiling\b|\bexceeded \d+(?:\.\d+)? ?ms\b|\btook \d+(?:\.\d+)? ?ms\b|\bp9[59]\b|\blatency\b/i;
-export const isTimingFailure = (message) => TIMING_FAILURE.test(String(message || '').slice(0, 2000));
+/** A failure whose MESSAGE is a timing failure, and nothing else: (1) vitest's own test/hook timeout,
+ * or (2) a NUMERIC bound comparison ("expected 3745 to be less than 1000") in a message that also
+ * carries a duration cue (an ms value, p95/p99, took/elapsed/duration/latency/budget/ceiling/timeout).
+ * Budget words alone never qualify: "expected 'capture budget exceeded' to be undefined" is a value
+ * assertion and stays RED. Matched on the failure text only, never the test title. */
+const VITEST_TIMEOUT = /\b(?:Test|Hook) timed out in \d+ ?ms\b/;
+const NUMERIC_BOUND = /\bexpected -?\d+(?:\.\d+)? to be (?:less|greater) than (?:or equal to )?-?\d+(?:\.\d+)?/;
+const DURATION_CUE = /\d ?ms\b|\bp9[59]\b|\btook\b|\belapsed\b|\bduration\b|\blatency\b|\bbudget\b|\bceiling\b|\btimeout\b/i;
+export const isTimingFailure = (message) => {
+  const text = String(message || '').slice(0, 2000);
+  return VITEST_TIMEOUT.test(text) || (NUMERIC_BOUND.test(text) && DURATION_CUE.test(text));
+};
 /** More flaky tests than this in one run fails the gate: load-sensitivity that wide is itself a defect. */
 export const MAX_FLAKY = 3;
 

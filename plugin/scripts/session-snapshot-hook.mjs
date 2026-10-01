@@ -118,10 +118,12 @@ export function runSessionSnapshotHook(projectDir, event, {
   budgetMs = effectiveBudgetMs(),
   now = Date.now,
   captureTurn = captureTurnOutcome,
+  writeMetadata = true,
   makeStoreFactory = boundedStoreFactory,
   spawnReplay = replayOutboxDetached,
 } = {}) {
-  const metadataWritten = writeSessionSnapshot(projectDir, event);
+  // The detached worker re-runs a QUEUED boundary; its session receipt was already written then.
+  const metadataWritten = writeMetadata ? writeSessionSnapshot(projectDir, event) : false;
   let payload;
   try { payload = rawInput ? JSON.parse(rawInput) : {}; } catch { payload = {}; }
   // TURN OUTCOMES FIRST, and independent of `.swarm`: every turn in every repository is recorded
@@ -157,21 +159,47 @@ export function runSessionSnapshotHook(projectDir, event, {
 
   const deadlineAt = now() + budgetMs;
   const storeFactory = makeStoreFactory(deadlineAt);
+  const root = resolution.projectRoot;
+  const pendingCount = () => {
+    try { return new ProgressionOutbox({ projectRoot: root }).pendingSnapshots().length; } catch { return 0; }
+  };
 
-  // THE NEW SNAPSHOT FIRST (4.4.0). It used to run after the outbox replay, so on a short budget
-  // (Codex SessionEnd: 3s host cap) the replay of OLD snapshots spent the whole deadline and this
-  // session's own state never even reached the outbox. capture() fsyncs to the outbox before it
-  // touches the store, so going first guarantees it is at least durable.
+  // CAUSAL ORDER: OLD DEBT FIRST, THEN THIS BOUNDARY'S SNAPSHOT. The producer links a new snapshot to
+  // the COMMITTED heads (project-progression-producer.mjs), so a snapshot captured while an interrupted
+  // one is still only in the outbox would not descend from it — after replay the project would have
+  // two unrelated heads (tests/acceptance/cross-host-project-resume.test.mjs caught exactly that when
+  // a 4.4.0 draft captured first). So:
+  //   • the budget can hold a replay → replay inline, then produce and capture (the original order);
+  //   • it cannot, and debt is pending → neither fits here in causal order, so this capture is QUEUED
+  //     behind the debt and a DETACHED, bounded, single-instance worker replays and THEN captures it.
+  //     On Codex no boundary ever has the replay budget (Stop 3700ms effective, SessionEnd 1900ms, no
+  //     PreCompact), so "wait for the next boundary" used to mean never (4.4.0 review S1).
+  let replayed = 0;
+  if (budgetMs >= REPLAY_MIN_BUDGET_MS) {
+    try {
+      replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
+    } catch { /* the debt stays durable in the outbox; this capture is still worth attempting */ }
+  } else {
+    const pending = pendingCount();
+    if (pending > 0) {
+      const queued = queueCapture({ projectDir: root, event, host, payload });
+      const handed = queued && spawnReplay({ projectDir: root });
+      return { ...idle, replayed: 0, progressionCaptured: false, deferredToReplayer: Boolean(queued),
+        replaySkipped: `outbox replay deferred: budget ${budgetMs}ms < ${REPLAY_MIN_BUDGET_MS}ms; ${pending} pending, `
+          + `this capture ${queued ? 'queued behind it' : 'NOT queued (queue unwritable)'}`
+          + `${queued ? (handed ? ', handed to a detached replayer' : ' (a replayer is already running and drains the queue)') : ''}` };
+    }
+  }
+
   let produced;
   try {
     produced = produce({ resolution, payload, host, trigger: event });
   } catch (error) {
-    return { ...idle, replayed: 0, skipped: `producer failed: ${error.message}` };
+    return { ...idle, replayed, skipped: `producer failed: ${error.message}` };
   }
-  if (produced.skipped) return { ...idle, replayed: 0, skipped: produced.skipped.reason };
+  if (produced.skipped) return { ...idle, replayed, skipped: produced.skipped.reason };
 
   let result;
-  let deferred = null;
   try {
     result = captureProgression({
       host,
@@ -181,34 +209,13 @@ export function runSessionSnapshotHook(projectDir, event, {
     });
   } catch (error) {
     // NOT LOST — DEFERRED. capture() fsyncs the snapshot to the durable outbox BEFORE it writes to
-    // the store, so a budget overrun here leaves the evidence on disk and the next capture boundary
-    // (or /checkpoint) commits it. Reporting that plainly is the whole difference between a bounded
-    // hook and a lossy one, so the reason is returned rather than thrown at a lifecycle boundary.
-    deferred = `capture deferred: ${error.message}`;
+    // the store, so a budget overrun here leaves the evidence on disk. On a short budget nothing later
+    // in this process can settle it, so it goes straight to the detached replayer.
+    const handed = budgetMs < REPLAY_MIN_BUDGET_MS && pendingCount() > 0 && spawnReplay({ projectDir: root });
+    return { ...idle, replayed, skipped: `capture deferred: ${error.message}`,
+      ...(handed ? { replaySkipped: 'deferred capture handed to a detached replayer' } : {}) };
   }
-
-  // THEN commit anything a previously interrupted session left durable-but-uncommitted. SessionStart
-  // stays write-free (its budget goes to restore); a capture boundary owns a write budget, so this is
-  // where the debt is settled. Under REPLAY_MIN_BUDGET_MS the replay cannot fit in THIS process, and
-  // on Codex no boundary ever has that much (Stop 3700ms effective, SessionEnd 1900ms, no PreCompact),
-  // so "wait for the next boundary" meant never (4.4.0 review S1). The debt is handed to a DETACHED,
-  // bounded, single-instance replayer instead: the host waits for none of it.
-  let replayed = 0;
-  let replaySkipped;
-  if (budgetMs < REPLAY_MIN_BUDGET_MS) {
-    let pending = 0;
-    try { pending = new ProgressionOutbox({ projectRoot: resolution.projectRoot }).pendingSnapshots().length; } catch { pending = 0; }
-    const handed = pending > 0 && spawnReplay({ projectDir: resolution.projectRoot });
-    replaySkipped = `outbox replay deferred: budget ${budgetMs}ms < ${REPLAY_MIN_BUDGET_MS}ms`
-      + (pending ? `; ${pending} pending ${handed ? 'handed to a detached replayer' : '(a replayer is already running)'}` : '');
-  } else if (!deferred) {
-    try {
-      replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
-    } catch { /* the debt stays durable in the outbox for the next boundary */ }
-  }
-  if (deferred) return { ...idle, replayed, skipped: deferred, ...(replaySkipped ? { replaySkipped } : {}) };
   return {
-    ...(replaySkipped ? { replaySkipped } : {}),
     metadataWritten,
     progressionCaptured: true,
     turn,
@@ -218,10 +225,27 @@ export function runSessionSnapshotHook(projectDir, event, {
   };
 }
 
-/** How long the detached replayer may spend. Nobody waits for it; the bound only stops a stuck ruflo. */
+/** How long the detached replayer may spend per step. Nobody waits for it; the bound stops a stuck ruflo. */
 export const DETACHED_REPLAY_BUDGET_MS = 60_000;
 const REPLAY_LOCK = '.progression-replay.lock';
+const QUEUE_PREFIX = '.progression-capture-queue-';
 const lockPath = (projectDir) => path.join(projectDir, '.swarm', REPLAY_LOCK);
+
+/** Queue one boundary's capture for the detached worker (0600, inside the project's own .swarm). */
+export function queueCapture({ projectDir, event, host, payload, now = Date.now() }) {
+  try {
+    const file = path.join(projectDir, '.swarm', `${QUEUE_PREFIX}${String(now).padStart(15, '0')}-${process.pid}.json`);
+    fs.writeFileSync(file, JSON.stringify({ event, host, payload }), { flag: 'wx', mode: 0o600 });
+    return file;
+  } catch { return null; }
+}
+
+function queuedCaptures(projectDir) {
+  try {
+    return fs.readdirSync(path.join(projectDir, '.swarm')).filter((n) => n.startsWith(QUEUE_PREFIX) && n.endsWith('.json'))
+      .sort().map((n) => path.join(projectDir, '.swarm', n));
+  } catch { return []; }
+}
 
 /** Take the single-replayer lock (stale after twice the replay budget). True when this caller holds it. */
 export function takeReplayLock(projectDir, now = Date.now()) {
@@ -255,15 +279,34 @@ export function replayOutboxDetached({ projectDir, spawnFn = spawn } = {}) {
   }
 }
 
-/** The detached replayer's body: replay the outbox within its own deadline, then release the lock. */
-export function runOutboxReplay({ projectDir, budgetMs = DETACHED_REPLAY_BUDGET_MS, makeStoreFactory = boundedStoreFactory, now = Date.now } = {}) {
-  try {
-    const resolution = resolveProjectStore({ projectDir });
-    const store = makeStoreFactory(now() + budgetMs)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath });
-    return store.replay().length;
-  } finally {
-    try { fs.rmSync(lockPath(projectDir), { force: true }); } catch { /* best effort */ }
+/**
+ * The detached worker's body, holding the lock: replay the outbox, then run every queued capture IN
+ * ORDER (each with the full budget, so each replays before it captures — the causal order), then
+ * release the lock. A capture queued while the lock was held is picked up by the re-check after release.
+ */
+export function runOutboxReplay({ projectDir, budgetMs = DETACHED_REPLAY_BUDGET_MS, makeStoreFactory = boundedStoreFactory,
+  now = Date.now, runCapture = runSessionSnapshotHook } = {}) {
+  let replayed = 0;
+  for (let round = 0; round < 8; round += 1) {
+    try {
+      const resolution = resolveProjectStore({ projectDir });
+      replayed += makeStoreFactory(now() + budgetMs)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
+      for (const file of queuedCaptures(projectDir)) {
+        let job = null;
+        try { job = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* torn: dropped below */ }
+        try {
+          if (job) runCapture(projectDir, job.event, { rawInput: JSON.stringify(job.payload), host: job.host,
+            budgetMs, makeStoreFactory, now, spawnReplay: () => false, writeMetadata: false,
+            captureTurn: () => ({ recorded: false, skipped: 'detached replay' }) });
+        } catch { /* a failed capture leaves its own snapshot durable in the outbox */ }
+        try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
+      }
+    } finally {
+      try { fs.rmSync(lockPath(projectDir), { force: true }); } catch { /* best effort */ }
+    }
+    if (!queuedCaptures(projectDir).length || !takeReplayLock(projectDir)) break;
   }
+  return replayed;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs') && process.argv[2] === '--replay-outbox') {

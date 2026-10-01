@@ -62,12 +62,22 @@ describe('full-suite gate', () => {
     expect(verdict.flaky).toEqual([]);
   });
 
-  it('classifies the measured load failures as timing, and plain assertion diffs as not', () => {
-    for (const m of [timeout, 'Error: Hook timed out in 20000ms.', 'AssertionError: restore took 3745ms over 30 snapshots',
-      "expected '[decision-gate] 2000ms budget exhausted' to be ''", 'even the contention tail must stay within 2x the ceiling',
-      "expected 'render probe exceeded 250ms process deadline' to match /x/"]) expect(isTimingFailure(m), m).toBe(true);
-    for (const m of ['AssertionError: expected +0 to be 4', "expected [] to deeply equal [ 'hang' ]",
-      'Error: ENOENT: no such file or directory', "expected 'request timed out' to be 'ok'"]) expect(isTimingFailure(m), m).toBe(false);
+  it('classifies only vitest timeouts and numeric duration bounds as timing (real messages from 2026-10-01 runs)', () => {
+    for (const m of [timeout, 'Error: Hook timed out in 20000ms.',
+      'AssertionError: restore took 3745ms over 30 snapshots; samples 3340/3745/555/636/537: expected 3745 to be less than 1000',
+      'AssertionError: even the contention tail must stay within 2x the ceiling: expected 337.294918 to be less than 300',
+    ]) expect(isTimingFailure(m), m).toBe(true);
+    for (const m of [
+      // Value assertions that merely MENTION a budget, ceiling, latency or a duration: deterministic, RED.
+      "AssertionError: expected 'capture budget exceeded' to be undefined",
+      "AssertionError: stderr on an allow would surface as a spurious error to the user: expected '[decision-gate] 2000ms budget exhausted' to be ''",
+      "AssertionError: expected 'render probe exceeded 250ms process deadline' to match /exceeded 250ms.*fixture:wedged/",
+      "AssertionError: expected 'latency ceiling breached' to equal 'ok'",
+      // A numeric bound with no duration cue is not provably timing.
+      'AssertionError: expected 6340 to be less than 5000',
+      'AssertionError: expected +0 to be 4', "AssertionError: expected [] to deeply equal [ 'hang' ]",
+      'Error: ENOENT: no such file or directory', "expected 'request timed out' to be 'ok'",
+    ]) expect(isTimingFailure(m), m).toBe(false);
   });
 
   it('a file-level failure (beforeAll/collect error, zero failed cases) is never retried away and is listed in the summary', () => {
