@@ -286,7 +286,7 @@ const swarmEntries = (projectDir) => { try { return fs.readdirSync(path.join(pro
 // 4.4.0 named queue files by wall clock: `<prefix><15-digit ms>-<hrtime>-<pid>-<n>.json`. Open 4.4.0
 // sessions keep queuing in that format after the update, so the two formats coexist for a while.
 const LEGACY_QUEUE = /^\d{15}-/;
-const queueTail = (name) => (name.startsWith(QUEUE_PREFIX) ? name.slice(QUEUE_PREFIX.length) : name.slice(CLAIM_PREFIX.length).replace(/^\d+-[A-Za-z0-9]*-/, ''));
+const queueTail = (name) => (name.startsWith(QUEUE_PREFIX) ? name.slice(QUEUE_PREFIX.length) : name.slice(CLAIM_PREFIX.length).replace(/^\d+-[A-Za-z0-9]*-\d+-/, ''));   // <pid>-<start>-<queuedAt>-
 const mtimeOf = (projectDir, name) => { try { return fs.statSync(path.join(projectDir, '.swarm', name)).mtimeMs; } catch { return Infinity; } };
 
 /**
@@ -333,7 +333,10 @@ export function queuedWork(projectDir) {
  */
 export function processStart(pid) {
   try {
-    const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000, windowsHide: true });
+    // TZ and locale PINNED: `lstart` prints local time in the locale's format, so two workers with
+    // different settings would record the same live process differently and read it as pid reuse.
+    const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000, windowsHide: true,
+      env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } });
     const s = String(r.stdout || '').replace(/[^A-Za-z0-9]/g, '');
     return r.status === 0 && s ? s : null;
   } catch { return null; }
@@ -341,16 +344,28 @@ export function processStart(pid) {
 let selfStart;
 const ownStart = () => (selfStart === undefined ? (selfStart = processStart(process.pid)) : selfStart);
 
-/** Claim a queued capture by atomic rename (stamping pid + start time, and the claim time); null if taken. */
+/**
+ * Claim a queued capture by atomic rename; null if taken. The claim's name records pid, start time and
+ * the queue file's ORIGINAL mtime (its creation order, which the mixed upgrade window sorts by); the
+ * claim file's own mtime is then set to the claim time, from which the orphan ceiling counts.
+ */
 function claimQueued(file) {
-  const claimed = path.join(path.dirname(file), `${CLAIM_PREFIX}${process.pid}-${ownStart() || 'na'}-${path.basename(file).slice(QUEUE_PREFIX.length)}`);
+  let queuedAt = 0;
+  try { queuedAt = Math.floor(fs.statSync(file).mtimeMs); } catch { return null; }
+  const claimed = path.join(path.dirname(file), `${CLAIM_PREFIX}${process.pid}-${ownStart() || 'na'}-${queuedAt}-${path.basename(file).slice(QUEUE_PREFIX.length)}`);
   try { fs.renameSync(file, claimed); } catch { return null; }
   try { const t = new Date(); fs.utimesSync(claimed, t, t); } catch { /* the ceiling then counts from queue time: earlier, never later */ }
   return claimed;
 }
 const unclaimedName = (claimed) => path.join(path.dirname(claimed), `${QUEUE_PREFIX}${queueTail(path.basename(claimed))}`);
-/** Put a claim back in the queue: rename (atomic, needs no hard links). */
-const returnClaim = (claimed) => { try { fs.renameSync(claimed, unclaimedName(claimed)); return true; } catch { return false; } };
+/** Put a claim back in the queue: rename (atomic, needs no hard links), restoring its creation order. */
+const returnClaim = (claimed) => {
+  const queuedAt = Number(path.basename(claimed).slice(CLAIM_PREFIX.length).split('-')[2]);
+  const back = unclaimedName(claimed);
+  try { fs.renameSync(claimed, back); } catch { return false; }
+  if (Number.isFinite(queuedAt) && queuedAt > 0) { try { const t = new Date(queuedAt); fs.utimesSync(back, t, t); } catch { /* best effort */ } }
+  return true;
+};
 
 /**
  * Return to the queue every claim whose worker is gone: its pid is dead, OR the pid now belongs to a

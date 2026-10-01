@@ -306,7 +306,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const dir = project();
     const live = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'live-claim', hook_event_name: 'Stop' } });
     const dead = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'dead-claim', hook_event_name: 'Stop' } });
-    const claim = (file, pid, start = 'na') => { const to = path.join(dir, '.swarm', `.progression-capture-claimed-${pid}-${start}-${path.basename(file).slice('.progression-capture-queue-'.length)}`); fs.renameSync(file, to); return to; };
+    const claim = (file, pid, start = 'na') => { const to = path.join(dir, '.swarm', `.progression-capture-claimed-${pid}-${start}-1-${path.basename(file).slice('.progression-capture-queue-'.length)}`); fs.renameSync(file, to); return to; };
     const liveClaim = claim(live, process.pid, processStart(process.pid) || 'na');
     claim(dead, 999999999);
     expect(queuedWork(dir), 'claimed work still counts as work a boundary must wait behind').toBe(2);
@@ -322,7 +322,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const dir = project();
     const names = ['a', 'b', 'c'].map((s) => path.basename(queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: s } })));
     expect(names).toEqual(['000000000001', '000000000002', '000000000003'].map((n) => `.progression-capture-queue-${n}.json`));
-    fs.renameSync(path.join(dir, '.swarm', names[2]), path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-na-000000000003.json`));
+    fs.renameSync(path.join(dir, '.swarm', names[2]), path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-na-1-000000000003.json`));
     expect(path.basename(queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'd' } })))
       .toBe('.progression-capture-queue-000000000004.json');
     expect(queuedCaptures(dir).map(sessionOf)).toEqual(['a', 'b', 'd']);
@@ -347,7 +347,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const dir = project();
     const mk = (sid, start, ageMs) => {
       const f = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: sid } });
-      const to = path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-${start}-${path.basename(f).slice('.progression-capture-queue-'.length)}`);
+      const to = path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-${start}-1-${path.basename(f).slice('.progression-capture-queue-'.length)}`);
       fs.renameSync(f, to); const t = new Date(Date.now() - ageMs); fs.utimesSync(to, t, t); return to;
     };
     const own = processStart(process.pid) || 'na';
@@ -357,6 +357,34 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     expect(reclaimOrphans(dir, { startOf: (pid) => (pid === process.pid ? own : null) })).toBe(own === 'na' ? 1 : 2);
     expect(queuedCaptures(dir).map(sessionOf).sort()).toEqual((own === 'na' ? ['ancient'] : ['ancient', 'reused-pid']).sort());
     expect(fs.existsSync(kept)).toBe(true);
+  });
+
+  it('4.4.1 NIT: the recorded start time does not depend on the caller\'s TZ or locale (no false "pid reused")', () => {
+    const prior = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL, LANG: process.env.LANG };
+    try {
+      process.env.TZ = 'Asia/Tokyo'; process.env.LC_ALL = 'C';
+      const tokyo = processStart(process.pid);
+      if (tokyo === null) return;   // no `ps` on this platform: only the ceiling applies there
+      process.env.TZ = 'America/Los_Angeles'; process.env.LC_ALL = 'fr_FR.UTF-8'; process.env.LANG = 'fr_FR.UTF-8';
+      expect(processStart(process.pid)).toBe(tokyo);
+    } finally {
+      for (const [k, v] of Object.entries(prior)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  });
+
+  it('4.4.1 NIT: a claim put back in the mixed upgrade window keeps its ORIGINAL creation order', () => {
+    const dir = project();
+    const sw = path.join(dir, '.swarm');
+    const put = (name, sid, ageMs) => { const f = path.join(sw, name); fs.writeFileSync(f, JSON.stringify({ event: 'Stop', host: 'codex', payload: { session_id: sid } })); const t = new Date(Date.now() - ageMs); fs.utimesSync(f, t, t); };
+    put('.progression-capture-queue-001790000000000-123456789-111-1.json', 'legacy-oldest', 60_000);
+    put('.progression-capture-queue-000000000001.json', 'seq-1', 40_000);
+    put('.progression-capture-queue-000000000002.json', 'seq-2', 20_000);
+    const lock = path.join(sw, '.progression-replay.lock');
+    const fakeStore = () => () => ({ outbox: new ProgressionOutbox({ projectRoot: dir }), appendExact: () => { throw new Error('none'); } });
+    // The worker claims the oldest, then loses the lock and puts the claim back.
+    runOutboxReplay({ projectDir: dir, token: takeReplayLock(dir), makeStoreFactory: fakeStore,
+      onClaim: () => fs.writeFileSync(lock, 'successor\npid 1\n'), runCapture: () => { throw new Error('must not run'); } });
+    expect(queuedCaptures(dir).map(sessionOf)).toEqual(['legacy-oldest', 'seq-1', 'seq-2']);
   });
 
   it('4.4.1 NIT: a hook whose lock is taken over before it commits does not produce or capture — it queues itself', () => {
