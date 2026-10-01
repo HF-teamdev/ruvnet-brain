@@ -25,8 +25,9 @@
 #
 # The success signal is the one line kb/forge-mcp-all.mjs prints on every genuinely-executed search
 # and on nothing else — `Searched <n> RuvNet repos (...)` — with the four known non-answers refused
-# explicitly first. Cheapest reliable signal in the payload: no parsing, no field extraction, plain
-# substring matching over the raw stdin, all of it bash builtins. The refusal markers are quote-free
+# explicitly first. Cheapest reliable signal in the payload: no JSON parsing, plain substring
+# matching over the tool_response portion of stdin ONLY (never the model-written query — step 0),
+# all of it bash builtins. The refusal markers are quote-free
 # on purpose: a PostToolUse payload JSON-encodes the tool response, so anything containing a double
 # quote would arrive as \" and never match.
 #
@@ -41,6 +42,7 @@ INPUT=""
 # exactly why a hook that CAN hang forever survives unnoticed. -t bounds the wait, and the string
 # is truncated AFTER the loop because a hook payload is one line with no newline, so `read` hands
 # the whole thing back at once and a per-iteration cap never fires.
+_l=""   # set -u: a read that times out before any byte leaves _l unset ("unbound variable" on stderr)
 while IFS= read -r -t 2 _l; do
   INPUT+="$_l"
   [ ${#INPUT} -ge 65536 ] && break
@@ -49,28 +51,65 @@ done
 INPUT="${INPUT:0:65536}"
 [ -n "$INPUT" ] || exit 0
 
-shopt -s nocasematch 2>/dev/null || true
+# ── 0. READ ONLY WHAT THE TOOL SAID (4.3.40 adversarial review, CRITICAL). Every success marker and
+# every refusal below is matched against tool_response ONLY. tool_input.query is text the MODEL
+# writes: matching the whole payload let a query that merely CONTAINED `Searched 37 RuvNet repos`,
+# `evidence=curated-capability-card`, `#1  repo=` or a host "saved to" sentence turn an empty,
+# refused or failed response into a 24-hour stamp (tests/unit/grounding-stamp-forgery.test.mjs).
+# Both hosts (Claude, Codex — tests/fixtures/hook-payloads/*/PostToolUse-*.json) name the key
+# `tool_response`. A raw `"tool_response"` cannot come from inside a JSON string (its quotes arrive
+# escaped as \"), so the first raw one is the key. Key order is not guaranteed, so a `tool_input`
+# that FOLLOWS the response is cut off too. No key ⇒ RESP stays empty ⇒ nothing mints.
+# Matching is case-SENSITIVE: the producers print these exact strings.
+RESP=""
+case "$INPUT" in *'"tool_response"'*) RESP="${INPUT#*\"tool_response\"}" ;; esac
+case "$RESP" in *'"tool_input"'*) RESP="${RESP%%\"tool_input\"*}" ;; esac
+# An empty or null response is not an answer.
+_r="${RESP//[[:space:]:,\}\]\[\{\"]/}"
+case "$_r" in ''|null) exit 0 ;; esac
 
-# ── 1. REFUSE the known non-answers, before anything else. Each of these minted a real 24h stamp. ──
-case "$INPUT" in
-  # ADR-054: the brain is switched off. The exact phrase is pinned to the producer by test.
-  *"RuvNet Brain is disabled"*) exit 0 ;;
-  # The GONG: every repo failed. An outage is not grounding.
-  *"RUVNET BRAIN IS DOWN"*)     exit 0 ;;
-  # A thrown error inside the tool.
-  *"search_ruvnet error:"*)     exit 0 ;;
-  # The search ran and matched nothing. A real answer to the wrong question — but the brain showed
-  # the model no source, so there is nothing for a stamp to attest to.
-  *"(no results"*)              exit 0 ;;
-esac
+# The two answer shapes the brain prints itself (kb/forge-mcp-all.mjs heavy-lane banner;
+# kb/card-lane.mjs renderCardHit fast-lane card). grounding-turn-evidence.mjs brainAnswered()
+# applies the same predicate at Stop; keep them in step.
+answered() {
+  [[ $1 =~ Searched\ [0-9]+\ RuvNet\ repos ]] && return 0
+  case "$1" in *"evidence=curated-capability-card"*) return 0 ;; esac
+  return 1
+}
+# A refusal counts when the tool spoke it BEFORE any answer — a refused result never mints, even if
+# an answer marker follows it. A real answer whose retrieved document QUOTES one of these phrases
+# (the corpus holds this repo's own docs) has the banner or card first, so it is still an answer.
+refused() {
+  local s="$1" p before
+  for p in "RuvNet Brain is disabled" "RUVNET BRAIN IS DOWN" "search_ruvnet error:"; do
+    case "$s" in *"$p"*) before="${s%%"$p"*}"; answered "$before" || return 0 ;; esac
+  done
+  # The search ran and matched nothing: the brain showed the model no source. A genuine result
+  # carries a `#1  repo=` block before any quoted "(no results"; the empty answer never does.
+  case "$s" in *"(no results"*)
+    before="${s%%"(no results"*}"
+    case "$before" in *"#1  repo="*) ;; *) return 0 ;; esac ;;
+  esac
+  return 1
+}
 
-# ── 2. REQUIRE the success banner. No banner ⇒ no successful search happened in this payload ⇒ no
-# stamp. This is what makes a missing or empty tool_response mint nothing, which is the query-only
-# behaviour finally gone.
-case "$INPUT" in
-  *"Searched "*"RuvNet repos"*) ;;
-  *) exit 0 ;;
-esac
+# ── 1. REFUSE the known non-answers first, independent of any marker. ──────────────────────────
+refused "$RESP" && exit 0
+
+# ── 2. REQUIRE an answer: in the response itself, or — when the HOST replaced an oversized result
+# with "exceeds maximum allowed tokens. Output has been saved to <file>" — in that file, read
+# bounded, and only when it lives in the host's own $HOME/.claude/projects/*/tool-results/
+# directory, is a regular file (not a link) and itself holds an answer and no leading refusal.
+if ! answered "$RESP"; then
+  saved_re='exceeds maximum allowed tokens\. Output has been saved to ([^[:space:]\\"]+/tool-results/[^[:space:]\\"]+\.txt)'
+  [[ $RESP =~ $saved_re ]] || exit 0
+  saved="${BASH_REMATCH[1]}"
+  case "$saved" in *..*) exit 0 ;; "$HOME/.claude/projects/"*"/tool-results/"*) ;; *) exit 0 ;; esac
+  [ -f "$saved" ] && [ ! -L "$saved" ] || exit 0
+  head=$(head -c 16384 "$saved" 2>/dev/null) || exit 0
+  refused "$head" && exit 0
+  answered "$head" || exit 0
+fi
 
 DIR="$HOME/.cache/ruvnet-brain/grounded"
 mkdir -p "$DIR" 2>/dev/null || exit 0
@@ -89,9 +128,15 @@ mkdir -p "$DIR" 2>/dev/null || exit 0
 
 # ── 3. WHICH terms — from the QUERY only, as it always was. The first raw "query" key in the JSON is
 # tool_input's; inside tool_response text the quotes are escaped (\"query\") so they cannot match.
+# Read from the tool_input segment only, so a raw "query" key inside an object-shaped response
+# (Codex passes the MCP result as an object, and the result carries retrieval.query) cannot decide
+# which products are stamped. Product terms match case-insensitively (a query says "RuVector").
 QUERY=""
+TI="${INPUT#*\"tool_input\"}"
+TI="${TI%%\"tool_response\"*}"
 re='"query"[[:space:]]*:[[:space:]]*"([^"]*)"'
-[[ $INPUT =~ $re ]] && QUERY="${BASH_REMATCH[1]}"
+[[ $TI =~ $re ]] && QUERY="${BASH_REMATCH[1]}"
+shopt -s nocasematch 2>/dev/null || true
 [ -n "$QUERY" ] || exit 0
 
 # WRITE_GATE terms — same product-term list as ground-before-write.sh's own copy, mirrored in both

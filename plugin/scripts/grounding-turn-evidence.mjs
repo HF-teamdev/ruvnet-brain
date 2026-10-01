@@ -135,11 +135,37 @@ const NOT_A_SOURCE = /^(?:Edit|Write|MultiEdit|NotebookEdit|TodoWrite|ToolSearch
 const MCP_MUTATING = /__(?:create|update|delete|remove|publish|deploy|push|write|send|set|merge|upload|patch|put|post|add|rename|move|approve|promote|rollback|cancel|buy|store|edit|import|reset|stop|terminate|spawn|execute)[a-z_-]*$/i;
 
 /** One tool call as evidence: what it looked at (`text`, used for binding) and how much to trust it. */
+const SEARCH_BANNER = /Searched \d+ RuvNet repos/;
+// kb/card-lane.mjs renderCardHit — the FAST LANE first responder never prints the banner.
+const SEARCH_CARD = /evidence=curated-capability-card/;
+const SEARCH_OVERSIZE = /exceeds maximum allowed tokens\. Output has been saved to (\S+?[\\/]tool-results[\\/]\S+?\.txt)/;
+
+/**
+ * Did the brain actually answer? Three real shapes (tests/unit/grounding-success-shapes.test.mjs;
+ * 22 of 240 real results were wrongly failed by the banner-only rule): the heavy lane's banner, the
+ * fast lane's curated card, and a result the HOST swapped for an "exceeds maximum allowed tokens"
+ * error — whose saved file (only from the host's own tool-results directory) holds the answer.
+ * grounding-stamp.sh applies the same predicate at PostToolUse; keep them in step.
+ */
+export function brainAnswered(r) {
+  if (SEARCH_BANNER.test(r) || SEARCH_CARD.test(r)) return true;
+  const m = SEARCH_OVERSIZE.exec(r);
+  if (!m || m[1].includes('..')) return false;
+  try {
+    const fd = fs.openSync(m[1], 'r');
+    try {
+      const buf = Buffer.alloc(16384);
+      const head = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString('utf8');
+      return SEARCH_BANNER.test(head) || SEARCH_CARD.test(head);
+    } finally { fs.closeSync(fd); }
+  } catch { return false; }
+}
+
 export function sourceOf(name, input = {}, result = '') {
   const n = String(name || '');
   const r = String(result || '');
   if (/(?:^|__)search_ruvnet$/.test(n)) {
-    const ok = /Searched \d+ RuvNet repos/.test(r) && !/^\s*(?:search_ruvnet error:|.{0,200}RUVNET BRAIN IS DOWN|.{0,200}RuvNet Brain is disabled)/s.test(r);
+    const ok = brainAnswered(r) && !/^\s*(?:search_ruvnet error:|.{0,200}RUVNET BRAIN IS DOWN|.{0,200}RuvNet Brain is disabled)/s.test(r);
     const paths = [...r.matchAll(/^path : (\S+)/gm)].map((m) => m[1]).slice(0, 20);
     return { kind: 'search_ruvnet', ref: String(input.query || ''), strength: ok ? 'strong' : 'failed', ok, text: [input.query, ...paths].join(' ') };
   }
