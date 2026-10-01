@@ -26,9 +26,9 @@ function installedBrain() {
   fs.writeFileSync(path.join(kb, 'node_modules', '@xenova', 'transformers', 'package.json'), '{}');
   fs.writeFileSync(path.join(kb, 'store.rvf'), Buffer.alloc(4096, 7));
   fs.writeFileSync(path.join(kb, 'store.passages.jsonl'), '{"id":"1","text":"hello"}\n');
-  fs.writeFileSync(path.join(kb, 'SOURCE.json'), JSON.stringify({ releaseTag: 'v4.4.1' }));
+  fs.writeFileSync(path.join(kb, 'SOURCE.json'), JSON.stringify({ releaseTag: 'v9.9.1' }));
   fs.symlinkSync('@xenova/transformers/package.json', path.join(kb, 'node_modules', 'semver-link')); // npm-style in-tree link
-  fs.writeFileSync(path.join(brain, 'active.json'), '{"version":"4.4.1"}');
+  fs.writeFileSync(path.join(brain, 'active.json'), '{"version":"9.9.1"}');
   return { home, brain, kb };
 }
 

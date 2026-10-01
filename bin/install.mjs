@@ -169,7 +169,7 @@ export function namedReleaseFromArgs(args) {
   const pin = valueAfter('--pin');
   const version = valueAfter('--version');
   if (pin === null) {
-    return { error: '--pin needs the release to install, e.g.  --pin v4.4.1', hint: `It no longer falls back to a built-in release (that bundle could not pass validation). Pick one from https://github.com/${REPO}/releases, or omit --pin to install the latest.` };
+    return { error: '--pin needs the release to install, e.g.  --pin vX.Y.Z', hint: `It no longer falls back to a built-in release (that bundle could not pass validation). Pick one from https://github.com/${REPO}/releases, or omit --pin to install the latest.` };
   }
   if (pin && version && pin !== version) return { error: `--pin ${pin} and --version ${version} disagree`, hint: 'Name one release.' };
   if (pin) return { tag: pin, source: 'pinned' };

@@ -24,14 +24,14 @@ describe('install.mjs has no built-in fallback release', () => {
   });
 
   it('--pin names its release, exactly like --version; a bare --pin refuses instead of falling back', () => {
-    expect(namedReleaseFromArgs(['--pin', 'v4.4.1'])).toEqual({ tag: 'v4.4.1', source: 'pinned' });
-    expect(namedReleaseFromArgs(['--version', 'v4.4.0'])).toEqual({ tag: 'v4.4.0', source: 'forced' });
+    expect(namedReleaseFromArgs(['--pin', 'v9.9.1'])).toEqual({ tag: 'v9.9.1', source: 'pinned' });
+    expect(namedReleaseFromArgs(['--version', 'v9.9.0'])).toEqual({ tag: 'v9.9.0', source: 'forced' });
     expect(namedReleaseFromArgs([])).toBeNull();
     const bare = namedReleaseFromArgs(['--pin']);
-    expect(bare.error).toBe('--pin needs the release to install, e.g.  --pin v4.4.1');
+    expect(bare.error).toBe('--pin needs the release to install, e.g.  --pin vX.Y.Z');
     expect(bare.hint).toMatch(/no longer falls back to a built-in release/);
     expect(namedReleaseFromArgs(['--pin', '--yes']).error).toMatch(/--pin needs/);
-    expect(namedReleaseFromArgs(['--pin', 'v4.4.1', '--version', 'v4.4.0']).error).toMatch(/disagree/);
+    expect(namedReleaseFromArgs(['--pin', 'v9.9.1', '--version', 'v9.9.0']).error).toMatch(/disagree/);
   });
 
   it('is NOT a silent fallback for a failed lookup: that bundle predates COVERAGE.json and failed two steps later', () => {
