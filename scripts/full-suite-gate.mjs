@@ -43,12 +43,22 @@ export function redFiles(report, quarantine, root = ROOT) {
     .some((test) => test.status === 'failed' && !known.has(key(rel(file.name), test.fullName)))).map((file) => rel(file.name)))];
 }
 
-export function evaluateFullSuite({ report, quarantine, files, include, root = ROOT, retry = null }) {
+/** A failure whose MESSAGE is a timing/budget failure: vitest's own timeout, or an explicit budget,
+ * ceiling or latency assertion. Matched on the failure text only — never on the test's title, so a
+ * budget-named test that fails a value assertion is still a plain RED. */
+export const TIMING_FAILURE = /\b(?:Test|Hook) timed out in \d+ ?ms\b|\bbudget\b|\bceiling\b|\bexceeded \d+(?:\.\d+)? ?ms\b|\btook \d+(?:\.\d+)? ?ms\b|\bp9[59]\b|\blatency\b/i;
+export const isTimingFailure = (message) => TIMING_FAILURE.test(String(message || '').slice(0, 2000));
+/** More flaky tests than this in one run fails the gate: load-sensitivity that wide is itself a defect. */
+export const MAX_FLAKY = 3;
+
+export function evaluateFullSuite({ report, quarantine, files, include, root = ROOT, retry = null, maxFlaky = MAX_FLAKY }) {
   const problems = [];
   const rel = (name) => path.relative(root, name).split(path.sep).join('/');
-  // One isolated retry of the red files: a test red in the full run but green alone is FLAKY (listed in
-  // the verdict, never hidden). Measured 2026-10-01: four budget/latency tests went red in a full run at
-  // load ~100-150 and passed alone. A test red in BOTH runs, or absent from the retry, stays RED.
+  // One isolated retry of the red files. A test is FLAKY only when (a) its full-run failure is a
+  // timing/budget failure (isTimingFailure) AND (b) it passed in the isolated retry. Measured 2026-10-01:
+  // budget/latency tests went red in full runs at load ~100-150 and passed alone. Anything else red —
+  // a value assertion that passes alone may be a real shared-state bug — stays RED. Every FLAKY is
+  // recorded with its message, and more than maxFlaky of them fails the gate.
   const retried = new Map();
   for (const file of retry?.testResults || []) for (const test of file.assertionResults || []) retried.set(key(rel(file.name), test.fullName), test.status);
   const flaky = [];
@@ -83,15 +93,29 @@ export function evaluateFullSuite({ report, quarantine, files, include, root = R
         if (entry) problems.push(`stale quarantine (now passes, remove it): ${id}`);
       } else if (test.status === 'failed') {
         counts.failed += 1;
+        const message = String((test.failureMessages || [''])[0]);
         if (entry) counts.quarantinedRed += 1;
-        else if (retried.get(id) === 'passed') flaky.push(id);
-        else problems.push(`RED: ${id}: ${String((test.failureMessages || [''])[0]).split('\n')[0].slice(0, 240)}`);
+        else if (retried.get(id) === 'passed' && isTimingFailure(message)) {
+          flaky.push({ test: id, retry: 'passed', failure: message.split('\n')[0].slice(0, 240) });
+        } else problems.push(`RED: ${id}: ${message.split('\n')[0].slice(0, 240)}`);
       } else if (test.status === 'todo') counts.todo += 1;
       else counts.skipped += 1;
     }
   }
+  if (flaky.length > maxFlaky) problems.push(`too many flaky tests: ${flaky.length} > ${maxFlaky} timing failures that passed alone`);
+  counts.flaky = flaky.length;
   const unobserved = [...known.keys()].filter((id) => !seen.has(id));
   return { verdict: problems.length ? 'FAIL' : 'PASS', problems, counts, flaky, unobserved };
+}
+
+/** Markdown for the GitHub job summary: the verdict, every problem and every FLAKY, never truncated. */
+export function summaryMarkdown(result) {
+  const c = result.counts || {};
+  return [`## Full suite: ${result.verdict}`, '',
+    `${c.files ?? '?'} files · ${c.passed ?? '?'} passed · ${c.failed ?? '?'} failed (${c.quarantinedRed ?? 0} quarantined) · ${c.flaky ?? 0} flaky · ${c.skipped ?? '?'} skipped · ${c.todo ?? '?'} todo`, '',
+    ...(result.problems.length ? ['### Problems', ...result.problems.map((p) => `- ${p}`), ''] : []),
+    ...(result.flaky?.length ? ['### Flaky (timing failure in the full run, passed alone)', ...result.flaky.map((f) => `- ${f.test} — ${f.failure}`), ''] : []),
+  ].join('\n');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -119,5 +143,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   const result = evaluateFullSuite({ report, quarantine, files: listTestFiles(root), include: config.test.include, root, retry });
   console.log(JSON.stringify(result, null, 2));
+  if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summaryMarkdown(result)}\n`);
   process.exitCode = result.verdict === 'PASS' ? 0 : 1;
 }

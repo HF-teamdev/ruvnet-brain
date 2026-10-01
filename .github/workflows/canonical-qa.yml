@@ -36,9 +36,12 @@ jobs:
   # (corpus-canary's BREAK-IT, v4.3.40) sat on main unseen. scripts/full-suite-gate.mjs fails on any
   # red not in tests/known-red.json (each entry has a class, evidence and owner), on a quarantined test
   # that now passes, and on any test file that vitest's include silently never runs.
+  # Runtime (measured locally 2026-10-01, maxWorkers 1 per vitest.config.mjs): 29.5 min of summed file
+  # time, 35 min wall including the retry, on an M3 Max at load ~100. A 4-vCPU ubuntu runner is slower
+  # per core; 120 min leaves room for a 2x slowdown plus install. Not yet measured on GitHub.
   full-suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
