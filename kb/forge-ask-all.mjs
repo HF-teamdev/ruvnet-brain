@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { searchKb } from './forge-ask.mjs';
+import { kbBuildIdentity } from './kb-build-identity.mjs';
 import { describeSearchFailure } from './search-outcome.mjs';
 import { prepareRelatedSources, renderRelatedSources } from './grounded-response.mjs';
 import { rerankPairs, cePrefilterScores } from './forge-rerank.mjs';
@@ -2465,29 +2466,12 @@ export function deployedFamilyReposFromQuery(query, dir, availableRepos) {
 //
 // NEVER A STALE INDEX AFTER AN UPDATE. An update swaps the whole kb/ directory under the same path,
 // extracted files can carry archive mtimes, and a changed store can keep its byte size, so
-// (mtime, size) alone is not an identity. Every entry is keyed by the KB BUILD IDENTITY (the
-// manifest.json stat plus its generated/generationTag stamp) AND the store file's own
-// (dev, inode, mtime, size). A new build drops every index of the old one before anything is served.
+// (mtime, size) alone is not an identity. Every entry is keyed by the KB BUILD IDENTITY
+// (kb-build-identity.mjs) AND the store file's own (dev, inode, mtime, size). A new build drops
+// every index of the old one before anything is served.
 const _metaIndex = new Map(); // meta file -> { key, postings: Map<token, Uint32Array> }
 let _metaIndexBuild = null;    // the build identity every _metaIndex entry belongs to
-const _buildIdentity = new Map(); // dir -> { statKey, identity }
-
-export function kbBuildIdentity(dir) {
-  const file = path.join(dir, 'manifest.json');
-  let stat;
-  try { stat = fs.statSync(file); } catch { return `${path.resolve(dir)}|no-manifest`; }
-  const statKey = `${stat.dev}:${stat.ino}|${stat.mtimeMs}|${stat.size}`;
-  const cached = _buildIdentity.get(dir);
-  if (cached?.statKey === statKey) return cached.identity;
-  let stamp = 'unreadable';
-  try {
-    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
-    stamp = `${manifest.generated || ''}|${manifest.corpus?.generationTag || ''}|${manifest.brainVersion || ''}`;
-  } catch { /* the stat key alone still changes on any rewrite */ }
-  const identity = `${path.resolve(dir)}|${statKey}|${stamp}`;
-  _buildIdentity.set(dir, { statKey, identity });
-  return identity;
-}
+export { kbBuildIdentity };
 
 function metadataIndex(dir, repo, build) {
   const file = path.join(dir, `${repo}.meta.json`);

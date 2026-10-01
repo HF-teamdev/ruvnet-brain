@@ -29,6 +29,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { kbBuildIdentity } from './kb-build-identity.mjs';
 
 // English words that happen to be camelCase-ish or dotted in prose. Kept tiny on purpose: the
 // shape tests below already exclude almost everything, and a long list would be its own bug.
@@ -99,9 +100,13 @@ export function exactMemberIndexPresence(dir, repos, member) {
   return { present: false, scannedRepos };
 }
 
-// One scan per (dir, identifier set) per process. The MCP worker is warm and long-lived, so a
-// repeated question costs nothing after the first.
+// One scan per (KB build, identifier set) per process. The MCP worker is warm and long-lived, so a
+// repeated question costs nothing after the first. Keyed by the KB BUILD IDENTITY, not the directory
+// path: an update swaps kb/ under the same path, and a path-keyed scan kept answering with the
+// previous build's stores and passages until the process exited. A new build also drops every scan
+// cached for the old one, so the map cannot grow across updates.
 const _scans = new Map();
+const _scanBuild = new Map(); // dir -> the build identity its cached scans belong to
 
 /**
  * Which stores literally contain these identifiers, and the matching passages from each.
@@ -111,7 +116,13 @@ const _scans = new Map();
  * 466 MB), not by JSON.
  */
 export function identifierScan(dir, identifiers, { perRepo = 8, maxRepos = 6 } = {}) {
-  const key = `${dir}|${[...identifiers].sort().join(' ')}|${perRepo}|${maxRepos}`;
+  const build = kbBuildIdentity(dir);
+  const previous = _scanBuild.get(dir);
+  if (previous !== build) {
+    if (previous !== undefined) for (const k of _scans.keys()) if (k.startsWith(`${previous}|`)) _scans.delete(k);
+    _scanBuild.set(dir, build);
+  }
+  const key = `${build}|${[...identifiers].sort().join(' ')}|${perRepo}|${maxRepos}`;
   const cached = _scans.get(key);
   if (cached) return cached;
   const needles = identifiers.filter((t) => typeof t === 'string' && t.length >= 3);
