@@ -19,7 +19,7 @@
  *   outranked          production text >= 0, yet the top citation is another file
  *
  *   node scripts/oracle/abstain-trace.mjs --kb <kbDir> --set <need-set.json> --rows <needs.json>
- *     [--runtime <dir>] [--sample 20] [--pool 64] [--out <file>]
+ *     [--runtime <dir>] [--keyword 8] [--sample 20] [--pool 64] [--out <file>]
  *
  * --rows is a measure-need-set output (it supplies reposSearched and the production top logit);
  * only needs whose gold repository was searched are traced. Nothing written contains a local path.
@@ -74,6 +74,10 @@ async function main() {
   const runtime = path.resolve(arg('--runtime', kb));
   const { searchKb } = await import(pathToFileURL(path.join(runtime, 'forge-ask.mjs')).href);
   const { rerankPairs } = await import(pathToFileURL(path.join(runtime, 'forge-rerank.mjs')).href);
+  // --keyword N also counts the keyword lane (keyword-lane.mjs in the runtime) as part of the pool.
+  const keywordTopN = Number(arg('--keyword', 0));
+  const keywordCandidates = keywordTopN > 0
+    ? (await import(pathToFileURL(path.join(runtime, 'keyword-lane.mjs')).href)).keywordCandidates : null;
   const ce = async (query, texts) => {
     if (!texts.length) return [];
     const scored = await rerankPairs(query, texts.map((t, i) => ({ fullText: t, i })));
@@ -88,20 +92,27 @@ async function main() {
     const store = r.repo.toLowerCase();
     const hits = await searchKb({ dir: kb, name: store, query: q.need, k: poolDepth, n: poolDepth });
     const idx = hits.findIndex((h) => h.path === q.path);
-    traced.push({ r, q, store, hits, poolRank: idx < 0 ? null : idx + 1 });
+    let lane = idx < 0 ? null : 'dense';
+    let gold = idx < 0 ? null : hits[idx];
+    if (!gold && keywordCandidates) {
+      const kw = keywordCandidates(kb, store, q.need, { topN: keywordTopN, exclude: new Set(hits.map((h) => h.path)) });
+      const k = kw.findIndex((c) => c.path === q.path);
+      if (k >= 0) { gold = kw[k]; lane = 'keyword'; }
+    }
+    traced.push({ r, q, store, gold, lane, poolRank: idx < 0 ? (gold ? poolDepth + 1 : null) : idx + 1 });
     process.stderr.write(`\r[abstain-trace] pool ${traced.length}/${eligible.length}`);
   }
   const inPool = traced.filter((t) => t.poolRank != null);
   const sample = sampleEvenly(inPool, want);
   const out = [];
   for (const t of sample) {
-    const gold = t.hits[t.poolRank - 1];
+    const { gold } = t;
     const chunks = await chunksOf(kb, t.store, t.q.path);
     const [ceProduction] = await ce(t.q.need, [gold.fullText || gold.text || '']);
     const chunkScores = await ce(t.q.need, chunks);
     const [ceSpan] = await ce(t.q.need, [t.q.span || '']);
     const row = {
-      id: t.q.id, repo: t.r.repo, need: t.q.need, poolRank: t.poolRank,
+      id: t.q.id, repo: t.r.repo, need: t.q.need, poolRank: t.poolRank, lane: t.lane,
       ceProduction: +ceProduction.toFixed(3),
       ceBestChunk: chunkScores.length ? +Math.max(...chunkScores).toFixed(3) : null,
       chunks: chunks.length, goldDocChars: (gold.fullText || '').length,
@@ -114,7 +125,7 @@ async function main() {
   const count = (k) => out.filter((x) => x.cause === k).length;
   const report = {
     kind: 'ruvnet-brain-abstain-trace', poolDepth,
-    eligible: eligible.length, goldInPool: inPool.length, notInPool: traced.length - inPool.length, sampled: out.length,
+    eligible: eligible.length, goldInPool: inPool.length, goldViaKeyword: traced.filter((t) => t.lane === 'keyword').length, notInPool: traced.length - inPool.length, sampled: out.length,
     causes: Object.fromEntries(['not-in-pool', 'window', 'calibration', 'chunking', 'outranked'].map((k) => [k, count(k)])),
     rows: out,
     poolRanks: traced.map((t) => ({ id: t.q.id, poolRank: t.poolRank })),
