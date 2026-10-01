@@ -13,7 +13,7 @@ import path from 'node:path';
 vi.mock('../../kb/forge-ask.mjs', () => ({ searchKb: vi.fn() }));
 vi.mock('../../kb/forge-rerank.mjs', () => ({ rerankPairs: vi.fn() }));
 
-import { deployedFamilyReposFromQuery, discoverRepos, searchAll } from '../../kb/forge-ask-all.mjs';
+import { deployedFamilyReposFromQuery, discoverRepos, queryIdentifiers, searchAll } from '../../kb/forge-ask-all.mjs';
 import { searchKb } from '../../kb/forge-ask.mjs';
 import { rerankPairs } from '../../kb/forge-rerank.mjs';
 
@@ -3586,6 +3586,53 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
     expect(pooled.some((c) => c.repo === 'latentmesh' && c.path === 'docs/adr/001-architecture.md' && c._lane === 'rescue')).toBe(true);
     // ...but the name still adds nothing in another store that merely depends on it.
     expect(pooled.some((c) => c.repo === 'agentdb' && c._lane === 'rescue')).toBe(false);
+  });
+
+  // Review S5: kb/repo-aliases.json lists CODE SYMBOLS (ruvector: RvfStore, RvfDatabase) beside names, and the
+  // owner map was single-valued ("metaharness" ended up owned only by agent-harness-generator).
+  describe('queryIdentifiers: only names are names (review S5)', () => {
+    const stores = (...names) => mkdirWith(names.map((n) => `${n}.rvf`)); // the shipped kb/repo-aliases.json applies
+    it('a code symbol registered as an alias stays an identifier in every store — member access or bare', () => {
+      const d = stores('agentdb', 'ruvector');
+      const member = queryIdentifiers(d, 'Where does agentdb call RvfDatabase.openReadonly?');
+      expect(member.identifierScanTokens).toEqual(expect.arrayContaining(['rvfdatabase', 'openreadonly']));
+      expect(member.forStore('agentdb').identifierScanTokens).toContain('rvfdatabase');
+      expect(member.forStore('ruvector').identifierScanTokens).toContain('rvfdatabase');
+      const bare = queryIdentifiers(d, 'How does agentdb open an RvfStore?');
+      expect(bare.forStore('agentdb').identifierScanTokens).toEqual(['rvfstore']);
+    });
+    it('a store name used as code ("Name.method", "Name::", "Name(") is an identifier; in prose it is a name', () => {
+      const d = stores('agentdb', 'ruvector');
+      expect(queryIdentifiers(d, 'What does RuVector.search return?').forStore('agentdb').identifierScanTokens).toContain('ruvector');
+      expect(queryIdentifiers(d, 'Is RuVector::open safe?').forStore('agentdb').identifierScanTokens).toContain('ruvector');
+      expect(queryIdentifiers(d, 'RuVector (the vector store). Then how does HNSW work?').forStore('agentdb').identifierScanTokens).not.toContain('ruvector');
+    });
+    it('the original case still holds: "RuVector HNSW vector search overview" never widens to agentdb', () => {
+      const q = queryIdentifiers(stores('agentdb', 'ruvector'), 'RuVector HNSW vector search overview');
+      expect(q.identifierScanTokens).not.toContain('ruvector');
+      expect(q.forStore('agentdb').identifierScanTokens).not.toContain('ruvector');
+      expect(q.forStore('ruvector').identifierScanTokens).toContain('ruvector');
+    });
+    it('ownership is a multi-map: "metaharness" is its own store AND an alias of agent-harness-generator', () => {
+      const q = queryIdentifiers(stores('metaharness', 'agent-harness-generator', 'agentdb'), 'How does MetaHarness score a harness?');
+      expect(q.identifierScanTokens).not.toContain('metaharness'); // a name: never widens the route
+      expect(q.forStore('metaharness').identifierScanTokens).toContain('metaharness');
+      expect(q.forStore('agent-harness-generator').identifierScanTokens).toContain('metaharness');
+      expect(q.forStore('agentdb').identifierScanTokens).not.toContain('metaharness');
+    });
+    it('end to end: inside agentdb, a code-symbol alias rescues the file that uses it', async () => {
+      const d = stores('agentdb', 'ruvector');
+      fs.writeFileSync(path.join(d, 'agentdb.passages.jsonl'), [
+        JSON.stringify({ path: 'docs/overview.md', title: 'Overview', text: 'General notes.' }),
+        JSON.stringify({ path: 'src/backends/rvf.ts', title: 'rvf backend',
+          text: 'export class RvfBackend { open() { this.db = RvfDatabase.openReadonly(this.path); } }' }),
+      ].join('\n'));
+      vi.mocked(searchKb).mockImplementation(async ({ name }) => [hit({ repo: name, path: 'docs/overview.md' })]);
+      vi.mocked(rerankPairs).mockImplementation(async (_q, cands) => cands.map((c) => ({ ...c, ceScore: 3 })));
+      await searchAll({ dir: d, repos: ['agentdb'], query: 'Where does agentdb construct an RvfDatabase?' });
+      const pooled = vi.mocked(rerankPairs).mock.calls[0][1];
+      expect(pooled.some((c) => c.repo === 'agentdb' && c.path === 'src/backends/rvf.ts' && c._lane === 'rescue')).toBe(true);
+    });
   });
 
   it.each([['off', undefined], ['on', '1']])('pools a keyword-matched file dense missed only when RUVNET_BRAIN_KEYWORD_LANE=1 (%s)', async (mode, flag) => {
