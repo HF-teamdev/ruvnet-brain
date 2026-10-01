@@ -4288,8 +4288,10 @@ function renderLessons(data) {
       chip(r.origin, r.userStated ? 'green' : 'nt',
         r.userStated
           ? 'You said this. Only lessons you stated yourself are allowed to reach the strongest level.'
-          : r.quarantined
-            ? 'This came from bundled maintainer or demonstration history. It is not your statement and cannot be turned into your personal policy.'
+          : (r.sourceClass === 'imported-owner' || r.sourceClass === 'demonstration')
+            ? (r.quarantined
+              ? 'This came from bundled maintainer or demonstration history. It is not your statement and cannot be turned into your personal policy.'
+              : 'This came from imported maintainer history and was ratified, so it is in force here. You can switch it off; it cannot be raised to "Stops me".')
             : 'I inferred this from what happened. A lesson I inferred can never be raised to "Stops me", however often it fires — the model does not get to ratify its own rules.'),
       r.taughtCount ? chip(`taught ${r.taughtCount}×`, 'grey') : null,
       r.awaitingYou ? chip('awaiting your decision', 'amber', 'Recorded, but you have not agreed to it yet.') : null,

@@ -1199,7 +1199,13 @@ function gatherLessons() {
     const trig = TRIGGER_BY_KEY.get(l.trigger);
     const meaning = ENFORCEMENT_MEANING[l.enforcement] || { label: l.enforcement, detail: '' };
     const userStated = l.origin === ORIGIN.USER_STATED && l.sourceClass === SOURCE_CLASS.CURRENT_USER;
-    const quarantined = l.sourceClass === SOURCE_CLASS.IMPORTED_OWNER || l.sourceClass === SOURCE_CLASS.DEMONSTRATION;
+    // Quarantine is about whether history can BECOME policy, so it applies to an imported row that
+    // was never ratified. A row that WAS ratified is delivered by lessonsFor() today whatever its
+    // source class — RNBC QA 2026-10-01 measured 12 such rows filed here as "quarantined, cannot be
+    // switched on" behind a checked, disabled box while the gate enforced every one of them. A rule in
+    // force must be reported in force and must keep a working off switch.
+    const importedClass = l.sourceClass === SOURCE_CLASS.IMPORTED_OWNER || l.sourceClass === SOURCE_CLASS.DEMONSTRATION;
+    const quarantined = importedClass && l.status !== STATUS.RATIFIED && l.status !== STATUS.ACTIVE;
     const origin = l.sourceClass === SOURCE_CLASS.CURRENT_USER
       ? 'you taught me this'
       : l.sourceClass === SOURCE_CLASS.IMPORTED_OWNER
@@ -1234,7 +1240,7 @@ function gatherLessons() {
       // Honest ceiling: ratifying a model-inferred lesson can NOT raise it to block
       // (lesson-store.mjs:380). Say so before they click, not after.
       canReachBlock: userStated,
-      canRatify: !quarantined,
+      canRatify: !importedClass,
       intendedEnforcement: l.intendedEnforcement || null,
     };
   });
@@ -3444,6 +3450,8 @@ export {
   saveBrainPower,
   gatherBrainProfile,
   saveBrainProfile,
+  setLesson,
+  gatherLessons,
   gatherRouterEngine,
   autoEligibleIds,
   gatherConfig,
