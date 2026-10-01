@@ -139,6 +139,33 @@ describe('issue #77 installed host convergence boundary', () => {
     expect(install.classifyHostConvergence(receipt)).toMatchObject({ healthy: true, state: 'channels-converged' });
   });
 
+  it('--doctor and --update SHOW 4.3.40 ruflo debris they remove or refuse — never silently', () => {
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'brain-legacy-debris-')));
+    temps.push(project);
+    const storeDir = path.join(project, '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    fs.writeFileSync(path.join(storeDir, 'memory.db'), 'store');
+    fs.writeFileSync(path.join(storeDir, 'ruvector.db'), 'x');
+    fs.writeFileSync(path.join(storeDir, '.swarm', 'hnsw.metadata.json'), '{}');
+    fs.writeFileSync(path.join(storeDir, '.swarm', 'user-notes.md'), 'mine');
+    const lines = [];
+    const original = console.log;
+    console.log = (line) => lines.push(String(line));
+    try {
+      const preview = install.reportLegacyRufloDebris({ projectDir: project, dryRun: true });
+      expect(fs.existsSync(path.join(storeDir, 'ruvector.db'))).toBe(true); // doctor only reports
+      expect(preview.removed).toEqual([path.join(storeDir, 'ruvector.db')]);
+      const applied = install.reportLegacyRufloDebris({ projectDir: project });
+      expect(applied.removed).toEqual([path.join(storeDir, 'ruvector.db')]);
+      expect(fs.existsSync(path.join(storeDir, 'ruvector.db'))).toBe(false);
+      expect(fs.readFileSync(path.join(storeDir, '.swarm', 'user-notes.md'), 'utf8')).toBe('mine');
+    } finally { console.log = original; }
+    const text = lines.join('\n');
+    expect(text).toContain(`legacy ruflo debris from 4.3.40 in ${path.join(storeDir, 'ruvector.db')} (removed by the next --update or capture)`);
+    expect(text).toContain(`removed legacy ruflo debris from 4.3.40: ${path.join(storeDir, 'ruvector.db')}`);
+    expect(text.match(/left legacy ruflo debris in place — .*\.swarm\/\.swarm: unexpected entries: user-notes\.md/g)).toHaveLength(2);
+  });
+
   it('keeps a native Codex update explicitly non-converged until Codex restarts', () => {
     const receipt = {
       desiredVersion: VERSION,

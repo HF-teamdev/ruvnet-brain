@@ -183,18 +183,48 @@ export function rufloCwdFor(storePath, { root = rufloScratchRoot() } = {}) {
 /**
  * 4.3.40 ran ruflo with cwd `<project>/.swarm`, so upgraded projects still hold ruflo's cwd artifacts
  * INSIDE the store directory — including `.swarm/.swarm/hnsw.metadata.json`, a copy of snapshot content.
- * Removes exactly those, and only when every file in them is one ruflo is known to write there; anything
- * unexpected (or any symlink) leaves that artifact untouched and is reported. The store itself
- * (memory.db, -wal/-shm, schema.sql), the outbox and queue files are never candidates. Idempotent and
- * cheap (four lstat calls once clean), so it runs whenever a store is opened.
+ * Removes exactly those, and only when every path in them is one ruflo is known to write there; anything
+ * unexpected (or any symlink) leaves that artifact untouched and is REPORTED. The store itself
+ * (memory.db, -wal/-shm, schema.sql), the outbox and queue files are never candidates.
+ *
+ * The allowlist is measured, not guessed: real ruflo 3.49.0 run with cwd=<dir> and --path elsewhere
+ * writes .claude/{memory.db,.proven-config-version,proven-config.json} (init/store),
+ * .claude-flow/harness-active-policy.json and .swarm/{hnsw.index,hnsw.metadata.json} and ruvector.db
+ * (store), .claude-flow/policy/state.json (retrieve). The owner's real 4.3.40 projects also hold
+ * .swarm/.swarm/agentdb-memory.db(-wal,-shm): ruflo's AgentDB bridge opens <cwd>/.swarm/agentdb-memory.db
+ * (ruflo/v3/@claude-flow/cli/src/memory/memory-bridge.ts getAgentDbPath), and the native bindings drop
+ * ruvector.db into whatever cwd they run in (ruflo/scripts/smoke-memory-no-stray-db.mjs, ADR-125 Phase 7).
  */
+const SQLITE = (name) => [name, `${name}-wal`, `${name}-shm`, `${name}-journal`];
 const LEGACY_CWD_ARTIFACTS = Object.freeze({
-  '.swarm': new Set(['hnsw.index', 'hnsw.metadata.json']),
-  '.claude': new Set(['.proven-config-version', 'proven-config.json', 'memory.db', 'memory.db-wal', 'memory.db-shm']),
-  '.claude-flow': new Set(['harness-active-policy.json']),
+  '.swarm': new Set(['hnsw.index', 'hnsw.metadata.json', ...SQLITE('agentdb-memory.db')]),
+  '.claude': new Set(['.proven-config-version', 'proven-config.json', ...SQLITE('memory.db')]),
+  '.claude-flow': new Set(['harness-active-policy.json', 'policy/', 'policy/state.json']),
   'ruvector.db': null, // a regular file
 });
-export function cleanLegacyRufloDebris(storeDir) {
+
+/** Every path under `dir`, relative, directories with a trailing slash; symlinks reported, never followed. */
+function relativeEntries(dir) {
+  const out = [];
+  const walk = (current, prefix) => {
+    for (const name of fs.readdirSync(current)) {
+      const full = path.join(current, name);
+      const stat = fs.lstatSync(full);
+      const rel = prefix + name;
+      if (stat.isSymbolicLink()) out.push({ rel, link: true });
+      else if (stat.isDirectory()) { out.push({ rel: `${rel}/` }); walk(full, `${rel}/`); }
+      else out.push({ rel, file: stat.isFile() });
+    }
+  };
+  walk(dir, '');
+  return out;
+}
+
+/**
+ * With `dryRun`, reports what WOULD be removed and touches nothing (--doctor). Returns
+ * { removed: [paths], refused: [{ path, reason }] }; a refusal must be shown to the user, never dropped.
+ */
+export function cleanLegacyRufloDebris(storeDir, { dryRun = false } = {}) {
   const removed = [];
   const refused = [];
   for (const [name, allowed] of Object.entries(LEGACY_CWD_ARTIFACTS)) {
@@ -206,13 +236,11 @@ export function cleanLegacyRufloDebris(storeDir) {
       if (!stat.isFile()) { refused.push({ path: entry, reason: 'not a regular file' }); continue; }
     } else {
       if (!stat.isDirectory()) { refused.push({ path: entry, reason: 'not a directory' }); continue; }
-      const unknown = fs.readdirSync(entry).filter((child) => {
-        const childStat = fs.lstatSync(path.join(entry, child));
-        return !allowed.has(child) || childStat.isSymbolicLink() || !childStat.isFile();
-      });
+      const unknown = relativeEntries(entry).filter((item) => item.link || item.file === false || !allowed.has(item.rel))
+        .map((item) => (item.link ? `${item.rel} (symbolic link)` : item.rel));
       if (unknown.length) { refused.push({ path: entry, reason: `unexpected entries: ${unknown.join(', ')}` }); continue; }
     }
-    fs.rmSync(entry, { recursive: true, force: true });
+    if (!dryRun) fs.rmSync(entry, { recursive: true, force: true });
     removed.push(entry);
   }
   return { removed, refused };

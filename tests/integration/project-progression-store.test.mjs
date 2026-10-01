@@ -532,6 +532,10 @@ describe('managed ProjectProgression append and readback', () => {
     expect(legacy(['memory', 'init', '--backend', 'agentdb', '--path', resolution.canonicalAgentDbPath]).status).toBe(0);
     expect(legacy(['memory', 'store', '--key', 'legacy-row', '--value', '{"kept":true}', '--namespace', 'legacy',
       '--path', resolution.canonicalAgentDbPath]).status).toBe(0);
+    // 4.3.40 also retrieved: that is what writes .claude-flow/policy/state.json (measured, ruflo 3.49.0).
+    expect(legacy(['memory', 'retrieve', '--key', 'legacy-row', '--namespace', 'legacy', '--value-only',
+      '--path', resolution.canonicalAgentDbPath]).status).toBe(0);
+    expect(fs.existsSync(path.join(storeDir, '.claude-flow', 'policy', 'state.json'))).toBe(true);
     fs.writeFileSync(path.join(storeDir, 'project-progression-outbox.jsonl'), '');
     fs.writeFileSync(path.join(storeDir, 'agentdb-sessions.jsonl'), '{"q":1}\n');
     const before = fs.readdirSync(storeDir).sort();
@@ -548,6 +552,34 @@ describe('managed ProjectProgression append and readback', () => {
     expect(JSON.parse(read.stdout)).toEqual({ kept: true }); // the store of record is untouched
     expect(new ProjectProgressionStore({ projectDir: projectRoot, rufloBinary: ruflo }).legacyDebris).toEqual({ removed: [], refused: [] });
   }, 300_000);
+
+  // The SHAPE (names only, never contents) of a real upgraded project's .swarm on the owner's Mac, read-only
+  // on 2026-10-01: older ruflo also left .swarm/.swarm/agentdb-memory.db(+wal/shm), and .claude-flow/policy/.
+  // The project's own ruflo state at the top of .swarm (hnsw.*, agentdb-memory.db, agentdb.rvf, backups/,
+  // …) is NOT 4.3.40 debris and must survive untouched.
+  it('cleans a tree shaped exactly like the owner\'s upgraded project and leaves everything else', () => {
+    const projectRoot = temporaryProject();
+    const storeDir = path.join(projectRoot, '.swarm');
+    const files = ['memory.db', 'memory.db-shm', 'memory.db-wal', 'agentdb-memory.db', 'agentdb-memory.db-shm', 'agentdb-memory.db-wal',
+      'agentdb-sessions.jsonl', 'agentdb-turns.jsonl', 'agentdb.rvf', 'agentdb.rvf.lock', 'hnsw.index', 'hnsw.metadata.json',
+      'model-router-state.json', 'project-progression-outbox.jsonl', 'ruvector.db', 'schema.sql', 'sona-patterns.json', 'state.json',
+      'backups/b.db', 'retirement-preservation/r.json', 'ruvnet-brain-learn/l.jsonl',
+      '.swarm/agentdb-memory.db', '.swarm/agentdb-memory.db-shm', '.swarm/agentdb-memory.db-wal', '.swarm/hnsw.index', '.swarm/hnsw.metadata.json',
+      '.claude-flow/policy/state.json'];
+    for (const rel of files) {
+      fs.mkdirSync(path.dirname(path.join(storeDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(storeDir, rel), `shape:${rel}`);
+    }
+    const preview = cleanLegacyRufloDebris(storeDir, { dryRun: true });
+    expect(preview.refused).toEqual([]);
+    expect(fs.existsSync(path.join(storeDir, '.swarm', 'hnsw.metadata.json'))).toBe(true); // dry run touched nothing
+    const result = cleanLegacyRufloDebris(storeDir);
+    expect(result.refused).toEqual([]);
+    expect(result.removed.map((entry) => path.basename(entry)).sort()).toEqual(['.claude-flow', '.swarm', 'ruvector.db']);
+    const kept = files.filter((rel) => !rel.startsWith('.swarm/') && !rel.startsWith('.claude-flow/') && rel !== 'ruvector.db');
+    for (const rel of kept) expect(fs.readFileSync(path.join(storeDir, rel), 'utf8'), rel).toBe(`shape:${rel}`);
+    expect(fs.readdirSync(storeDir).sort()).toEqual([...new Set(kept.map((rel) => rel.split('/')[0]))].sort());
+  });
 
   it('never follows a symlink and never removes an artifact holding anything unexpected', () => {
     const projectRoot = temporaryProject();
