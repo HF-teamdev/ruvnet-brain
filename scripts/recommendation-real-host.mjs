@@ -13,7 +13,7 @@
  * login; the run snapshots ~/.claude mtimes before/after and reports anything that changed.
  *
  *   node scripts/recommendation-real-host.mjs --key <e2e judge-key.json> --models <d> --xenova <d> --out <dir>
- *        [--n-pos 12 --n-neg-hinted 6 --n-other 4] [--claude <bin>]
+ *        [--n-pos 12 --n-neg-hinted 6 --n-other 4 | --all-blinds] [--max-load 60 --batch 11] [--claude <bin>]
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -62,14 +62,18 @@ if (isMain) {
   for (const f of ['recommendation-eval.blind.v1.json', 'recommendation-eval.blind.v2.json']) {
     for (const it of JSON.parse(fs.readFileSync(path.join(ROOT, 'evals', f), 'utf8')).items) items.set(`${f}:${it.id}`, it);
   }
-  const sample = stratify(key, { nPos: Number(arg('--n-pos', 12)), nNegHinted: Number(arg('--n-neg-hinted', 6)), nOther: Number(arg('--n-other', 4)), floor: Number(arg('--floor', 0.532)) });
+  // --all-blinds: every blind prompt, in qid order (the decision run); otherwise the stratified sample.
+  const sample = process.argv.includes('--all-blinds')
+    ? key.filter((k) => /blind/.test(k.set)).sort((a, b) => a.qid.localeCompare(b.qid))
+    : stratify(key, { nPos: Number(arg('--n-pos', 12)), nNegHinted: Number(arg('--n-neg-hinted', 6)), nOther: Number(arg('--n-other', 4)), floor: Number(arg('--floor', 0.532)) });
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'reco-host-'));
   const kb = path.join(home, 'kb'); fs.mkdirSync(kb);
   const cwd = path.join(home, 'cwd'); fs.mkdirSync(cwd);
   const marker = path.join(home, 'marker'); fs.writeFileSync(marker, '');
   const brainEnv = { RUVNET_BRAIN_HOME: home, KB_DIR: kb, KB_MODEL_CACHE: arg('--models', ''), XENOVA_PATH: arg('--xenova', '') };
   const worker = spawn(process.execPath, [path.join(ROOT, 'kb', 'forge-mcp-all.mjs')],
-    { env: { PATH: process.env.PATH, HOME: home, ...brainEnv, RUVNET_PACKAGE_RECOMMENDER: '1' }, stdio: ['pipe', 'pipe', 'ignore'] });
+    { env: { PATH: process.env.PATH, HOME: home, ...brainEnv, RUVNET_PACKAGE_RECOMMENDER: '1', RUVNET_BRAIN_IDLE_EXIT_MS: '0' }, stdio: ['pipe', 'pipe', 'ignore'] });   // idle exit off: load-gate waits must not retire the worker mid-run
+  for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => { worker.kill('SIGTERM'); fs.rmSync(home, { recursive: true, force: true }); process.exit(1); });
   const rl = readline.createInterface({ input: worker.stdout });
   const waiters = new Map();
   rl.on('line', (l) => { try { const m = JSON.parse(l); waiters.get(m.id)?.(m); } catch { /* not ours */ } });
@@ -81,7 +85,17 @@ if (isMain) {
     await call(1, 'initialize');
     const warm = await call(2, 'brain/warmup');
     if (!warm.result?.ready) throw new Error('worker warmup failed');
+    // LOAD GATE: never start a batch while the 1-minute load is above --max-load; wait (polling) instead.
+    // Each row records the load it ran at, so delivery can be read against load afterwards.
+    const maxLoad = Number(arg('--max-load', 1e9));
+    const batch = Number(arg('--batch', 11));
+    const waitForLoad = async () => {
+      let waited = 0;
+      while (os.loadavg()[0] > maxLoad) { await new Promise((res) => setTimeout(res, 20_000)); waited += 20; }
+      if (waited) console.log(`[load-gate] waited ${waited}s for load < ${maxLoad}`);
+    };
     for (const [n, k] of sample.entries()) {
+      if (n % batch === 0) await waitForLoad();
       const it = items.get(`${k.set}:${k.id}`);
       const env = {
         ...process.env, ...brainEnv, CLAUDE_HOOK: '/usr/bin/true', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', RUVNET_PACKAGE_RECOMMENDER: '1',
@@ -103,7 +117,7 @@ if (isMain) {
         if (o.type === 'result' && typeof o.result === 'string') answer = o.result;
       }
       const offered = injected ? [...new Set([...injected.matchAll(/(@[a-z0-9-]+\/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]+) — /gi)].map((x) => x[1]))] : [];
-      rows.push({ qid: k.qid, set: k.set, id: k.id, category: k.category, exit: r.status, injected: Boolean(injected), offered, said: mentioned(answer, offered), answer: answer.slice(0, 1200) });
+      rows.push({ qid: k.qid, set: k.set, id: k.id, category: k.category, load1m: +os.loadavg()[0].toFixed(1), exit: r.status, injected: Boolean(injected), offered, said: mentioned(answer, offered), answer: answer.slice(0, 1200) });
       console.log(`${k.qid} ${k.category.padEnd(9)} hint=${injected ? 'yes' : 'no '} said=${rows.at(-1).said || '-'}`);
     }
   } finally {

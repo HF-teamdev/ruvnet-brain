@@ -35,8 +35,15 @@ export function scoreRealHost(real, key, simPicks, cards) {
   const said = rows.filter((r) => r.said);
   const pct = (a, n) => ({ k: a, n, pct: n ? +((100 * a) / n).toFixed(1) : null, ci95: wilson(a, n).map((x) => +(x * 100).toFixed(1)) });
   const sameInput = rows.filter((r) => r.injected === Boolean(byQid.get(r.qid).lane));
+  // Hint delivery against the 1-minute load each prompt ran at: how the lane behaves on a busy laptop.
+  const buckets = [[0, 60], [60, 120], [120, 240], [240, Infinity]];
+  const deliveryByLoad = buckets.map(([lo, hi]) => {
+    const inB = rows.filter((r) => r.expectHint && Number.isFinite(r.load1m) && r.load1m >= lo && r.load1m < hi);
+    return { load: hi === Infinity ? `>=${lo}` : `${lo}-${hi}`, ...pct(inB.filter((r) => r.injected).length, inB.length) };
+  });
   return {
     n: rows.length,
+    deliveryByLoad,
     recall: pct(pos.filter((r) => r.right).length, pos.length),
     precision: pct(said.filter((r) => POS.has(r.category) && r.right).length, said.length),
     falseFiring: pct(neg.filter((r) => r.said).length, neg.length),
@@ -62,6 +69,7 @@ if (isMain) {
   if (process.argv.includes('--json')) { process.stdout.write(`${JSON.stringify(out, null, 1)}\n`); process.exit(0); }
   const f = (n, s) => console.log(`${n.padEnd(30)} ${s.k}/${s.n} = ${s.pct}% [${s.ci95.join('–')}]`);
   f('recall (family-aware)', out.recall); f('precision (family-aware)', out.precision); f('false firing', out.falseFiring);
-  f('hints delivered / expected', out.hintDeliveredWhereExpected); f('agreement with simulated host', out.agreement); f('  …where both saw a hint', out.agreementSameInput);
+  f('hints delivered / expected', out.hintDeliveredWhereExpected);
+  for (const b of out.deliveryByLoad) f(`  delivered at load ${b.load}`, b); f('agreement with simulated host', out.agreement); f('  …where both saw a hint', out.agreementSameInput);
   for (const r of out.rows) console.log(`${r.qid} ${r.category.padEnd(9)} hint=${r.injected ? 'y' : 'n'}${r.expectHint ? '' : '(not expected)'} real=${r.said || '-'} sim=${r.sim || '-'} ${r.said ? (r.right ? 'RIGHT' : 'WRONG') : ''} ${r.agree ? '' : 'DISAGREE'}`);
 }
