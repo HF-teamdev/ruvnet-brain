@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-09-19
 updated: 2026-10-01
 updated_source: derived-from-git
-reviewed_digest: a5bac6a4e60f
+reviewed_digest: c0c016b2aecb
 authors: [Stuart Kerr, Codex]
 tags: [retrieval, routing, source-grounding, capability-discovery]
 relates: [ADR-060, ADR-074]
@@ -92,7 +92,30 @@ separate.
    indexed absence for the routed stores; this does not establish global nonexistence. The
    case-folded exact identifier scan widens only;
    RvfStore/RvfDatabase and explicitly qualified Cognitum ruOS have canonical routing aliases.
-9. Pool size, cascade defaults, CE thresholds, timeouts and default `k` are unchanged.
+9. Cascade defaults, CE thresholds, timeouts and default `k` are unchanged.
+   **Amended 2026-10-01 (4.5, keyword lane):** the candidate pool is no longer dense-only.
+   - **What the lane adds:**
+     - Every repository store (not transcript stores) adds up to 8 keyword-matched files
+       (`kb/keyword-lane.mjs`, Okapi BM25 over the store's passage sidecar, one best chunk per
+       file) that dense retrieval did not already pool.
+     - These candidates are judged by the same cross-encoder and are never fused into a score.
+     - They ride the cap-exempt `bm25` lane.
+   - **Evidence.** All runs used the 4.3.37 corpus, paired against the 4.4 runtime on the same harness;
+     outputs are in `evals/runs/2026-10-01-retrieval-4.5/e2e3-f725e0e7/`.
+     - Recall gate: 162 → 165/182 (top-1 128 → 129, 0 lost).
+     - Off-topic abstain: 19/20 → 19/20.
+     - Held-out routed: 48 → 51/80, 4 passes gained and 0 lost.
+     - Novice needs, gold or alternative file within 5: 4 → 10/206.
+     - Novice needs whose gold file reaches the pool: 13 → 35 of 87 gold-repository searches.
+   - **Bounded cost.**
+     - Index memory: a compact BM25 index keyed by the sidecar's stat, at most 8 stores / 160 MB of
+       sidecar resident (ruvector 162 MB, not the 530 MB a parsed corpus costs).
+     - Cold build: 0.6–5.4 s per store.
+     - Warm lookup: 1–12 ms per question.
+   - **Why it does not breach the rest of this decision.** The lane changes which files the reranker
+     reads. It does not change supplements, reviewed passages, capability-family routing, CE scores or
+     grounding receipts. A supplement's file can now be retrieved on its own merit by this primary
+     lane, without its reviewed-witness provenance (`tests/unit/capability-discovery.test.mjs`).
 10. An explicitly named installed multiword store remains a source-search scope when it has no
     capability card. The route records the name but supplies no card mapping or answer; source
     retrieval and implementation-evidence gates remain authoritative.
@@ -106,6 +129,7 @@ Fresh held-out semantic and actual MCP latency evaluation remain required before
 quality improvement. No universal 98% quality or deployed-runtime claim is made here.
 
 ## Currency log
+| 2026-10-01 | Amended §9 (4.5): repository stores add up to 8 keyword-matched files per question through the cap-exempt bm25 lane (`kb/keyword-lane.mjs`). Measured paired on the 4.3.37 corpus: recall 162 → 165/182 with 0 lost; off-topic 19/20 unchanged; held-out routed 48 → 51/80 with 0 lost; needs gold or alternative within 5 went 4 → 10/206. Supplements, reviewed passages and family routing are unchanged. `kb/forge-ask-all.mjs` also merges the quoted-claim flag onto already-pooled files (E3), and wires the learned judge, which stays off without trained weights (ADR-099). reviewed_digest c0c016b2aecb. | Reviewed `kb/forge-ask-all.mjs` and `kb/keyword-lane.mjs` against `evals/runs/2026-10-01-retrieval-4.5/e2e3-f725e0e7/recall.json`. |
 | 2026-10-01 | Currency review (4.4 routing and 4.4.1 apostrophes): decision unchanged. In `kb/forge-ask-all.mjs`, the source route planner is exported, up to 3 tied metadata stores are kept, rUv provenance needs an authorship shape and curly apostrophes are folded. In `kb/card-lane.mjs`, phrase normalisation folds curly apostrophes. `kb/identifier-lane.mjs` scans are cached per KB build and sidecar fingerprint. Discovery supplements, reviewed passages and capability-family routing are untouched. reviewed_digest a5bac6a4e60f. | Reviewed `kb/forge-ask-all.mjs`, `kb/card-lane.mjs` and `kb/identifier-lane.mjs` against `evals/runs/2026-10-01-routing-4.4/README.md` and `evals/runs/2026-10-01-routing-4.4.1/README.md`. |
 
 | 2026-09-19 | Reviewed current source and normative claims; the detailed September 19 findings below retain their stated runtime limitations. reviewed_digest 9e737a426e6a. | `kb/capability-families.mjs`, `kb/card-lane.mjs`, `kb/forge-ask-all.mjs`; source consistency review only, no new deployment or acceptance claim. |
