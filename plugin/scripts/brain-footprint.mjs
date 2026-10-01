@@ -424,7 +424,7 @@ export function sweepFootprint({ apply = false, collectPluginGenerations = null,
   const owned = [...new Set([roots.kbParent, roots.brainHome, ...roots.brainHomeParents, roots.npxRoot].map(physical))];
   const prove = (copyDir) => {
     const proof = proveCopy({ copyDir, liveDir: roots.kbDir });
-    if (!proof.disposable && isKbTree(roots.kbDir)) rememberKept(roots.brainHome, copyDir, roots.kbDir, proof);
+    if (apply && !proof.disposable && isKbTree(roots.kbDir)) rememberKept(roots.brainHome, copyDir, roots.kbDir, proof); // a dry run writes nothing
     return proof;
   };
   const removed = []; const kept = []; const rotated = []; const errors = [];

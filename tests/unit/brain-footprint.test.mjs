@@ -358,6 +358,37 @@ describe('inventory: everything the Brain owns is classified', () => {
   });
 });
 
+// Re-review S4: a DRY RUN wrote — sweepFootprint({ apply:false }) proved copies and cached the KEPT ones into
+// .footprint-proof-cache.json, and --doctor runs exactly that dry run. A read-only check must change nothing.
+const treeState = (dir) => {
+  const out = {};
+  const walk = (d) => { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n); const st = fs.lstatSync(p);
+    if (st.isDirectory()) walk(p); else out[path.relative(dir, p)] = `${st.size}:${st.mtimeMs}:${sha(fs.readFileSync(p))}`; } };
+  walk(dir);
+  return out;
+};
+describe('a dry run writes nothing (re-review S4)', () => {
+  it('sweepFootprint({ apply:false }) leaves the brain home byte-identical, even with a copy it must keep', () => {
+    const m = machine(); live(m);
+    kbTree(path.join(m.brainHome, 'kb.bak-2'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'OLDER-secret' } });
+    const before = treeState(m.brainHome);
+    sweepFootprint(opts(m, { apply: false, now: Date.now() }));
+    expect(treeState(m.brainHome)).toEqual(before);
+  });
+  it('the real `--doctor` leaves the brain home byte-identical', async () => {
+    const { completeBrain } = await import('../helpers/doctor-brain-fixture.mjs');
+    const b = completeBrain({ modelsReady: true });
+    try {
+      // A copy the sweep would have to KEEP (its private store differs from live) beside the live KB.
+      kbTree(path.join(b.parent, 'kb.bak-7'), { publicStores: { alpha: 'a0' }, privateStores: { journal: 'only-here' } });
+      const before = treeState(b.brainHome);
+      const r = b.doctor();
+      expect(r.status, r.text.slice(-1500)).toBe(1); // the second KB copy is a structural ✗
+      expect(treeState(b.brainHome)).toEqual(before);
+    } finally { b.cleanup(); }
+  }, 120_000);
+});
+
 describe('positive confirmation', () => {
   function clean() {
     const m = machine(); live(m);

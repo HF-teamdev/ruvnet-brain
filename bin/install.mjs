@@ -25,7 +25,7 @@ import { acquireRefreshLock, finishRefreshReceipt, openRefreshReceipt, physicalP
   recordRefreshPhase, settleRefreshRun, UPDATE_REFRESH_PHASES } from '../kb/refresh-run.mjs';
 import { assessLifecycleEvidence, pruneLifecycleEvidence } from '../kb/lifecycle-evidence-retention.mjs';
 import { checkDiskSpace, recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
-import { footprintRoots, sweepFootprint } from '../plugin/scripts/brain-footprint.mjs';
+import { footprintRoots, inventoryFootprint, sweepFootprint } from '../plugin/scripts/brain-footprint.mjs';
 import { kbCopyProof } from '../plugin/scripts/kb-copy-proof.mjs';
 import { confirm, doctorVerdict, formatBytes, formatConfirmation, signatureEvidenceFromReceipts, signatureRecordValid, writeSignatureRecord } from '../plugin/scripts/brain-confirmation.mjs';
 import {
@@ -4449,7 +4449,8 @@ export function enforceFootprint({ holdingRefreshLock = false, pruneEvidence = f
 /** Print (or emit as JSON) the positive-confirmation block for the machine as it is right now. */
 async function printConfirmation({ footprint = null, json = false, print = true } = {}) {
   const now = footprintNow();
-  const fp = footprint || sweepFootprint({ apply: false, now, evidence: footprintEvidence() }).before;
+  // Read-only: the inventory only — no copy is proven (no GB-sized hashing) and nothing is written (re-review S4).
+  const fp = footprint || inventoryFootprint({ now, evidence: footprintEvidence() });
   const result = confirm({ footprint: fp, npmLatest: await npmLatestVersion(), installedVersion: PACKAGE_VERSION, now });
   if (!print) return result;
   if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
