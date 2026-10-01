@@ -2466,36 +2466,73 @@ export function deployedFamilyReposFromQuery(query, dir, availableRepos) {
 //
 // NEVER A STALE INDEX AFTER AN UPDATE. An update swaps the whole kb/ directory under the same path,
 // extracted files can carry archive mtimes, and a changed store can keep its byte size, so
-// (mtime, size) alone is not an identity. Every entry is keyed by the KB BUILD IDENTITY
-// (kb-build-identity.mjs) AND the store file's own (dev, inode, mtime, size). A new build drops
-// every index of the old one before anything is served.
-const _metaIndex = new Map(); // meta file -> { key, postings: Map<token, Uint32Array> }
-let _metaIndexBuild = null;    // the build identity every _metaIndex entry belongs to
+// (mtime, size) alone is not an identity. Every store index belongs to one KB BUILD IDENTITY
+// (kb-build-identity.mjs) and is keyed by the store file's own (dev, inode, mtime, size). A new
+// build of a directory replaces that directory's whole index before anything is served.
+//
+// COMPACT, AND BOUNDED. The first version kept a Map<token, Uint32Array> per store: 162.5 MB
+// retained for 199 stores (scripts/route-index-memory.mjs, 4.3.37 corpus), almost all of it object
+// and string overhead. Now each directory build has ONE token dictionary (token -> id, shared by
+// every store), and each store keeps three typed arrays in CSR form: its sorted token ids, offsets,
+// and the concatenated entry ids. Indexes for at most META_INDEX_DIRS_MAX directories are kept
+// (least recently used first out), so alternating between two KB directories does not rebuild.
+const META_INDEX_DIRS_MAX = 2;
+const _metaIndexes = new Map(); // resolved dir -> { build, dict: Map<token, id>, files: Map<file, store> }
 export { kbBuildIdentity };
 
-function metadataIndex(dir, repo, build) {
+function metadataDirIndex(dir, build) {
+  const k = path.resolve(dir);
+  let d = _metaIndexes.get(k);
+  if (!d || d.build !== build) d = { build, dict: new Map(), files: new Map() };
+  _metaIndexes.delete(k);
+  _metaIndexes.set(k, d);
+  while (_metaIndexes.size > META_INDEX_DIRS_MAX) _metaIndexes.delete(_metaIndexes.keys().next().value);
+  return d;
+}
+
+function metadataIndex(dir, repo, d) {
   const file = path.join(dir, `${repo}.meta.json`);
   let stat;
   try { stat = fs.statSync(file); } catch { return null; }
-  if (_metaIndexBuild !== build) { _metaIndex.clear(); _metaIndexBuild = build; }
-  const key = `${build}|${stat.dev}:${stat.ino}|${stat.mtimeMs}|${stat.size}`;
-  const cached = _metaIndex.get(file);
+  const key = `${stat.dev}:${stat.ino}|${stat.mtimeMs}|${stat.size}`;
+  const cached = d.files.get(file);
   if (cached?.key === key) return cached;
   let metadata;
-  try { metadata = parseMetadataFile(file); } catch { _metaIndex.delete(file); return null; }
-  const lists = new Map();
+  try { metadata = parseMetadataFile(file); } catch { d.files.delete(file); return null; }
+  const lists = new Map(); // token id -> entry ids (temporary)
   let id = 0;
   for (const row of Object.values(metadata.entries || {})) {
     for (const token of new Set(contentTokens(`${row.title || ''} ${row.preview || ''}`))) {
-      let list = lists.get(token);
-      if (!list) lists.set(token, (list = []));
+      let tid = d.dict.get(token);
+      if (tid === undefined) d.dict.set(token, (tid = d.dict.size));
+      let list = lists.get(tid);
+      if (!list) lists.set(tid, (list = []));
       list.push(id);
     }
     id++;
   }
-  const entry = { key, postings: new Map([...lists].map(([token, ids]) => [token, Uint32Array.from(ids)])) };
-  _metaIndex.set(file, entry);
-  return entry;
+  const tids = Uint32Array.from(lists.keys()).sort();
+  const offsets = new Uint32Array(tids.length + 1);
+  let total = 0;
+  for (let i = 0; i < tids.length; i++) { offsets[i] = total; total += lists.get(tids[i]).length; }
+  offsets[tids.length] = total;
+  const ids = new Uint32Array(total);
+  for (let i = 0; i < tids.length; i++) ids.set(lists.get(tids[i]), offsets[i]);
+  const store = { key, tids, offsets, ids };
+  d.files.set(file, store);
+  return store;
+}
+
+function metadataPostings(store, tid) {
+  let lo = 0;
+  let hi = store.tids.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const v = store.tids[mid];
+    if (v === tid) return store.ids.subarray(store.offsets[mid], store.offsets[mid + 1]);
+    if (v < tid) lo = mid + 1; else hi = mid - 1;
+  }
+  return null;
 }
 
 // At most this many metadata stores join a route, all of them tied at the best overlap.
@@ -2505,14 +2542,16 @@ export const METADATA_ROUTE_TIES = 3;
 export function metadataSourceRoute(query, dir, availableRepos) {
   const terms = new Set(contentTokens(query));
   if (terms.size < 3) return null;
-  const build = kbBuildIdentity(dir);
+  const d = metadataDirIndex(dir, kbBuildIdentity(dir));
   const candidates = [];
   for (const repo of availableRepos) {
-    const index = metadataIndex(dir, repo, build);
+    const index = metadataIndex(dir, repo, d);
     if (!index) continue;
     const perEntry = new Map();
     for (const term of terms) {
-      for (const entryId of index.postings.get(term) || []) perEntry.set(entryId, (perEntry.get(entryId) || 0) + 1);
+      const tid = d.dict.get(term);
+      const postings = tid === undefined ? null : metadataPostings(index, tid);
+      if (postings) for (const entryId of postings) perEntry.set(entryId, (perEntry.get(entryId) || 0) + 1);
     }
     // overlap: the best single entry's count of query terms. atTop: how many entries reach it.
     let overlap = 0;

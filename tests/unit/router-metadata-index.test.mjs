@@ -54,6 +54,27 @@ describe('router metadata index', () => {
     expect(reads.mock.calls.filter(([f]) => String(f).endsWith('.meta.json'))).toEqual([]);
   });
 
+  it('keeps two KB directories indexed at once, so alternating between them re-reads nothing', () => {
+    const a = fixture({ alpha: [entry('Offline embeddings', 'searchable laptop')] });
+    const b = fixture({ zeta: [entry('Offline embeddings', 'searchable laptop')] });
+    metadataSourceRoute(QUERY, a, ['alpha']);
+    metadataSourceRoute(QUERY, b, ['zeta']);
+    const reads = vi.spyOn(fs, 'readFileSync');
+    for (let i = 0; i < 3; i++) {
+      expect(metadataSourceRoute(QUERY, a, ['alpha']).repos).toEqual(['alpha']);
+      expect(metadataSourceRoute(QUERY, b, ['zeta']).repos).toEqual(['zeta']);
+    }
+    expect(reads.mock.calls.filter(([f]) => String(f).endsWith('.meta.json'))).toEqual([]);
+  });
+
+  it('drops the least recently used directory index beyond two directories', () => {
+    const dirs = [1, 2, 3].map(() => fixture({ alpha: [entry('Offline embeddings', 'searchable laptop')] }));
+    for (const dir of dirs) metadataSourceRoute(QUERY, dir, ['alpha']);
+    const reads = vi.spyOn(fs, 'readFileSync');
+    metadataSourceRoute(QUERY, dirs[0], ['alpha']);
+    expect(reads.mock.calls.filter(([f]) => String(f).endsWith('.meta.json')).length).toBe(1);
+  });
+
   it('re-indexes a store that an update rewrote in place with the SAME mtime and size', () => {
     const dir = fixture({ alpha: [entry('Offline embeddings', 'searchable laptop')], zeta: [entry('x', 'y')] });
     const zeta = path.join(dir, 'zeta.meta.json');
