@@ -378,6 +378,12 @@ const physical = (dir) => { try { return fs.realpathSync(dir); } catch { return 
  * `--installed-kb`: the clean case runs on the supplied KB (as before); every extra case gets its OWN copy
  * of that KB as it was BEFORE the clean case touched it, under the case's work dir, so the supplied brain
  * never gains the overlay case's private store or a rewritten PRIVATE-STORES.json.
+ *
+ * DISK: copies are reflink clones (COPYFILE_FICLONE) where the filesystem supports it (APFS, btrfs, XFS
+ * with reflink) and cost almost nothing; elsewhere (ext4, most CI runners) they are full copies. Then the
+ * peak is the supplied KB + one snapshot + one case copy (each case's copy is deleted before the next),
+ * i.e. about 3x the KB (~4 GB for a 1.3 GB brain). Hardlinks are not used: an update that rewrote a
+ * file in place would write through into the caller's brain.
  */
 export function suppliedKbInstaller({ installedKb, work, cases }) {
   const supplied = path.resolve(installedKb);
