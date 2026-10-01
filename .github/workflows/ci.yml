@@ -190,8 +190,7 @@ jobs:
 
   release-qe:
     needs: candidate-preflight
-    # +10 for the capability battery on the exact bundle (embedder warm-up plus 9 live searches).
-    timeout-minutes: 50
+    timeout-minutes: 40
     name: release-qe
     runs-on: ubuntu-latest
     steps:
