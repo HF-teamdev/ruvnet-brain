@@ -25,6 +25,10 @@ import { fileURLToPath } from 'node:url';
 // signature, do not infer it from the name.
 import { resolveBash } from './hook-shim-bash.mjs';
 import { append as appendOutcome, actionKey, recordRefusal, resolve as resolveOutcome, sweepStale } from './decision-outcomes.mjs';
+// Grok sends its own tool names (`write`) and a snake_case event; every policy below reads Claude's
+// shape. Normalised ONCE here, so the policies (four of them bash, matching tool_name textually) never
+// see a host-native spelling — the 4.4 measurement was a Grok write silently allowed. hook-input.mjs.
+import { normalizePayloadText } from './hook-input.mjs';
 
 const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const EVENT = process.argv[2] || '';
@@ -218,7 +222,7 @@ function speechEventFor(event) { return event === 'bash' ? 'PreToolUse-bash' : '
 
 if (isMain()) {
   const started = Date.now();
-  const payload = readPayload();
+  const payload = normalizePayloadText(readPayload());
   const selected = policiesFor(EVENT);
   // An unknown event is not an occasion to refuse anything. Same rule as unprompted-runtime's
   // "never speak on a guess", pointed at the other decision. 'write' is the only registered route

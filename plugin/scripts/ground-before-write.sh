@@ -105,7 +105,10 @@ SKIP_RECENCY=0
 # no quotes) and file_path (a truncated path merely fails the extension check → exit 0, harmless).
 field() { local re="\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""; [[ $INPUT =~ $re ]] && printf '%s' "${BASH_REMATCH[1]}"; }
 
-case "$(field tool_name)" in Write|Edit|MultiEdit) ;; *) exit 0 ;; esac
+# Case-insensitive (4.5): Grok sends `write` / `search_replace`; a case-sensitive match allowed a Grok
+# write silently. A builtin (shopt), so this wall still depends on nothing outside bash.
+shopt -s nocasematch
+case "$(field tool_name)" in Write|Edit|MultiEdit|search_replace|multi_edit) shopt -u nocasematch ;; *) exit 0 ;; esac
 
 FILE_PATH=$(field file_path)
 [ -n "$FILE_PATH" ] || exit 0
