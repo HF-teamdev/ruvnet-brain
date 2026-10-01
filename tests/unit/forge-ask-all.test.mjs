@@ -236,10 +236,13 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
       repos: ['ruvector', 'ruvector-core'],
     });
 
-    expect(out.perRepo['ruvector-core']).toBeGreaterThan(0);
-    expect(out.perRepo.ruvector).toBe(0);
-    expect(out.results.some((r) => r.repo === 'ruvector-core')).toBe(true);
-    expect(out.results.some((r) => r.repo === 'ruvector')).toBe(false);
+    // Both stores may contribute an ordinary keyword-lane candidate (same text in each); only the
+    // compound store, which the query names, may contribute an INVENTORY rescue.
+    const pooled = vi.mocked(rerankPairs).mock.calls[0][1];
+    expect(pooled.some((c) => c.repo === 'ruvector-core' && c._inventory)).toBe(true);
+    expect(pooled.some((c) => c.repo === 'ruvector' && c._inventory)).toBe(false);
+    expect(out.results.some((r) => r.repo === 'ruvector-core' && r._inventory)).toBe(true);
+    expect(out.results.some((r) => r.repo === 'ruvector' && r._inventory)).toBe(false);
   });
 
   it('does NOT route a named ruv-<product> query to ruv-gists via the "rUv" provenance regex', async () => {
@@ -3546,6 +3549,22 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
       query: "How does AgentDB validate '150x faster than SQLite' and '+36% search quality from feedback'?",
     });
     expect(out.results[0]).toMatchObject({ path: 'README.md', _lane: 'rescue' });
+  });
+
+  it('pools a keyword-matched file that dense retrieval missed, judged by the same cross-encoder', async () => {
+    const d = mkdirWith(['ruflo.rvf']);
+    fs.writeFileSync(path.join(d, 'ruflo.passages.jsonl'), [
+      JSON.stringify({ path: 'docs/dense.md', title: 'Dense', text: 'Unrelated overview.' }),
+      JSON.stringify({ path: '.agents/skills/swarm/SKILL.md', title: 'Swarm', text: 'Every helper reports status, shares artifacts and signals completion.' }),
+    ].join('\n'));
+    vi.mocked(searchKb).mockResolvedValue([hit({ path: 'docs/dense.md', fullText: 'Unrelated overview.' })]);
+    vi.mocked(rerankPairs).mockImplementation(async (_q, cands) =>
+      cands.map((c) => ({ ...c, ceScore: c._lane === 'bm25' ? 3 : -2 })).sort((a, b) => b.ceScore - a.ceScore));
+    const out = await searchAll({ dir: d, repos: ['ruflo'],
+      query: 'How should each helper report status and share artifacts so nothing gets lost?' });
+    const pooled = vi.mocked(rerankPairs).mock.calls[0][1];
+    expect(pooled.filter((c) => c._lane === 'bm25').map((c) => c.path)).toEqual(['.agents/skills/swarm/SKILL.md']);
+    expect(out.results[0]).toMatchObject({ path: '.agents/skills/swarm/SKILL.md', _lane: 'bm25' });
   });
 
   it('gives the quoted-claim boost to a claim-bearing file that dense retrieval ALREADY pooled (E3)', async () => {

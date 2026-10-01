@@ -20,6 +20,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { searchKb } from './forge-ask.mjs';
 import { kbBuildIdentity } from './kb-build-identity.mjs';
+import { keywordCandidates } from './keyword-lane.mjs';
 import { describeSearchFailure } from './search-outcome.mjs';
 import { prepareRelatedSources, renderRelatedSources } from './grounded-response.mjs';
 import { rerankPairs, cePrefilterScores } from './forge-rerank.mjs';
@@ -3700,6 +3701,12 @@ async function searchAllPrimary({
         const byIdentifier = identifierCandidates(scan, name, identifierTokens, 8, knownRepos)
           .filter((candidate) => !seen.has(candidate.path));
         cands = cands.concat(byIdentifier);
+      }
+      // THE KEYWORD LANE (kb/keyword-lane.mjs; ADR-090 §9 amended 2026-10-01). Repository stores
+      // add up to REPO_KEYWORD_TOPN keyword-matched files dense did not pool; transcript stores keep
+      // their own deeper BM25 lane below.
+      if (!isTranscriptStore(name)) {
+        cands = cands.concat(keywordCandidates(dir, name, query, { exclude: new Set(cands.map((c) => c.path)) }));
       }
       if (isTranscriptStore(name)) {
         const seen = new Set(hits.map((h) => h.path));
