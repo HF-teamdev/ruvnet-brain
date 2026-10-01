@@ -199,6 +199,7 @@ describe('footprint guarantee: real install, forced reinstall, three updates', (
     const first = await run([installer, ...installFlags], env, home);
     expect(first.code, first.output.slice(-6000)).toBe(0);
     expect(first.output).toContain('Positive confirmation');
+    expect(first.output).not.toMatch(/footprint sweep could not run|positive confirmation could not run/);
     // The forced reinstall is the installer's own creator of kb.install-preserved-*; it must not leave one.
     const forced = await run([installer, ...installFlags, '--force'], env, home);
     expect(forced.code, forced.output.slice(-6000)).toBe(0);
@@ -219,6 +220,11 @@ describe('footprint guarantee: real install, forced reinstall, three updates', (
       const stepEnv = { ...env, RUVNET_BRAIN_TEST_NOW: new Date(Math.max(builtNow, Date.now())).toISOString() };
       const update = await run([installer, '--update', '--no-nightly-prompt'], stepEnv, home);
       expect(update.code, update.output.slice(-8000)).toBe(0);
+      expect(update.output).not.toMatch(/footprint sweep could not run|positive confirmation could not run/);
+      // Optional transcript of what a user sees (for review): FOOTPRINT_E2E_TRANSCRIPT=<file>.
+      if (process.env.FOOTPRINT_E2E_TRANSCRIPT) fs.appendFileSync(process.env.FOOTPRINT_E2E_TRANSCRIPT, `\n===== update ${round + 1} =====\n${update.output}`);
+      expect(update.output).toMatch(/footprint: removed \d+ item\(s\) that must not exist/);
+      expect(fs.existsSync(path.join(brainHome, 'active.json')), 'the host spine was seeded, so versions/ is in the inventory').toBe(true);
       expect(readJson(path.join(kbDir, 'SOURCE.json')).corpusReleaseTag).toBe(gen.tag);
       expect(kbTrees(home), update.output.slice(-4000)).toEqual([kbDir]);
       expect(fs.readdirSync(path.join(home, '.npm', '_npx')).filter((h) => h.endsWith(String(round + 1)))).toEqual([]);

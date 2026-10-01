@@ -108,7 +108,14 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
       `${hosts.map(label).join(' · ')} ${off.length ? '≠' : '='} runtime ${runtime || 'unknown'}`, UPDATE));
   }
 
-  // Knowledge
+  // Knowledge — an unmounted moved brain is reported, never "fixed" by a reinstall beside the dead link.
+  if (roots.dangling) {
+    const target = roots.location.linkTarget || 'its link target';
+    lines.push(line('knowledge', 'Knowledge', 'fail', `the brain lives at ${target}, which is not mounted (${roots.location.spelled} is a dangling link); nothing was cleaned or reinstalled`,
+      `reconnect the volume holding ${target}, then: npx ruvnet-brain --doctor`));
+    return { schemaVersion: 1, kind: 'ruvnet-brain-confirmation', ok: false, checkedAt: new Date(now).toISOString(), lines,
+      location: roots.location, footprint: { kbCopies: 0, totalBytes: 0, budgetBytes: 0, breakdown: {}, cruft: [], unowned: [] } };
+  }
   const source = readJson(path.join(roots.kbDir, 'SOURCE.json'));
   const builtMs = Date.parse(source?.builtUtc || '');
   const signature = readJson(path.join(roots.brainHome, SIGNATURE_RECORD));
@@ -119,7 +126,9 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
   if (footprint.kbCopies !== 1) knowledgeProblems.push([`${footprint.kbCopies} copies on disk (must be exactly 1)`, footprint.kbCopies ? CLEAN : 'npx ruvnet-brain@latest']);
   if (!Number.isFinite(builtMs) || (now - builtMs) / 3_600_000 >= KNOWLEDGE_MAX_AGE_HOURS) knowledgeProblems.push([`built ${Number.isFinite(builtMs) ? ago(builtMs, now) : 'at an unknown time'} (limit ${KNOWLEDGE_MAX_AGE_HOURS}h)`, UPDATE]);
   if (!signed) knowledgeProblems.push([signature ? 'signature record does not match the live COVERAGE.json' : 'no signature verification recorded for these bytes', UPDATE]);
-  const knowledgeDetail = [`${footprint.kbCopies} copy`, `built ${iso(builtMs)}${Number.isFinite(builtMs) ? ` (${ago(builtMs, now)})` : ''}`,
+  const where = roots.location?.viaSymlink
+    ? `at ${roots.kbDir} (moved; mounted on ${roots.location.mountedOn || 'unknown'})` : `at ${roots.kbDir}`;
+  const knowledgeDetail = [`${footprint.kbCopies} copy ${where}`, `built ${iso(builtMs)}${Number.isFinite(builtMs) ? ` (${ago(builtMs, now)})` : ''}`,
     signed ? `signature verified ${iso(Date.parse(signature.verifiedAt))}` : 'signature NOT verified', `corpus ${tag ? (tag.length > 28 ? `${tag.slice(0, 26)}…` : tag) : 'unknown'}`].join(' · ');
   lines.push(line('knowledge', 'Knowledge', knowledgeProblems.length ? 'fail' : 'ok',
     knowledgeProblems.length ? `${knowledgeDetail} — ${knowledgeProblems.map(([p]) => p).join('; ')}` : knowledgeDetail, knowledgeProblems[0]?.[1]));
@@ -155,6 +164,7 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
 
   const ok = lines.every((l) => l.state !== 'fail');
   return { schemaVersion: 1, kind: 'ruvnet-brain-confirmation', ok, checkedAt: new Date(now).toISOString(), lines,
+    location: roots.location || null,
     footprint: { kbCopies: footprint.kbCopies, totalBytes: footprint.totalBytes, budgetBytes: footprint.budgetBytes,
       breakdown: footprint.breakdown, cruft: cruft.map(({ path: p, kind, bytes, reason, action }) => ({ path: p, kind, bytes, reason, action })),
       unowned: footprint.unowned.map(({ path: p, kind, bytes, reason }) => ({ path: p, kind, bytes, reason })) } };
@@ -175,6 +185,10 @@ export function formatConfirmation(result, { color = null } = {}) {
 
 /** SessionStart: ONE line, only when the footprint itself is wrong (currency has its own line). */
 export function footprintAlarm(result) {
+  if (result.location?.dangling) {
+    const k = result.lines.find((l) => l.id === 'knowledge');
+    return `${FOOTPRINT_LINE_PREFIX}BRAIN VOLUME NOT MOUNTED] ${k.detail}. Fix: ${k.fix}.`;
+  }
   const bad = result.lines.filter((l) => l.state === 'fail' && ['cruft', 'footprint', 'in-use'].includes(l.id));
   const copies = result.footprint.kbCopies;
   if (copies !== 1) bad.unshift({ detail: `${copies} knowledge-base copies on disk (must be exactly 1)`, fix: CLEAN });

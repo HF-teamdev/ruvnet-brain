@@ -152,8 +152,8 @@ describe('inventory: everything the Brain owns is classified', () => {
     write(path.join(scratch, '.swarm', 'hnsw.metadata.json'), '{}');
     fs.mkdirSync(path.join(scratch, 'run-old')); old(path.join(scratch, 'run-old'), 1);
     fs.mkdirSync(path.join(scratch, 'run-live'));
-    json(path.join(m.brainHome, 'leases', 'mcp-dead.json'), { pid: 2 ** 30, version: '4.4.0' }); old(path.join(m.brainHome, 'leases', 'mcp-dead.json'), 1);
-    json(path.join(m.brainHome, 'leases', 'mcp-me.json'), { pid: process.pid, version: '4.4.0' }); old(path.join(m.brainHome, 'leases', 'mcp-me.json'), 1);
+    json(path.join(m.brainHome, 'leases', 'mcp-dead.json'), { pid: 2 ** 30, version: '4.2.7' }); old(path.join(m.brainHome, 'leases', 'mcp-dead.json'), 1);
+    json(path.join(m.brainHome, 'leases', 'mcp-me.json'), { pid: process.pid, version: '4.2.7' }); old(path.join(m.brainHome, 'leases', 'mcp-me.json'), 1);
     write(path.join(m.brainHome, 'ruvector-mcp', 'ruvector.db'), 'their data');
     write(path.join(m.brainHome, 'open-issues.json.bak-20260808'), '[]'); old(path.join(m.brainHome, 'open-issues.json.bak-20260808'), 30);
     write(path.join(m.brainHome, 'console-instances.dead-20260930', 'x.json'), '{}');
@@ -238,6 +238,22 @@ describe('inventory: everything the Brain owns is classified', () => {
     expect(fs.existsSync(path.join(m.brainHome, 'kb.bak-1'))).toBe(false);
   });
 
+  it('Stable Spine generations: active, previous and live-leased are kept; an unreferenced one is reported for the update GC', () => {
+    const m = machine(); live(m);
+    json(path.join(m.brainHome, 'active.json'), { version: '4.5.0', codeRoot: 'versions/4.5.0', previous: { codeRoot: 'versions/4.2.7' } });
+    for (const v of ['4.3.0', '4.3.9', '4.2.7', '4.5.0']) json(path.join(m.brainHome, 'versions', v, 'x.json'), {});
+    json(path.join(m.brainHome, 'leases', 'mcp-me.json'), { pid: process.pid, version: '4.3.9' });
+    old(path.join(m.brainHome, 'leases', 'mcp-me.json'), 1); // older than 6h, but its process is alive
+    const fp = inventoryFootprint(opts(m));
+    const at = (v) => item(fp, path.join(m.brainHome, 'versions', v));
+    expect(at('4.5.0')).toMatchObject({ class: 'must-exist', action: 'keep' });
+    expect(at('4.2.7')).toMatchObject({ class: 'may-exist', action: 'keep' });
+    expect(at('4.3.9')).toMatchObject({ class: 'may-exist', action: 'keep' });
+    expect(at('4.3.0')).toMatchObject({ class: 'must-not-exist', action: 'report', fix: 'npx ruvnet-brain@latest --update' });
+    sweepFootprint(opts(m, { apply: true }));
+    expect(fs.existsSync(path.join(m.brainHome, 'versions', '4.3.0'))).toBe(true); // the spine's own GC owns removal
+  });
+
   it('plugin generations are only ever handed to the lease-aware collector, with the CLAUDE_CONFIG_DIR registry', () => {
     const m = machine(); live(m);
     const cache = path.join(m.home, '.claude', 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain');
@@ -287,7 +303,7 @@ describe('positive confirmation', () => {
     const r = run(m);
     expect(r.lines.filter((l) => l.state === 'fail')).toEqual([]);
     expect(r.lines.find((l) => l.id === 'in-use')).toMatchObject({ state: 'ok', detail: expect.stringMatching(/opened this copy; last answer 2h ago/) });
-    expect(r.lines.find((l) => l.id === 'knowledge').detail).toMatch(/^1 copy · built .* · signature verified/);
+    expect(r.lines.find((l) => l.id === 'knowledge').detail).toMatch(/^1 copy at .*\/kb · built .* · signature verified/);
     expect(footprintAlarm(r)).toBe('');
   });
   it('each failure names its one fix: behind, second copy, stale, unsigned, other-copy worker, cruft', () => {
@@ -305,6 +321,48 @@ describe('positive confirmation', () => {
     expect(by.cruft).toMatchObject({ state: 'fail', fix: 'npx ruvnet-brain --clean' });
     expect(footprintAlarm(r)).toMatch(/^\[RuvNet Brain — FOOTPRINT NOT CLEAN\] 2 knowledge-base copies/);
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain is a link)', () => {
+  function moved() {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-moved-')));
+    dirs.push(home);
+    const disk = path.join(home, 'Volumes', 'SanDisk', 'ruvnet-brain');
+    fs.mkdirSync(disk, { recursive: true });
+    fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+    fs.symlinkSync(disk, path.join(home, '.cache', 'ruvnet-brain'));
+    kbTree(path.join(disk, 'kb'), { publicStores: { alpha: 'a' }, privateStores: { secret: 's' } });
+    return { home, disk, env: { HOME: home }, link: path.join(home, '.cache', 'ruvnet-brain') };
+  }
+  it('counts the real KB once, reports its real location, and finds quarantines beside the spelled home', () => {
+    const m = moved();
+    kbTree(path.join(m.home, '.cache', 'ruvnet-brain-quarantine-1', 'kb.bak-x'), { publicStores: { alpha: 'old' }, privateStores: { secret: 's' } });
+    const fp = inventoryFootprint({ env: m.env, home: m.home, now: NOW });
+    expect(fp.kbCopies).toBe(2);
+    expect(fp.liveKb.path).toBe(path.join(m.disk, 'kb'));
+    expect(fp.roots.location).toMatchObject({ viaSymlink: true, dangling: false, real: path.join(m.disk, 'kb') });
+    const r = confirm({ footprint: fp, env: m.env, home: m.home, now: NOW, readiness: [] });
+    expect(r.lines.find((l) => l.id === 'knowledge').detail).toContain(`at ${path.join(m.disk, 'kb')} (moved; mounted on `);
+    sweepFootprint({ env: m.env, home: m.home, now: NOW, apply: true });
+    expect(inventoryFootprint({ env: m.env, home: m.home, now: NOW }).kbCopies).toBe(1);
+  });
+  it('an unmounted volume (dangling link) is reported, and nothing is cleaned, created or reinstalled beside it', async () => {
+    const m = moved();
+    fs.renameSync(path.join(m.home, 'Volumes'), path.join(m.home, 'Unplugged')); // the drive is gone
+    write(path.join(m.home, '.npm', '_npx', 'z', 'package.json'), JSON.stringify({ _npx: { packages: ['ruvnet-brain@1.0.0'] } }));
+    write(path.join(m.home, '.npm', '_npx', 'z', 'node_modules', 'ruvnet-brain', 'package.json'), JSON.stringify({ version: '1.0.0' }));
+    const before = fs.readdirSync(path.join(m.home, '.cache')).sort();
+    const result = sweepFootprint({ env: m.env, home: m.home, now: NOW, apply: true });
+    expect(result.removed).toEqual([]);
+    expect(fs.readdirSync(path.join(m.home, '.cache')).sort()).toEqual(before);
+    expect(fs.lstatSync(m.link).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'z'))).toBe(true);
+    const r = confirm({ footprint: result.after, env: m.env, home: m.home, now: NOW, readiness: [] });
+    expect(r.lines.find((l) => l.id === 'knowledge')).toMatchObject({ state: 'fail', fix: expect.stringMatching(/^reconnect the volume holding .*SanDisk/) });
+    expect(footprintAlarm(r)).toMatch(/BRAIN VOLUME NOT MOUNTED/);
+    const { health } = await import('../../plugin/scripts/session-start-health.mjs');
+    expect(health(m.home, false).problem).toMatch(/NOT MOUNTED .*do NOT reinstall/);
   });
 });
 
@@ -394,7 +452,7 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
   it('live-lease guard removed -> a lease whose process is alive is deleted', async () => {
     const mod = await mutant([['brain-footprint.mjs', '&& !pidAlive(readJson(lp)?.pid)', '']]);
     const m = machine(); live(m);
-    json(path.join(m.brainHome, 'leases', 'mcp-me.json'), { pid: process.pid, version: '4.4.0' }); old(path.join(m.brainHome, 'leases', 'mcp-me.json'), 1);
+    json(path.join(m.brainHome, 'leases', 'mcp-me.json'), { pid: process.pid, version: '4.2.7' }); old(path.join(m.brainHome, 'leases', 'mcp-me.json'), 1);
     mod.sweepFootprint(opts(m, { apply: true }));
     expect(fs.existsSync(path.join(m.brainHome, 'leases', 'mcp-me.json'))).toBe(false);
   });
@@ -422,6 +480,22 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
     }
     mod.sweepFootprint(opts(m, { apply: true }));
     expect(fs.existsSync(path.join(m.outsideCache, '_npx', 'r1'))).toBe(false);
+  });
+  it('unmounted-volume guard removed -> the sweep acts on the machine while the brain is unplugged', async () => {
+    const mod = await mutant([['brain-footprint.mjs', '  if (roots.dangling) {\n    add(', '  if (false) {\n    add('],
+      ['brain-footprint.mjs', '  if (roots.dangling) {\n    return {', '  if (false) {\n    return {']]);
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-unplugged-')));
+    dirs.push(home);
+    fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'Volumes', 'Gone', 'ruvnet-brain'), path.join(home, '.cache', 'ruvnet-brain'));
+    for (const [h, v] of [['o', '1.0.0'], ['n', '2.0.0']]) {
+      write(path.join(home, '.npm', '_npx', h, 'package.json'), JSON.stringify({ _npx: { packages: [`ruvnet-brain@${v}`] } }));
+      write(path.join(home, '.npm', '_npx', h, 'node_modules', 'ruvnet-brain', 'package.json'), JSON.stringify({ version: v }));
+    }
+    sweepFootprint({ env: { HOME: home }, home, now: NOW, apply: true });
+    expect(fs.existsSync(path.join(home, '.npm', '_npx', 'o'))).toBe(true); // real module: untouched
+    mod.sweepFootprint({ env: { HOME: home }, home, now: NOW, apply: true });
+    expect(fs.existsSync(path.join(home, '.npm', '_npx', 'o'))).toBe(false); // mutant: cleaned while unplugged
   });
   it('footprintRoots honours RUVNET_BRAIN_HOME through a symlink (physical path)', () => {
     const m = machine();

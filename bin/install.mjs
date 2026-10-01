@@ -3662,8 +3662,18 @@ export function openSessionsNotice(hosts, version) {
   return `new ${names} sessions use ${version}; already-open windows keep the old hook definitions until they are reopened`;
 }
 
+/** A moved brain whose volume is unplugged (dangling ~/.cache/ruvnet-brain link) is never reinstalled,
+ * updated or cleaned beside the dead link (ADR-098): stop and say which drive to reconnect. */
+function refuseUnmountedBrain() {
+  const roots = footprintRoots();
+  if (!roots.dangling) return;
+  die(`the brain lives at ${roots.location.linkTarget || 'a link target'}, which is not mounted (${roots.location.spelled} is a dangling link).`,
+    'Reconnect that drive, then re-run. Nothing was installed, updated or removed.');
+}
+
 async function runUpdate() {
   printBanner('update');
+  refuseUnmountedBrain();
   const kbDir = resolvedKbDir();
   const brainHome = process.env.RUVNET_BRAIN_HOME || path.dirname(kbDir);
   if (FLAG_HOST_SYNC_ONLY) {
@@ -5742,6 +5752,7 @@ the installer reports that boot-level declarations changed.
   }
 
   await printPlanAndConfirm();
+  refuseUnmountedBrain();
 
   const { cacheDir, isCustom } = resolveCacheDir();
 

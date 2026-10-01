@@ -92,10 +92,44 @@ export const cmpVersion = (a, b) => {
   return 0;
 };
 
+/** The mount point holding `real`: the highest ancestor still on the same device (st.dev). */
+function mountRoot(real) {
+  let current = real; let dev = fs.statSync(real).dev;
+  for (;;) {
+    const parent = path.dirname(current);
+    if (parent === current) return current;
+    let parentDev; try { parentDev = fs.statSync(parent).dev; } catch { return current; }
+    if (parentDev !== dev) return current;
+    current = parent; dev = parentDev;
+  }
+}
+
+/**
+ * WHERE THE ONE KB REALLY IS (`npx ruvnet-brain --move-brain` makes ~/.cache/ruvnet-brain a link to another
+ * disk). Each spelled path is classified as a link or not; a link whose target is missing is DANGLING —
+ * an unmounted volume, never an empty brain — and nothing is cleaned, created or reinstalled beside it.
+ */
+export function brainLocation(spelled) {
+  let viaSymlink = false; let target = null;
+  // Only the KB dir and the brain home above it: a link further up (/tmp -> /private/tmp) is the OS, not a move.
+  for (const p of [path.resolve(spelled), path.dirname(path.resolve(spelled))]) {
+    const st = lstat(p);
+    if (st?.isSymbolicLink()) { viaSymlink = true; try { target = path.resolve(path.dirname(p), fs.readlinkSync(p)); } catch { /* unreadable */ } break; }
+  }
+  let real = null;
+  try { real = fs.realpathSync.native(path.resolve(spelled)); } catch { /* absent or dangling */ }
+  const dangling = viaSymlink && !real && !(target && lstat(target));
+  return { spelled: path.resolve(spelled), real, viaSymlink, linkTarget: target, dangling,
+    mountedOn: real ? mountRoot(real) : null };
+}
+
 export function footprintRoots({ env = process.env, home = os.homedir() } = {}) {
   const brainHomeSpelled = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain');
   const brainHome = physical(brainHomeSpelled);
-  const kbDir = physical(env.RUVNET_BRAIN_KB || path.join(brainHomeSpelled, 'kb'));
+  const kbSpelled = env.RUVNET_BRAIN_KB || path.join(brainHomeSpelled, 'kb');
+  const kbDir = physical(kbSpelled);
+  const location = brainLocation(kbSpelled);
+  const homeLocation = brainLocation(brainHomeSpelled);
   const claude = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
   const codex = env.CODEX_HOME || path.join(home, '.codex');
   // `npm run`/`npx` export npm_config_cache to every child — including a test that swapped HOME for a temp
@@ -105,6 +139,9 @@ export function footprintRoots({ env = process.env, home = os.homedir() } = {}) 
   const configured = env.npm_config_cache || env.NPM_CONFIG_CACHE;
   const npmCache = configured && physical(configured).startsWith(`${physical(home)}${path.sep}`) ? configured : defaultCache;
   return { brainHome, kbDir, kbParent: path.dirname(kbDir), brainHomeParent: path.dirname(brainHome),
+    // A moved brain's quarantines may sit beside the SPELLED home (~/.cache) as well as the real one.
+    brainHomeParents: [...new Set([path.dirname(brainHome), physical(path.dirname(path.resolve(brainHomeSpelled)))])],
+    location, dangling: location.dangling || homeLocation.dangling,
     claudeRegistry: path.join(claude, 'plugins', 'installed_plugins.json'),
     claudePluginCache: path.join(claude, 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain'),
     codexPluginCache: path.join(codex, 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain'),
@@ -154,6 +191,13 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   const refreshLock = path.join(roots.kbParent, `.${base}.refresh-run.lock`);
   const lockHeld = !holdingRefreshLock && Boolean(lstat(refreshLock));
   const kbBlocked = lockHeld ? 'an update holds the refresh lock; KB copies are never touched while it runs' : null;
+
+  // ── a moved brain whose volume is not mounted: report it, touch NOTHING (no sweep, no reinstall) ─
+  if (roots.dangling) {
+    add({ id: 'kb', path: roots.location.spelled, class: 'must-exist', kind: 'live-kb', action: 'report', present: false, dangling: true,
+      reason: `the brain lives at ${roots.location.linkTarget || 'a link target'}, which is not mounted or no longer exists` });
+    return summarize({ roots, items, policy, kbCopyDirs: [], lockHeld });
+  }
 
   // ── the live KB and its siblings ────────────────────────────────────────────────────────────
   const liveOk = isKbTree(roots.kbDir);
@@ -207,9 +251,11 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   };
   scanSiblings(roots.kbParent);
   if (roots.brainHome !== roots.kbParent) scanSiblings(roots.brainHome);
-  for (const name of names(roots.brainHomeParent)) {
+  for (const parent of roots.brainHomeParents) for (const name of names(parent)) {
     if (!/^ruvnet-brain.*quarantine/i.test(name)) continue;
-    const full = path.join(roots.brainHomeParent, name);
+    const full = path.join(parent, name);
+    if (seen.has(full)) continue;
+    seen.add(full);
     const st = lstat(full);
     if (!st || st.isSymbolicLink() || !st.isDirectory()) continue;
     add({ id: 'quarantine', path: full, class: 'must-not-exist', kind: 'quarantine', action: kbBlocked ? 'report' : 'remove-if-proven',
@@ -268,8 +314,8 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
     if (name === 'versions' && st.isDirectory() && !st.isSymbolicLink()) {
       const active = readJson(path.join(roots.brainHome, 'active.json'));
       const keep = new Set([active?.codeRoot, active?.previous?.codeRoot].filter(Boolean).map((p) => path.basename(p)));
-      for (const lease of names(path.join(roots.brainHome, 'leases'))) {
-        const lp = path.join(roots.brainHome, 'leases', lease); const ls = lstat(lp);
+      for (const leaseName of names(path.join(roots.brainHome, 'leases'))) {
+        const lp = path.join(roots.brainHome, 'leases', leaseName); const ls = lstat(lp);
         const lease = ls ? readJson(lp) : null;
         if (lease?.version && (now - ls.mtimeMs < policy.staleLeaseMs || pidAlive(lease.pid))) keep.add(lease.version);
       }
@@ -413,6 +459,10 @@ export function sweepFootprint({ apply = false, collectPluginGenerations = null,
   const before = inventoryFootprint(options);
   const { roots } = before;
   const removed = []; const kept = []; const rotated = []; const errors = [];
+  if (roots.dangling) {
+    return { schemaVersion: 1, kind: 'ruvnet-brain-footprint-sweep', apply, removed, rotated, errors, plugins: null, evidence: null,
+      kept: [{ path: roots.location.spelled, kind: 'unmounted-brain', reason: before.items[0].reason }], freedBytes: 0, before, after: before };
+  }
   const record = (item, freed, note) => removed.push({ path: item.path, kind: item.kind, bytes: freed ?? item.bytes, reason: note || item.reason });
   for (const item of before.items) {
     if (!['remove', 'remove-if-proven', 'rotate', 'truncate'].includes(item.action)) {
