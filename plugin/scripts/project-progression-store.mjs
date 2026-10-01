@@ -180,6 +180,69 @@ export function rufloCwdFor(storePath, { root = rufloScratchRoot() } = {}) {
   return ensurePrivateDir(path.join(root, projectKey));
 }
 
+/**
+ * 4.3.40 ran ruflo with cwd `<project>/.swarm`, so upgraded projects still hold ruflo's cwd artifacts
+ * INSIDE the store directory — including `.swarm/.swarm/hnsw.metadata.json`, a copy of snapshot content.
+ * Removes exactly those, and only when every file in them is one ruflo is known to write there; anything
+ * unexpected (or any symlink) leaves that artifact untouched and is reported. The store itself
+ * (memory.db, -wal/-shm, schema.sql), the outbox and queue files are never candidates. Idempotent and
+ * cheap (four lstat calls once clean), so it runs whenever a store is opened.
+ */
+const LEGACY_CWD_ARTIFACTS = Object.freeze({
+  '.swarm': new Set(['hnsw.index', 'hnsw.metadata.json']),
+  '.claude': new Set(['.proven-config-version', 'proven-config.json', 'memory.db', 'memory.db-wal', 'memory.db-shm']),
+  '.claude-flow': new Set(['harness-active-policy.json']),
+  'ruvector.db': null, // a regular file
+});
+export function cleanLegacyRufloDebris(storeDir) {
+  const removed = [];
+  const refused = [];
+  for (const [name, allowed] of Object.entries(LEGACY_CWD_ARTIFACTS)) {
+    const entry = path.join(storeDir, name);
+    let stat;
+    try { stat = fs.lstatSync(entry); } catch { continue; } // absent: nothing to do
+    if (stat.isSymbolicLink()) { refused.push({ path: entry, reason: 'symbolic link' }); continue; }
+    if (allowed === null) {
+      if (!stat.isFile()) { refused.push({ path: entry, reason: 'not a regular file' }); continue; }
+    } else {
+      if (!stat.isDirectory()) { refused.push({ path: entry, reason: 'not a directory' }); continue; }
+      const unknown = fs.readdirSync(entry).filter((child) => {
+        const childStat = fs.lstatSync(path.join(entry, child));
+        return !allowed.has(child) || childStat.isSymbolicLink() || !childStat.isFile();
+      });
+      if (unknown.length) { refused.push({ path: entry, reason: `unexpected entries: ${unknown.join(', ')}` }); continue; }
+    }
+    fs.rmSync(entry, { recursive: true, force: true });
+    removed.push(entry);
+  }
+  return { removed, refused };
+}
+
+// What ruflo leaves in a cwd (measured, ruflo 3.49.0): `.swarm/` (hnsw.index, hnsw.metadata.json — a
+// copy of every stored value), `.claude/`, `.claude-flow/`, `ruvector.db`. None of it is read back by the
+// product: every call carries --path, and the store of record is that file.
+const RUFLO_CWD_ARTIFACTS = Object.freeze(['.swarm', '.claude', '.claude-flow', 'ruvector.db']);
+const STALE_RUN_MS = 3_600_000;
+
+/**
+ * One ruflo invocation's working directory: a fresh private `run-*` directory inside the project's
+ * scratch dir, removed again by the caller after the call. ruflo copies every snapshot it touches into
+ * `<cwd>/.swarm/hnsw.metadata.json`; with one cwd per call that copy never accumulates (4.4.0 kept one
+ * per project that grew without bound and outlived the project). Also clears what 4.4.0 left directly
+ * in the project scratch dir and any `run-*` older than an hour (a call killed before its cleanup).
+ */
+export function rufloRunDir(storePath, { root = rufloScratchRoot(), now = Date.now() } = {}) {
+  const projectScratch = rufloCwdFor(storePath, { root });
+  for (const name of fs.readdirSync(projectScratch)) {
+    const entry = path.join(projectScratch, name);
+    let stat;
+    try { stat = fs.lstatSync(entry); } catch { continue; }
+    const stale = name.startsWith('run-') && stat.isDirectory() && now - stat.mtimeMs > STALE_RUN_MS;
+    if (RUFLO_CWD_ARTIFACTS.includes(name) || stale) fs.rmSync(entry, { recursive: true, force: true });
+  }
+  return fs.mkdtempSync(path.join(projectScratch, 'run-'));
+}
+
 export class ProjectProgressionStore {
   constructor({
     projectDir,
@@ -194,6 +257,9 @@ export class ProjectProgressionStore {
   } = {}) {
     if (!rufloBinary) throw new Error(RUFLO_MISSING);
     this.resolution = resolveProjectStore({ projectDir, requestedStorePath });
+    // Best effort: a cleanup that cannot run must never stop a capture or a restore.
+    try { this.legacyDebris = cleanLegacyRufloDebris(path.dirname(this.resolution.canonicalAgentDbPath)); }
+    catch (error) { this.legacyDebris = { removed: [], refused: [{ path: null, reason: error.message }] }; }
     this.rufloBinary = rufloBinary;
     this.runner = runner;
     this.clock = clock;
@@ -212,12 +278,17 @@ export class ProjectProgressionStore {
   }
 
   run(args) {
-    return this.runner(this.rufloBinary, args, {
-      cwd: rufloCwdFor(this.resolution.canonicalAgentDbPath),
-      encoding: 'utf8',
-      timeout: 120_000,
-      env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' },
-    });
+    const cwd = rufloRunDir(this.resolution.canonicalAgentDbPath);
+    try {
+      return this.runner(this.rufloBinary, args, {
+        cwd,
+        encoding: 'utf8',
+        timeout: 120_000,
+        env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' },
+      });
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   }
 
   validateSnapshot(snapshot) {
