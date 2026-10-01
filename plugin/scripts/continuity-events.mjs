@@ -23,9 +23,10 @@
  *
  * PRIVACY. Turn capture never stores user text (a 2026-07-13 measurement: prompt echoes were 87% of a
  * store's noise). Lessons are the one exception the owner asked for ("owner corrections & standing
- * rules"): only a user message that matches a correction/standing-rule pattern, at most SUMMARY_LIMIT
- * characters, redacted, marked `authoritative: false, source: 'owner-correction-detected'`, written only
- * to the project's own local store. RUVNET_CONTINUITY_LESSON_DETECT=off turns that detector off.
+ * rules"): only the SENTENCES of a user message that state a durable rule (DURABLE_RULE below), at most
+ * SUMMARY_LIMIT characters, redacted, marked `authoritative: false, source: 'owner-correction-detected',
+ * detail.status: 'detected-unconfirmed'`, written only to the project's own local store; the brief never
+ * presents one as a standing rule. RUVNET_CONTINUITY_LESSON_DETECT=off turns that detector off.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -169,7 +170,18 @@ export function collectReleases({ checkoutRoot, sinceMs, host, session, project,
 export const GATE_COMMAND = /\b(?:npm\s+(?:run\s+)?test\b|npx\s+vitest\b|vitest\s+run\b|jest\b|pytest\b|cargo\s+(?:test|clippy)\b|go\s+test\b|npm\s+run\s+[\w:.-]*(?:check|qualify|test|gate|lint|verify)[\w:.-]*|node\s+scripts\/(?:release-qualification|full-suite-gate|single-source-check|wired-check|hook-retirement-check)[\w.-]*|gh\s+(?:run\s+(?:watch|view)|workflow\s+run)\b)/i;
 const DECISION_LINE = /^\s*(?:[-*>]\s*)?(?:\*\*)?\s*(?:decision|decided|we decided|i decided|the decision|chose|we chose|choosing|going with)\b\s*(?:\*\*)?\s*[:—-]?\s*\S/i;
 const LESSON_LINE = /^\s*(?:[-*>]\s*)?(?:\*\*)?\s*(?:lesson(?: learned)?|standing rule|rule going forward)\b\s*(?:\*\*)?\s*[:—-]\s*\S/i;
-const CORRECTION = /\b(?:never|always|from now on|going forward|stop (?:doing|asking|saying)|don'?t ever|do not|you must|must not|must never|i told you|i have told you|standing rule|that'?s wrong|that is wrong|not acceptable)\b/i;
+// DURABLE-RULE PHRASING ONLY (review S1a). The old pattern matched bare "never" / "do not" / "you must", so
+// "Fix the login bug, and do not touch the CSS" and "never mind, go ahead" were saved as standing lessons.
+// A sentence counts only when it states a rule that outlives the task: "from now on", "going forward",
+// "never again", "standing rule", "as a rule", or a sentence that OPENS with "Always …" / "Never …" (not
+// "never mind") / "Remember that|to …". Questions never count. tests/unit/continuity-events.test.mjs keeps
+// the negative corpus of ordinary imperatives that must yield nothing.
+const DURABLE_RULE = /\b(?:from now on|going forward|never again|don'?t ever|do not ever|(?:standing|permanent|golden|hard) rule|as a (?:general )?rule)\b|^(?:always\s+\w|never\s+(?!mind\b)\w|remember\s+(?:that|to)\b|remember\s*:)/i;
+/** The sentences of an owner message that state a durable rule (empty when none do). */
+export function durableRuleSentences(text) {
+  return String(text ?? '').split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim())
+    .filter((s) => s && !s.endsWith('?') && DURABLE_RULE.test(s.replace(/^[-*>\s]+/, '')));
+}
 
 const textOf = (content) => (typeof content === 'string' ? content
   : Array.isArray(content) ? content.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('\n') : '');
@@ -246,10 +258,14 @@ export function collectTurnEvents({ lines = null, lastAssistantMessage = '', hos
       }
     }
   }
-  const owner = collapse(turn.userMessage);
-  if (String(env.RUVNET_CONTINUITY_LESSON_DETECT || '').toLowerCase() !== 'off'
-    && owner.length >= 20 && owner.length <= 4000 && CORRECTION.test(owner)) {
-    events.push(makeEvent({ kind: 'lesson', at, host, session, project, source: 'owner-correction-detected', authoritative: false, summary: owner }));
+  const owner = String(turn.userMessage || '');
+  const rules = String(env.RUVNET_CONTINUITY_LESSON_DETECT || '').toLowerCase() !== 'off' && owner.length <= 4000
+    ? durableRuleSentences(owner) : [];
+  if (collapse(rules.join(' ')).length >= 20) {
+    // Only the rule sentence(s) are kept, never the rest of the prompt. Heuristic, so never authoritative:
+    // the brief shows it under "DETECTED, UNCONFIRMED", not as a standing rule.
+    events.push(makeEvent({ kind: 'lesson', at, host, session, project, source: 'owner-correction-detected', authoritative: false,
+      summary: rules.join(' '), detail: { status: 'detected-unconfirmed' } }));
   }
   const seen = new Set();
   return events.filter((e) => (seen.has(`${e.kind}:${e.id}`) ? false : seen.add(`${e.kind}:${e.id}`)));

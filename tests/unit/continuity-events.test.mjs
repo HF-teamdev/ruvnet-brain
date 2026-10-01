@@ -73,6 +73,48 @@ describe('continuity events: one Claude turn', () => {
     expect(collectTurnEvents({ lines: read(correction), host: 'claude', session: 's', project: 'x', env: { RUVNET_CONTINUITY_LESSON_DETECT: 'off' } })).toEqual([]);
   });
 
+  // Review S1a: the old detector matched bare "never" / "do not" / "you must", so almost every task prompt
+  // was saved as a standing lesson. Ordinary imperatives must yield NOTHING; only durable-rule phrasing counts.
+  const ORDINARY = [
+    'Fix the login bug, and do not touch the CSS.',
+    'never mind, go ahead with the original plan',
+    'Please don\'t change the public API in this pass.',
+    'You must update the tests too before you finish this.',
+    'That\'s wrong, try again with the other config file.',
+    'Do not push yet, I want to look at the diff first.',
+    'It never loads on Safari when the cache is cold, why?',
+    'Why does the build always fail on CI but not locally?',
+    'Stop asking and just run the migration on staging.',
+    'I told you to use the release branch, not main.',
+    'Remember the file we edited yesterday? Open it again.',
+    'Never mind the lint warnings for now, focus on the failing test.',
+  ];
+  const DURABLE = [
+    ['From now on, run the full suite before every merge.', /From now on, run the full suite/],
+    ['Never again publish from a dirty tree.', /Never again publish/],
+    ['Standing rule: every release needs install verification on three OSes.', /Standing rule: every release/],
+    ['Remember that the owner never clicks GitHub approvals. Thanks.', /Remember that the owner never clicks/],
+    ['Always read back the write before calling it stored.', /Always read back the write/],
+    ['Going forward, use the outbox for every store write.', /Going forward, use the outbox/],
+  ];
+  it('ordinary task imperatives are NEVER captured as lessons (negative corpus)', () => {
+    const dir = tmp('cont-turn-');
+    for (const user of ORDINARY) {
+      const events = collectTurnEvents({ lines: read(transcript(dir, { user })), host: 'claude', session: 's', project: 'x', env: {} });
+      expect(events, user).toEqual([]);
+    }
+  });
+  it('durable-rule phrasing is captured as detected-unconfirmed, keeping only the rule sentence', () => {
+    const dir = tmp('cont-turn-');
+    for (const [user, rule] of DURABLE) {
+      const events = collectTurnEvents({ lines: read(transcript(dir, { user: `${user} Also the deploy log is in /tmp/x.` })), host: 'claude', session: 's', project: 'x', env: {} });
+      expect(events, user).toHaveLength(1);
+      expect(events[0]).toMatchObject({ kind: 'lesson', source: 'owner-correction-detected', authoritative: false, detail: { status: 'detected-unconfirmed' } });
+      expect(events[0].summary, user).toMatch(rule);
+      expect(events[0].summary, 'the rest of the prompt is not stored').not.toMatch(/deploy log/);
+    }
+  });
+
   it('Codex (no transcript format) still yields decisions from last_assistant_message', () => {
     const events = collectTurnEvents({ lines: null, lastAssistantMessage: 'Done.\nDecision: ship the journal behind the existing boundary.', host: 'codex', session: 'c1', project: 'x', env: {} });
     expect(events).toHaveLength(1);
