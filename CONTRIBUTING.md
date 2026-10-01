@@ -92,6 +92,16 @@ Recover re-runs public verification on an already-published release and, if all 
 not verified. Neither can publish new bytes: both act only on a release `protected-release.yml` already sealed
 and published from a preflighted head of `main`.
 
+**Search deadlines in host verification.** The retrieval canaries each lane runs take a per-OS first-pass
+bound, `canarySearchDeadlineMs()` in `scripts/host-install-matrix.mjs`: the worst measured first-pass query on
+that OS's GitHub runner (`CANARY_WORST_FIRST_PASS_MS`, with its run IDs beside it) times 1.5, never below
+`RELEASE_SEARCH_DEADLINE_MS`. Today only macOS rises above the floor. Changing a bound means changing that
+evidence. This bounds a small CI runner's cold search so the gate fails on a broken search, not on a slow VM; it
+is **not** a product latency target. How long a customer's first answer takes on a small Mac is a separate,
+open 4.5 improvement, measured on its own and never loosened through this constant. Lanes keep one warm search
+worker; a case that times out fails alone and the next case gets a fresh, re-warmed worker
+(`createRestartingMcpSession`), and the three installed doctors run one at a time (`runHostDoctors`).
+
 ## The knowledge corpus
 
 **Built in CI only.** `corpus-seed.yml` observes every public rUv repository (exclusions are

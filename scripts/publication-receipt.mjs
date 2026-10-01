@@ -16,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 // post-publication proofs below (payload assertions, MCP wiring, SOURCE.json, rpcSearch)
 // stay here — they are this side's job, not duplication.
 import { HOST_MODES, RECEIPT_MODE_NAMES, MODE_FROM_RECEIPT_NAME, classifyDoctor, VARIANTS,
-  createInstalledMcpSession, createRestartingMcpSession, HOST_WARMUP_TIMEOUT_MS, RELEASE_SEARCH_DEADLINE_MS, SELF_STORE_PROOF_QUERY,
+  canarySearchDeadlineMs, createInstalledMcpSession, createRestartingMcpSession, HOST_WARMUP_TIMEOUT_MS, RELEASE_SEARCH_DEADLINE_MS, SELF_STORE_PROOF_QUERY,
   SELF_STORE_PROOF_K } from './host-install-matrix.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { evaluateCandidateReceipt, evaluatePublicationReceipt } from './release-proof.mjs';
@@ -679,7 +679,9 @@ export function livePublicationAdapter({ root = process.cwd(), candidateRoot = r
           throw new Error(`installed Brain warmup failed for ${mode}: ${warmed.error?.message || 'no MCP result'}`);
         }
       }
-      const result = await session.search({ query, k, timeoutMs: DEADLINE_MS });
+      // Canary cases take the per-OS first-pass bound (host-install-matrix.mjs, measured + derived).
+      const canaryDeadlineMs = canarySearchDeadlineMs();
+      const result = await session.search({ query, k, timeoutMs: canaryDeadlineMs });
       if (result.error || !result.mcpResult || (Object.hasOwn(result, 'status') && result.status !== 0)) {
         // Same guard as warmupInstalled() above and host-install-matrix.mjs's equivalent canary
         // search: without it, a real timeout on this full-corpus search reaches
@@ -687,7 +689,7 @@ export function livePublicationAdapter({ root = process.cwd(), candidateRoot = r
         // incompatible MCP response lacks structured retrieval results" — masking a timeout as a
         // data-shape error. This is the release blocker traced from v4.3.28's public verification
         // failure ("retrieval canary acceptance failed for claude", run 35559726522).
-        throw new Error(`installed Brain search failed for ${mode} (query="${query}"): ${result.error?.message || `no MCP result within ${DEADLINE_MS}ms`}`);
+        throw new Error(`installed Brain search failed for ${mode} (query="${query}"): ${result.error?.message || `no MCP result within ${canaryDeadlineMs}ms`}`);
       }
       return parseRetrievalResult(result.mcpResult, { query, k });
     },

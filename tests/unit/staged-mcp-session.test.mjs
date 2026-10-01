@@ -39,10 +39,13 @@ it.each(['error', 'exit'])('closes on %s and does not send queued calls', async 
 });
 it('times out the active call, cancels queued work and force-reaps an uncooperative child', async () => {
   const f = fixture({ timeout: 200, ignoreTerm: true });
+  // Start the child first on a generous bound: under load, spawn + initialize alone can exceed
+  // 200ms, and then 'hang' was never sent and this test failed for the wrong reason.
+  expect((await f.session.search({ query: 'ready', timeoutMs: 5000 })).status).toBe(0);
   const result = await Promise.all([f.session.search({ query: 'hang' }), f.session.search({ query: 'queued' })]);
   expect(result[0].error.code).toBe('ETIMEDOUT');
   expect(result[1].error).toBeTruthy();
-  expect(f.trace().filter(({ event }) => event === 'search').map(({ query }) => query)).toEqual(['hang']);
+  expect(f.trace().filter(({ event }) => event === 'search').map(({ query }) => query)).toEqual(['ready', 'hang']);
   expect(() => process.kill(f.trace()[0].pid, 0)).toThrow();
 });
 it('explicit close cancels in-flight and queued work without waiting for the search deadline', async () => {
