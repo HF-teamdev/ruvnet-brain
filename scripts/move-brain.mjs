@@ -230,9 +230,10 @@ function moveLocked({ where, brainHome, src, dest, back, available, log, ops }) 
   // The previous copy goes only once the default path is proven to resolve to the new one.
   const previous = back || where.state === 'linked' ? src : `${brainHome}.old-${process.pid}`;
   try { if (fs.existsSync(previous)) ops.rmSync(previous); } catch (error) {
-    warnings.push(`the previous copy at ${previous} could not be removed (${describe(error)}); it is no longer used — delete it by hand.`);
+    const line = `the previous copy at ${previous} could not be removed (${describe(error)}); it is no longer used — delete it by hand.`;
+    warnings.push(line);
+    log(line);
   }
-  for (const line of warnings) log(line);
   log(`the Brain now lives at ${landed}${back ? '' : ` (${brainHome} links to it)`}`);
   return { from: src, to: landed, bytes, link: brainHome, warnings };
 }

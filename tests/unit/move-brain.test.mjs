@@ -356,7 +356,15 @@ describe('--move-brain: disk-space edge cases', () => {
       available: () => { throw new TypeError('fs.statfsSync is not a function'); } });
     expect(fs.realpathSync(brain)).toBe(dest);
     expect(moved.warnings[0]).toMatch(/^could not measure free space on .* \(fs\.statfsSync is not a function\); copying anyway/);
-    expect(lines.some((l) => l.startsWith('could not measure free space'))).toBe(true);
+    expect(lines.filter((l) => l.startsWith('could not measure free space'))).toHaveLength(1); // said once
+  });
+
+  it('when the old copy cannot be removed after a successful swap, the move stands and says where the unused copy is', () => {
+    const { home, brain } = installedBrain();
+    const dest = path.join(temp('move-disk-'), 'ruvnet-brain');
+    const moved = moveBrain({ home, to: dest, ops: { rmSync: () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } } });
+    expect(fs.realpathSync(brain)).toBe(dest);
+    expect(moved.warnings).toEqual([expect.stringMatching(/^the previous copy at .*ruvnet-brain\.old-\d+ could not be removed \(EBUSY: busy\); it is no longer used — delete it by hand\.$/)]);
   });
 
   it('running out of space part-way is a clean refusal, and the partial copy is removed', () => {
