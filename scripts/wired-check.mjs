@@ -77,6 +77,8 @@ const STANDALONE = [
   ['gate', 'retired automatic-hook helper and manual benchmark retained for explicit human use; no workflow or scheduler invokes this expensive command'],
   ['route-gold-rank', 'human-run measurement harness: routes question sets through kb/forge-ask-all.mjs planSourceRoute (no model) and reports where the gold store lands, with Wilson intervals; nothing to schedule'],
   ['abstain-trace', 'human-run measurement harness: traces why the reranker abstains on novice needs whose gold repository was searched (pool membership, cross-encoder on production text, best chunk and gold span); minutes of model time, never scheduled'],
+  ['doc2query-generate', 'build-time generator (ADR-099 arm A): newcomer-style questions per documentation file through the subscription host; run where the corpus is built, never on a customer machine; not yet in the corpus pipeline'],
+  ['doc2query-reach', 'human-run measurement harness: builds per-store RVF entry indexes from doc2query output and measures how often they bring the gold file into the pool; nothing to schedule'],
   ['judge-train', 'human-run trainer: fits the learned judge (ADR-099 arm C) offline on the need-set train split from recorded cross-encoder pools and reports held-out; writes kb/judge-weights.json only on request; nothing to schedule'],
   ['need-set-split', 'human-run measurement tool: writes the frozen, repository-stratified train / held-out split every learning arm (ADR-099) trains and is measured on; nothing to schedule'],
   ['abstain-threshold-sweep', 'human-run measurement harness: replays measured runs at other abstain thresholds (no model) and reports confident hits, confident misses, off-topic abstain and held-out routed with Wilson intervals; nothing to schedule'],
