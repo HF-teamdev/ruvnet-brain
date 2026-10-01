@@ -45,10 +45,35 @@ export const MAX_TAGS_PER_BOUNDARY = 10;
 
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const collapse = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
-const bound = (text, limit = SUMMARY_LIMIT) => {
-  const value = collapse(text);
-  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
-};
+const truncate = (value, limit) => (value.length <= limit ? value : `${value.slice(0, limit - 1)}…`);
+// A key block whose END marker is missing (a partial paste) is redacted to the end of the text, and a key
+// tail whose BEGIN marker is missing is redacted back to the start of its base64 run. Over-redaction is
+// the safe direction. Both passes are linear in the text (a backtracking tail regex measured 1.5 s on 20 KB).
+const KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
+const KEY_END = /-----END [A-Z ]*PRIVATE KEY-----/g;
+const KEY_BODY = /[A-Za-z0-9+/=\s]/;
+/** Text beyond this is never stored; cutting HERE is safe because both key passes handle a cut block. */
+const MAX_SCAN = 64 * 1024;
+function redactKeyTails(value) {
+  let out = ''; let last = 0; let m;
+  KEY_END.lastIndex = 0;
+  while ((m = KEY_END.exec(value))) {
+    let start = m.index;
+    while (start > last && KEY_BODY.test(value[start - 1])) start -= 1;
+    out += `${value.slice(last, start)} [REDACTED:private-key]`;
+    last = m.index + m[0].length;
+  }
+  return out + value.slice(last);
+}
+/** Redact the WHOLE text first; only then may it be shortened (review S2: truncate-first cut off the END
+ * marker, so the key regex never matched and the BEGIN line plus key body survived). */
+export function redactText(text) {
+  let value = String(text ?? '').slice(0, MAX_SCAN);
+  if (value.includes('PRIVATE KEY-----')) value = redactKeyTails(value.replace(KEY_BLOCK, '[REDACTED:private-key]'));
+  return redactProgression(value).value;
+}
+/** Redact, then collapse whitespace, then bound. The ONLY way event text is shortened. */
+const bound = (text, limit = SUMMARY_LIMIT) => truncate(collapse(redactText(text)), limit);
 
 /** Compact, lexically sortable UTC stamp: 20261001T134539123Z. */
 export function stamp(at) {

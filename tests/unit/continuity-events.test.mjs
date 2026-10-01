@@ -90,6 +90,41 @@ describe('continuity events: one Claude turn', () => {
   });
 });
 
+describe('redaction happens BEFORE truncation (review S2)', () => {
+  // A synthetic key body: 1600 base64-ish characters, far past SUMMARY_LIMIT, so a truncate-first
+  // implementation cuts off the END marker and the regex that needs it never fires.
+  const body = Array.from({ length: 40 }, (_, i) => `QUJD${String(i).padStart(4, '0')}ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo`).join('\n');
+  const key = `-----BEGIN OPENSSH PRIVATE KEY-----\n${body}\n-----END OPENSSH PRIVATE KEY-----`;
+  const leaks = (text) => /BEGIN [A-Z ]*PRIVATE KEY|END [A-Z ]*PRIVATE KEY|ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo/.test(text);
+
+  it('a long pasted private key in an agent finding is redacted whole, never half-kept', () => {
+    const dir = tmp('cont-turn-');
+    const file = transcript(dir, { user: 'check the deploy box', tools: [{ name: 'Agent', input: { subagent_type: 'auditor' },
+      result: [{ type: 'text', text: `Found a key committed in deploy/: ${key}\nRotate it.` }] }] });
+    const [finding] = collectTurnEvents({ lines: read(file), host: 'claude', session: 's', project: 'x', env: {} });
+    expect(finding.kind).toBe('finding');
+    expect(leaks(JSON.stringify(finding)), finding.summary).toBe(false);
+    expect(finding.summary).toContain('[REDACTED:private-key]');
+    expect(finding.summary.length).toBeLessThanOrEqual(400);
+  });
+
+  it('an explicit event carrying a key, an unterminated BEGIN block, or a headless key tail is redacted', () => {
+    for (const summary of [`Lesson: keys leak. ${key}`, `Pasted: -----BEGIN RSA PRIVATE KEY-----\n${body}`, `tail only: ${body}\n-----END RSA PRIVATE KEY----- done`]) {
+      const e = makeEvent({ kind: 'lesson', source: 'explicit', authoritative: true, summary });
+      expect(leaks(JSON.stringify(e)), e.summary).toBe(false);
+      expect(e.summary).toContain('[REDACTED:private-key]');
+    }
+  });
+
+  it('redaction stays linear on adversarial input (it runs inside the capture boundary budget)', () => {
+    for (const text of [`x PRIVATE KEY----- ${'A'.repeat(60_000)}`, `${'A '.repeat(30_000)}-----END RSA PRIVATE KEY-----`]) {
+      const started = Date.now();
+      makeEvent({ kind: 'finding', source: 'agent-result', authoritative: false, summary: text });
+      expect(Date.now() - started).toBeLessThan(250); // a backtracking tail regex took 1532 ms on 20 KB
+    }
+  });
+});
+
 describe('user-level hook detection (read-only)', () => {
   it('detects the owner turn-capture / autocapture / ensure hooks from settings.json and never writes it', () => {
     const home = tmp('cont-home-');
