@@ -55,18 +55,28 @@ async function main() {
   const gen = fs.readFileSync(arg('--d2q'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const stores = [...new Set(gen.map((g) => g.store))];
   const indexes = new Map();
+  // The entry index uses the store's own query embedder (big variant when present: bge + query prefix),
+  // exactly what searchKb computes for the question, so production needs one query embedding.
+  const cfgFor = (store) => {
+    for (const v of [`${store}.big.rvf.embed.json`, `${store}.rvf.embed.json`]) {
+      try { return JSON.parse(fs.readFileSync(path.join(runtime, v), 'utf8')); } catch { /* next */ }
+    }
+    return undefined;
+  };
   for (const store of stores) {
+    const cfg = cfgFor(store);
+    const dims = cfg?.dimensions || 384;
     const rows = gen.filter((g) => g.store === store).flatMap((g) => g.questions.map((q) => ({ q, path: g.path })));
     const file = path.join(indexDir, `${store}.entry.rvf`);
     fs.rmSync(file, { force: true });
-    const db = await RvfDatabase.create(file, { dimensions: 384, metric: 'cosine' });
+    const db = await RvfDatabase.create(file, { dimensions: dims, metric: 'cosine' });
     const batch = [];
     for (let i = 0; i < rows.length; i++) {
-      batch.push({ id: i + 1, vector: Array.from(await embed(rows[i].q)) });
+      batch.push({ id: i + 1, vector: Array.from(await embed(rows[i].q, cfg)) });
       if (batch.length === 64 || i === rows.length - 1) { await db.ingestBatch(batch.splice(0)); }
       if (i % 500 === 0) process.stderr.write(`\r[d2q-reach] ${store} ${i}/${rows.length}`);
     }
-    indexes.set(store, { db, paths: rows.map((r) => r.path), questions: rows.length });
+    indexes.set(store, { db, cfg, paths: rows.map((r) => r.path), questions: rows.length, model: cfg?.model || 'default' });
   }
   const set = JSON.parse(fs.readFileSync(arg('--set'), 'utf8')).questions;
   const split = JSON.parse(fs.readFileSync(arg('--split'), 'utf8'));
@@ -77,13 +87,13 @@ async function main() {
     const store = q.repo.toLowerCase();
     const idx = indexes.get(store);
     if (!idx) continue;
-    const hits = await idx.db.query(Array.from(await embed(q.need)), k);
+    const hits = await idx.db.query(Array.from(await embed(q.need, idx.cfg)), k);
     const files = filesFromEntries(hits, (id) => idx.paths[Number(id) - 1], nFiles);
     rows.push({ id: q.id, split: split.train.includes(q.id) ? 'train' : 'heldout', routed: pooled.has(q.id),
       baseline: pooled.get(q.id) === true, entry: files.includes(q.path), entryRank: files.indexOf(q.path) + 1 || null });
   }
   const report = { kind: 'ruvnet-brain-doc2query-reach', k, files: nFiles,
-    indexes: Object.fromEntries([...indexes].map(([s, v]) => [s, { questions: v.questions }])),
+    indexes: Object.fromEntries([...indexes].map(([s, v]) => [s, { questions: v.questions, model: v.model }])),
     generatedFiles: gen.length, keptQuestions: gen.reduce((s, g) => s + g.questions.length, 0),
     rejectedQuestions: gen.reduce((s, g) => s + (g.rejected?.length || 0), 0), results: {} };
   for (const sp of ['train', 'heldout']) {
