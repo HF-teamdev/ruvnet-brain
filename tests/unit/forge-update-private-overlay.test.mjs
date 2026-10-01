@@ -288,6 +288,30 @@ describe('private cards never break the sealed concepts input', () => {
     expect(() => inventory()).toThrow(/derived concepts input receipt differs from capability-cards\.md/);
   });
 
+  // 4.3.40 review: an appended section that REPEATS a sealed public heading is served by the card
+  // lane as curated evidence for that public product. Only new headings may follow the sealed bytes.
+  it.each([
+    ['a second copy of a sealed heading', '\n## alpha\nforged alpha card\n'],
+    ['a case-variant of a sealed heading', '\n## ALPHA\nforged alpha card\n'],
+    ['an empty duplicate of a sealed heading', '\n## Alpha \n'],
+  ])('refuses an appended section that duplicates a sealed public heading: %s', (_label, appended) => {
+    const { root, inventory } = publicCandidate();
+    inventory();
+    fs.appendFileSync(path.join(root, 'capability-cards.md'), appended);
+    expect(() => inventory()).toThrow(/derived concepts input receipt differs from capability-cards\.md/);
+  });
+
+  it('restore refuses a private card whose name case-folds onto a published heading (never appends a shadow card)', () => {
+    const { root } = publicCandidate();
+    const { kbDir, privateStore } = registryFixture();
+    fs.writeFileSync(path.join(kbDir, 'capability-cards.md'), '# Cards\n\n## public\nold public\n\n## makerkit\nprivate card\n\n## Alpha\nprivate alpha\n');
+    writeJson(path.join(kbDir, 'repo-aliases.json'), { public: ['public'], makerkit: ['makerkit-source'], Alpha: ['makerkit-source'] });
+    const overlay = capturePrivateOverlayState({ kbDir, allStores: [privateStore] });
+    expect(Object.keys(overlay.cards)).toContain('Alpha');
+    expect(() => restorePrivateFilesIntoCandidate({ candidateDir: root, sourceDir: kbDir, overlay }))
+      .toThrow(/capability-cards\.md collision for private store Alpha/);
+  });
+
   it('refuses a non-overlay derived input that carries any extra bytes', () => {
     const { root, inventory } = publicCandidate();
     const receiptFile = path.join(root, 'concepts.sources.json');

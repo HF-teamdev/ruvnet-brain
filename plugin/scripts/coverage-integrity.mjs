@@ -208,11 +208,18 @@ function derivedInputIdentity(root, file, input) {
   if (!OVERLAY_EXTENSIBLE_DERIVED_INPUTS.includes(relative)) return null;
   const hash = crypto.createHash('sha256');
   let consumed = 0;
+  // An appended section may only ADD a card. One that repeats a sealed `## ` heading (another copy,
+  // a case variant, or an empty one) would be served by the card lane as curated evidence for that
+  // PUBLIC product, so it is refused, compared trimmed and case-insensitively.
+  const headings = (text) => [...text.matchAll(/^## ([^\n]*)$/gm)].map((m) => m[1].trim().toLowerCase());
   const matchesAt = (end) => {
     hash.update(bytes.subarray(consumed, end));
     consumed = end;
-    return hash.copy().digest('hex') === input.sha256
-      && /^\n*## \S/.test(bytes.subarray(end).toString('utf8'));
+    if (hash.copy().digest('hex') !== input.sha256) return false;
+    const rest = bytes.subarray(end).toString('utf8');
+    if (!/^\n*## \S/.test(rest)) return false;
+    const sealed = new Set(headings(bytes.subarray(0, end).toString('utf8')));
+    return !headings(rest).some((heading) => sealed.has(heading));
   };
   for (let index = bytes.indexOf(0x0a); index >= 0; index = bytes.indexOf(0x0a, index + 1)) {
     // Both sides of every newline: a published file that ends without one is still a clean prefix.

@@ -671,11 +671,16 @@ export function restorePrivateOverlayState({ kbDir, overlay }) {
   const publicCardsText = fs.existsSync(cardsFile) ? fs.readFileSync(cardsFile, 'utf8') : '';
   const publicCards = cardSections(publicCardsText);
   const appendedCards = [];
+  // Case-folded, like the trusted validator (coverage-integrity derivedInputIdentity): an appended
+  // card whose heading folds onto a published one would fail the sealed-input check, so refuse it here
+  // with the collision named instead of writing a tree that cannot validate.
+  const publicFolded = new Set([...publicCards.keys()].map((name) => name.toLowerCase()));
   for (const [name, section] of Object.entries(overlay.cards || {})) {
     if (publicCards.has(name)) {
       if (publicCards.get(name) !== section) throw new Error(`capability-cards.md collision for private store ${name}`);
       continue; // already published verbatim
     }
+    if (publicFolded.has(name.toLowerCase())) throw new Error(`capability-cards.md collision for private store ${name}`);
     appendedCards.push(section);
   }
   const separator = !publicCardsText ? '' : publicCardsText.endsWith('\n') ? '\n' : '\n\n';
