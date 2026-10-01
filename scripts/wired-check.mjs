@@ -77,6 +77,10 @@ const STANDALONE = [
   ['gate', 'retired automatic-hook helper and manual benchmark retained for explicit human use; no workflow or scheduler invokes this expensive command'],
   ['dream-issue-gate', 'pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
   ['sync-census', 'explicit maintainer census writer; a destructive source-to-surface refresh is never scheduled'],
+  ['customer-state-matrix', 'human-run release-qualification harness (2026-09-30): applies ONE published release through the real '
+    + 'customer door to a COPY of a real install in one customer state at a time; it downloads releases and writes multi-GB '
+    + 'scratch trees, so it is never scheduled. Its install seam is corpus-canary.mjs\'s own (imported), and the states it '
+    + 'found are pinned as unit tests (tests/unit/customer-state-matrix.test.mjs and the per-defect tests).'],
   ['grounding-turn-replay', 'human-run measurement harness for grounding-turn-gate.mjs (ADR-0030 #1 and shadow #2/#3): replays real transcripts read-only through the same pure functions the hooks call, sharing completion-claim-replay.mjs\'s turn walkers; nothing to schedule'],
   ['duplicate-gate-replay','human-run tuning harness for plugin/scripts/duplicate-gate.mjs: replays the gate over git history, read-only, when its thresholds are re-tuned; it imports the gate\'s own scoring functions, so there is no second copy to drift and nothing to schedule'],
   ['sync-commands', 'explicit maintainer alias synchronizer; run deliberately before release, never from a lifecycle hook'],
@@ -352,6 +356,11 @@ const CALLER_ROOTS = [
 ];
 const CALLER_EXTS = new Set(['.mjs', '.js', '.sh', '.json', '.html', '.yml', '.yaml']);
 export const REQUIRED_OPERATIONAL_EXPORTS = [
+  // 4.4 update robustness (2026-09-30): bin/install.mjs syncHostsAfterUpdate replaces an owned stale
+  // Console and prunes dead Console receipts through these; host claude/codex calls go through runHostCli.
+  { rel: 'scripts/console-instances.mjs', symbol: 'replaceStaleConsoles' },
+  { rel: 'scripts/console-instances.mjs', symbol: 'readConsoleReceipts' },
+  { rel: 'scripts/host-cli.mjs', symbol: 'runHostCli' },
   { rel: 'scripts/corpus-reconcile.mjs', symbol: 'syncCorpusInputs' },
   { rel: 'scripts/corpus-aggregates.mjs', symbol: 'rebuildCorpusAggregates' },
   { rel: 'scripts/corpus-reconcile.mjs', symbol: 'acquireCorpusGeneration' },
