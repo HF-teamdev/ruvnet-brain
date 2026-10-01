@@ -67,6 +67,18 @@ The three arms:
 - **Arm C changed latency only.** Its top-1 result was identical to A's on 69/69 questions.
 - **A first, unbounded attempt over all 206 questions was stopped** by the 2-hour background limit at 22/206. Its rows were held in memory, so they were lost, and none of its numbers are used here.
 
+## Review fixes (2026-10-01, after the adversarial review)
+
+- **The rUv rule now requires an authorship shape** (`ruvAuthorshipIntent`). Probes are in `ruv-probe-review.jsonl`. The 11 product questions, including the review's 6, no longer route to ruv-gists alone. All 10 provenance questions route to ruv-gists first.
+- **Routing is unchanged on the measurement sets.** Route-only, `route-review-fixes-kb4337.json` against `route-final-87e44fbe-kb4337.json` gives 0 route changes on 488 questions: 206 needs, 182 stripped, 80 held-out and 20 off-topic. The numbers are unchanged: needs gold in top 3 83/206 [33.8–47.1], stripped 85/182 [39.6–53.9], held-out 80/80, off-topic declined 15/20.
+- **Router metadata index memory.** `node --expose-gc scripts/route-index-memory.mjs --kb <kb>` was run twice per code version on 199 stores.
+  - Per-store `Map<token, Uint32Array>`: 162.5 MB retained (heap 154.6 MB, array buffers 7.9 MB).
+  - Compact CSR with one token dictionary per directory build: 43.9 MB retained (heap 28.5 MB, array buffers 15.5 MB).
+  - Cold build is 2.2–2.5 s for both, and a warm call is 2–3 ms for both.
+  - At most 2 KB directories are indexed (LRU).
+- **Identifier-scan cache.** The key now adds a fingerprint of every `.passages.jsonl` file (name, dev, inode, mtime, size), so overlay and ingest writes that skip manifest.json are seen. The cache is LRU-bounded at 64 entries.
+- **The latency harness is committed.** `node scripts/route-latency-warm.mjs --summarize latency-warm-abc/rows.jsonl --arms A_base,C_final_oldroute,B_final` reproduces `summary-paired.json` exactly. The latency rows were measured before the compact index. It changes memory, not the warm call time (2–3 ms either way).
+
 ## rUv probes (`ruv-probe-after.jsonl`)
 
 - **Before the fix,** 5 of 6 product questions that mention rUv routed to ruv-gists alone.
