@@ -424,7 +424,13 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     expect(JSON.parse(fs.readFileSync(resultFile, 'utf8'))).toMatchObject({ terminalVerdict: 'applied', retiredStores: ['gamma'] });
     expect(JSON.parse(fs.readFileSync(path.join(kbDir, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.0.8');
     expect(fs.readFileSync(path.join(kbDir, 'node_modules', 'embedder', 'bin', 'run.js'), 'utf8')).toBe('embed');
-    expect(fs.readlinkSync(path.join(kbDir, 'node_modules', '.bin', 'embed'))).toBe('../embedder/bin/run.js');
+    // Still the SAME relative link (verbatim, not rewritten absolute, not dropped). Separator-
+    // insensitive because Node on Windows stores a relative symlink target with backslashes at
+    // creation (lib/internal/fs/utils.js preprocessSymlinkDestination: "Windows symlinks don't
+    // tolerate forward slashes"), so even the link this test made reads back as ..\embedder\bin\run.js.
+    const target = fs.readlinkSync(path.join(kbDir, 'node_modules', '.bin', 'embed'));
+    expect(path.isAbsolute(target), target).toBe(false);
+    expect(target.split(/[\\/]/)).toEqual(['..', 'embedder', 'bin', 'run.js']);
     expect(rollbackCopies()).toEqual([]);
   });
 
