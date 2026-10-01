@@ -77,6 +77,7 @@ import {
   CONSOLE_RUNTIME_SURFACE, CONSOLE_RUNTIME_IDENTITY_FILE, consoleRuntimeDigest,
 } from '../scripts/console-runtime-identity.mjs';
 import { shellDiff as pluginShellDiff } from '../plugin/scripts/host-shell-boundary.mjs';
+import { codexTrustChanges, CODEX_TRUST_ACTION } from '../scripts/codex-hook-trust.mjs';
 import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
 import { moveBrain, MoveRefused } from '../scripts/move-brain.mjs';
 import { brainLocation } from '../plugin/scripts/brain-location.mjs';
@@ -1902,6 +1903,16 @@ const CODEX_PLUGIN_ID = 'ruvnet-brain@ruvnet-brain';
 const CODEX_MARKETPLACE = 'ruvnet-brain';
 const CODEX_MARKETPLACE_SOURCE = 'stuinfla/ruvnet-brain';
 
+/**
+ * The Brain hooks Codex will hold back after replacing `installedRoot`'s plugin with `candidateRoot`'s:
+ * [{ key, status: 'modified'|'untrusted' }]. No installed root = a fresh install = every hook untrusted.
+ * An unreadable file is treated as absent (fail toward telling the user to review, never toward silence).
+ */
+export function codexHooksNeedingReview(installedRoot, candidateRoot) {
+  const read = (root) => { try { return root ? JSON.parse(fs.readFileSync(path.join(root, 'hooks', 'codex-hooks.json'), 'utf8')) : {}; } catch { return {}; } };
+  return codexTrustChanges(read(installedRoot), read(candidateRoot));
+}
+
 function codexMarketplaceTarget() {
   return path.join(
     process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'),
@@ -2033,6 +2044,11 @@ export function wireCodexPlugin({
       path.join(REPO_ROOT, 'plugin'),
     )
     : { known: true, changed: false, paths: [], restartRequired: false, reason: 'new host installation' };
+  // Which Brain hooks will Codex hold back after this update until the user re-reviews them? Codex keys
+  // trust to a hash of each hook's definition (scripts/codex-hook-trust.mjs), and codex-hooks.json is not
+  // a boot-surface path, so the shell boundary above cannot see it. Computed from the two files, offline.
+  const hooksNeedingReview = codexHooksNeedingReview(before.installed
+    ? codexInstalledPluginRoot({ codexHome, status: before }) : null, path.join(REPO_ROOT, 'plugin'));
   if (before.installed && before.enabled && versionSatisfies(before.version, expectedVersion)) {
     if (announce) ok(`Codex Brain plugin already installed and enabled (${before.version || 'version unknown'}) — no changes.`);
     return {
@@ -2086,10 +2102,16 @@ export function wireCodexPlugin({
     } else if (before.installed && before.version !== after.version) {
       info('  body-only update: the Stable Spine is live on the next hook/MCP call; no restart is required.');
     }
+    if (hooksNeedingReview.length) {
+      warn(`Codex will NOT run ${hooksNeedingReview.length} Brain hook${hooksNeedingReview.length === 1 ? '' : 's'} until you review`
+        + ` ${hooksNeedingReview.length === 1 ? 'it' : 'them'} (${hooksNeedingReview.map((h) => `${h.key.split(':').slice(-3).join(':')} ${h.status}`).join(', ')}).`);
+      info(`  ${CODEX_TRUST_ACTION}`);
+    }
   }
   return {
     host: true,
     action: before.installed ? 'updated' : 'installed',
+    hooksNeedingReview,
     ...after,
     shellChanged: shellBoundary.changed,
     shellChangedPaths: shellBoundary.paths,
@@ -2192,6 +2214,15 @@ export function classifyCodexLifecycle(plugin, listed = null) {
   const unexpected = hooks.filter((hook) => !continuityHookId(hook?.command, hook?.event));
   if (unexpected.length) return { state: 'unexpected-runtime-hooks', plugin, hooks: unexpected, errors };
   if (conforming.length === 0) return { state: 'inactive-by-design', plugin, hooks, errors };
+  // REGISTERED IS NOT RUNNING (4.5, review-4.3.39 #7). Codex runs a plugin hook only when its stored
+  // trusted_hash equals the hash of its CURRENT definition (scripts/codex-hook-trust.mjs cites the source);
+  // `untrusted` and `modified` hooks are listed but skipped. A release that edits a command's text leaves
+  // that hook `modified` on every machine that trusted the old one — measured on the owner's machine
+  // 2026-10-01: SessionEnd `modified` after 4.4.0, so it had silently stopped. A user-disabled hook is the
+  // user's choice and is not reported as pending.
+  const pending = conforming.filter((hook) => hook?.enabled !== false
+    && (hook?.trustStatus === 'untrusted' || hook?.trustStatus === 'modified'));
+  if (pending.length) return { state: 'pending-trust', plugin, hooks: conforming, pending, errors };
   return { state: 'continuity-registered', plugin, hooks: conforming, errors };
 }
 
@@ -2224,6 +2255,18 @@ export function codexLifecycleGuidance(status) {
           + ' observe Stop or PreCompact, so no capture handler was registered on those.',
         action: null,
       };
+    case 'pending-trust': {
+      const pending = Array.isArray(status?.pending) ? status.pending : [];
+      const named = pending.map((hook) => `${hook?.event ?? hook?.eventName ?? '?'} (${hook?.trustStatus})`).join(', ');
+      return {
+        healthy: false,
+        intentional: false,
+        summary: `Codex is NOT running ${pending.length} Brain hook${pending.length === 1 ? '' : 's'} until you review ${pending.length === 1 ? 'it' : 'them'}: ${named}.`,
+        detail: 'Codex runs a hook only while its definition matches the one you trusted; an update that changed'
+          + ' a hook leaves it "modified", a new hook "untrusted", and Codex skips both without an error.',
+        action: CODEX_TRUST_ACTION,
+      };
+    }
     case 'inactive-by-design':
       return {
         healthy: true,
