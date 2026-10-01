@@ -437,6 +437,22 @@ test('`--doctor` PASSES (exit 0) on the same complete brain dir when NO verdict 
   }
 });
 
+// A brain on an exFAT disk carries AppleDouble `._*` shadows: `._ruvector.rvf` is volume metadata, not a store.
+test('`--doctor` does not count an AppleDouble `._*.rvf` shadow as an installed store', () => {
+  const { brainDir, cacheDir, brainHome, home } = completeBrainFixture();
+  try {
+    fs.renameSync(path.join(brainDir, 'ruvector.rvf'), path.join(brainDir, '._ruvector.rvf'));
+    const r = runInstaller(['--doctor'], { RUVNET_BRAIN_KB: brainDir, RUVNET_BRAIN_HOME: brainHome, XDG_CACHE_HOME: cacheDir,
+      HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex') });
+    assertVerdict(r, 1, '--doctor (only an AppleDouble shadow of a store)');
+    assert.match(r.stdout || '', /no \.rvf stores found/);
+    assert.doesNotMatch(r.stdout || '', /1 RuvNet repos? indexed/);
+  } finally {
+    fs.rmSync(path.dirname(brainDir), { recursive: true, force: true });
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 // A missing or incomplete reader is an INSTALL DEFECT: ✗ with its own cause and fix, never a silent skip
 // and never an ERR_MODULE_NOT_FOUND stack dressed up as "could not prepare the models".
 for (const [missing, cause] of [['forge-ask-all.mjs', /reader-missing: forge-ask-all\.mjs/], ['forge-ask.mjs', /reader-incomplete: forge-ask\.mjs/]]) {

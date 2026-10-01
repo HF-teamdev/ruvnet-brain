@@ -25,9 +25,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isKbTree, kbCopyProof } from './kb-copy-proof.mjs';
 import { brainLocation } from './brain-location.mjs';
-import { cachedKept, isVolumeMetadata, keptCopyFix, physical, readProofCache, rememberKept, removeWithin, rotate, treeBytes, truncateToTail } from './footprint-io.mjs';
+import { cachedKept, cmpVersion, findMoveLeftovers, isVolumeMetadata, keptCopyFix, physical, pidAlive, readProofCache, rememberKept, removeWithin, rotate,
+  treeBytes, truncateToTail } from './footprint-io.mjs';
 
-export { physical, treeBytes } from './footprint-io.mjs';
+export { cmpVersion, physical, treeBytes } from './footprint-io.mjs';
 
 export { kbCopyProof, privateStoreNames } from './kb-copy-proof.mjs';
 
@@ -67,21 +68,6 @@ const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8
 const lstat = (file) => { try { return fs.lstatSync(file); } catch { return null; } };
 const names = (dir) => { try { return fs.readdirSync(dir).filter((n) => !isVolumeMetadata(n)).sort(); } catch { return []; } };
 /** A lease's process is gone only when the OS says so (ESRCH); anything else counts as alive. */
-const pidAlive = (pid) => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (error) { return error?.code !== 'ESRCH'; }
-};
-const semver = (v) => String(v || '').replace(/^v/, '').split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
-export const cmpVersion = (a, b) => {
-  const A = semver(a); const B = semver(b);
-  for (let i = 0; i < Math.max(A.length, B.length); i += 1) {
-    const x = A[i] ?? 0; const y = B[i] ?? 0;
-    if (x === y) continue;
-    if (typeof x === 'number' && typeof y === 'number') return x - y;
-    return String(x) < String(y) ? -1 : 1;
-  }
-  return 0;
-};
 
 export function footprintRoots({ env = process.env, home = os.homedir() } = {}) {
   const brainHomeSpelled = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain');
@@ -238,6 +224,15 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
     const st = lstat(full);
     if (!st || st.isSymbolicLink() || !st.isDirectory()) continue;
     addQuarantine(full);
+  }
+  // Interrupted `--move-brain` leftovers (dead pid only; none while a refresh lock may mean a move is running):
+  // REPORTED with the exact next step, never removed. The set-aside original is the ONLY copy if the Brain is gone.
+  if (!lockHeld) for (const lo of findMoveLeftovers({ brainHome: roots.location.path, location: roots.location, isAlive: pidAlive })) {
+    const link = Boolean(lstat(lo.path)?.isSymbolicLink());
+    const onlyCopy = lo.what === 'old' && !lstat(roots.location.path);
+    add({ id: 'move-leftover', path: lo.path, class: 'unowned', kind: 'move-leftover', action: 'report', what: lo.what, onlyCopy,
+      bytes: link ? 0 : bytes(lo.path), copies: !link && (isKbTree(path.join(lo.path, 'kb')) || isKbTree(lo.path)) ? 1 : 0,
+      fix: onlyCopy ? `mv ${lo.path} ${roots.location.path}` : link ? `rm ${lo.path}` : `rm -rf ${lo.path}`, reason: lo.reason });
   }
 
   // ── brain home state ────────────────────────────────────────────────────────────────────────
@@ -402,13 +397,16 @@ function summarize({ roots, items, policy, kbCopyDirs, lockHeld }) {
   const cruft = items.filter((i) => i.class === 'must-not-exist');
   // When every extra KB copy is one no command can remove, the copy-count fix is the honest remedy, not --clean.
   const extra = items.filter((i) => i.kind === 'kb-copy' || i.kind === 'quarantine');
-  const kbCopyFix = extra.length && extra.every((i) => i.keptUnique) ? extra[0].fix : null;
+  const onlyCopy = items.find((i) => i.kind === 'move-leftover' && i.onlyCopy);
+  const kbCopyFix = onlyCopy ? onlyCopy.fix : extra.length && extra.every((i) => i.keptUnique) ? extra[0].fix : null;
+  const moved = items.filter((i) => i.kind === 'move-leftover');
   return { schemaVersion: 1, kind: 'ruvnet-brain-footprint', roots, items, policy, lockHeld, kbCopyFix,
     liveKb: items.find((i) => i.kind === 'live-kb'),
     kbCopies: (items.find((i) => i.kind === 'live-kb')?.present ? 1 : 0)
       + items.filter((i) => i.kind === 'kb-copy' || /^transaction-/.test(i.kind)).length
       + items.filter((i) => i.kind === 'quarantine').reduce((n, i) => n + (i.copies || 0), 0),
     kbCopyDirs, cruft, totalBytes: sum(owned), budgetBytes, withinBudget: sum(owned) <= budgetBytes, breakdown,
+    moveLeftovers: { items: moved.length, copies: moved.reduce((n, i) => n + (i.copies || 0), 0), bytes: sum(moved) },
     unowned: items.filter((i) => i.class === 'unowned') };
 }
 

@@ -27,6 +27,7 @@ import { assessLifecycleEvidence, pruneLifecycleEvidence } from '../kb/lifecycle
 import { checkDiskSpace, recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
 import { footprintRoots, inventoryFootprint, sweepFootprint } from '../plugin/scripts/brain-footprint.mjs';
 import { kbCopyProof } from '../plugin/scripts/kb-copy-proof.mjs';
+import { isVolumeMetadata } from '../plugin/scripts/footprint-io.mjs';
 import { confirm, doctorVerdict, formatBytes, formatConfirmation, signatureEvidenceFromReceipts, signatureRecordValid, writeSignatureRecord } from '../plugin/scripts/brain-confirmation.mjs';
 import {
   requiredEmbedderModels,
@@ -2551,7 +2552,7 @@ function gatherInstallState(cacheDir) {
   try {
     repos = fs
       .readdirSync(cacheDir)
-      .filter((f) => f.endsWith('.rvf')).length;
+      .filter((f) => f.endsWith('.rvf') && !isVolumeMetadata(f)).length; // an exFAT `._x.rvf` shadow is not a store
   } catch {
     /* ignore */
   }
@@ -2967,11 +2968,22 @@ async function doctorRun({ json }) {
   const present = fs.existsSync(path.join(cacheDir, 'forge-mcp-all.mjs'));
   if (!present) {
     warn('brain not found here — run the installer first:  npx ruvnet-brain');
-    // "not installed" is a FAILING doctor, not a neutral one — and the same verdict in both outputs.
-    const verdict = doctorVerdict({ schemaVersion: 1, kind: 'ruvnet-brain-confirmation', lines: [] },
-      [{ id: 'install', label: 'Install', state: 'fail', detail: `brain not found at ${cacheDir}`, fix: 'npx ruvnet-brain' }]);
+    // "not installed" is a FAILING doctor, not a neutral one — and the same verdict in both outputs. An
+    // interrupted --move-brain may have left the ONLY copy at <home>.old-<pid>: its Move line names the `mv`
+    // back (a fresh install over it would build a second, public-only Brain).
+    let moveLines = [];
+    try { // names only (measure:false): no tree walk on a machine that has no Brain here
+      moveLines = confirm({ footprint: inventoryFootprint({ now: footprintNow(), measure: false }), installedVersion: PACKAGE_VERSION, now: footprintNow() })
+        .lines.filter((l) => l.id === 'move-leftover');
+    } catch { /* the install line stands */ }
+    const verdict = doctorVerdict({ schemaVersion: 1, kind: 'ruvnet-brain-confirmation', lines: moveLines },
+      [{ id: 'install', label: 'Install', state: 'fail', detail: `brain not found at ${cacheDir}`,
+        fix: moveLines.find((l) => l.state === 'fail')?.fix || 'npx ruvnet-brain' }]);
     if (json) process.stdout.write(`${JSON.stringify(verdict, null, 2)}\n`);
-    else console.log(`\n  ${c.red('✗ FAILING')} — install: run the fix named above.`);
+    else {
+      if (moveLines.length) console.log(`\n${formatConfirmation(verdict, { color: c, summary: false })}`);
+      console.log(`\n  ${c.red('✗ FAILING')} — ${verdict.failing.join(', ')}: run the fix named ${moveLines.length ? 'on each ✗ line' : 'above'}.`);
+    }
     return verdict.exitCode;
   }
   const convergencePath = path.join(process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'), 'host-convergence.json');

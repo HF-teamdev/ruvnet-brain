@@ -80,6 +80,11 @@ shouldn't be there isn't, nothing building up cruft" — confirmed positively, n
   outside HOME is ignored. A removal target must sit directly inside the REAL directory it was inventoried
   in, itself inside an owned root (`plugin/scripts/footprint-io.mjs` removeWithin; the earlier guard compared
   a path with its own parent and could never refuse — review S7, BREAK-IT: a parent swapped for a link).
+- Leftovers of an interrupted `--move-brain` (`<home>.old-<pid>`, `.<name>.moving-<pid>` beside the home or
+  the linked target, `<home>.link-<pid>`, `<home>.link-old-<pid>`; dead pid only, none while a refresh lock is
+  held) are REPORTED, never removed, each as a Move line with the exact next step: `!` with the `rm` that
+  finishes the move, or `✗` with the `mv` back when the set-aside original is the only copy. Their KB copies
+  are shown as "not counted" beside the one live copy. A dry run and `--doctor` write nothing.
 - A copy KEPT because it holds data the live brain lacks is proven once and cached (stat fingerprints of
   the copy and the live brain; a stale entry can only keep), reported with what it holds and "nothing to
   run" instead of `--clean`, triggers no background sweep, and is announced at SessionStart once per change.

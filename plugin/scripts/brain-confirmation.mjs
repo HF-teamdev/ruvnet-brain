@@ -128,16 +128,23 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
   // Structural problems (a second copy, unverified bytes) gate; age is currency and only advises.
   const knowledgeProblems = [];
   const knowledgeAdvice = [];
-  if (footprint.kbCopies !== 1) knowledgeProblems.push([`${footprint.kbCopies} copies on disk (must be exactly 1)`, footprint.kbCopies ? (footprint.kbCopyFix || CLEAN) : 'npx ruvnet-brain@latest']);
+  if (footprint.kbCopies !== 1) knowledgeProblems.push([`${footprint.kbCopies} copies on disk (must be exactly 1)`, footprint.kbCopyFix || (footprint.kbCopies ? CLEAN : 'npx ruvnet-brain@latest')]);
   if (!signed) knowledgeProblems.push([signature ? 'signature record does not match the live COVERAGE.json' : 'no signature verification recorded for these bytes', UPDATE]);
   if (!Number.isFinite(builtMs) || (now - builtMs) / 3_600_000 >= KNOWLEDGE_MAX_AGE_HOURS) knowledgeAdvice.push([`built ${Number.isFinite(builtMs) ? ago(builtMs, now) : 'at an unknown time'} (limit ${KNOWLEDGE_MAX_AGE_HOURS}h)`, UPDATE]);
   const where = roots.location?.state === 'linked'
     ? `at ${roots.kbDir} (moved to ${volumeOf(roots.location.real)}, mounted)` : `at ${roots.kbDir}`;
-  const knowledgeDetail = [`${footprint.kbCopies} copy ${where}`, `built ${iso(builtMs)}${Number.isFinite(builtMs) ? ` (${ago(builtMs, now)})` : ''}`,
+  const moved = footprint.moveLeftovers || { copies: 0, bytes: 0 };
+  const knowledgeDetail = [`${footprint.kbCopies} copy ${where}${moved.copies ? ` (not counted: ${moved.copies} interrupted-move cop${moved.copies === 1 ? 'y' : 'ies'} (${formatBytes(moved.bytes)}) — see the Move lines)` : ''}`, `built ${iso(builtMs)}${Number.isFinite(builtMs) ? ` (${ago(builtMs, now)})` : ''}`,
     signed ? `signature verified ${iso(Date.parse(signature.verifiedAt))}` : 'signature NOT verified', `corpus ${tag ? (tag.length > 28 ? `${tag.slice(0, 26)}…` : tag) : 'unknown'}`].join(' · ');
   const knowledgeIssues = [...knowledgeProblems, ...knowledgeAdvice];
   lines.push(line('knowledge', 'Knowledge', knowledgeProblems.length ? 'fail' : knowledgeAdvice.length ? 'warn' : 'ok',
     knowledgeIssues.length ? `${knowledgeDetail} — ${knowledgeIssues.map(([p]) => p).join('; ')}` : knowledgeDetail, knowledgeIssues[0]?.[1]));
+
+  // Interrupted --move-brain leftovers: one line each, reported, never removed. The set-aside original is ✗ when
+  // it is the only copy (the next step is to put it back); otherwise ! with the delete that finishes the move.
+  for (const i of footprint.items.filter((x) => x.kind === 'move-leftover')) {
+    lines.push(line('move-leftover', 'Move', i.onlyCopy ? 'fail' : 'warn', `${i.reason}${i.onlyCopy ? ' — the ONLY copy of the Brain' : ''}: ${i.path}`, i.fix));
+  }
 
   // In use
   const records = (readiness || readReadiness(roots.brainHome)).filter((r) => r.state === 'ready');

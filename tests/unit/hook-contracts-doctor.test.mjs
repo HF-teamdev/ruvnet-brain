@@ -220,6 +220,31 @@ process.exit(0);
   });
 });
 
+// An interrupted --move-brain can leave the ONLY copy of the Brain at <home>.old-<pid> with nothing at the
+// Brain's own path. The doctor must not just say "not installed, run the installer" (a fresh install over it
+// would make a second, public-only Brain): it names the leftover and the exact `mv` back, in text and JSON.
+describe('the doctor names an interrupted move\'s set-aside Brain', () => {
+  it('Brain missing + <home>.old-<dead pid> holding it → ✗ Move with the mv back (text and JSON agree)', async () => {
+    const { completeBrain } = await import('../helpers/doctor-brain-fixture.mjs');
+    const b = completeBrain();
+    try {
+      const brainHome = path.join(b.parent, 'brain');                       // the Brain's own path: MISSING
+      const old = `${brainHome}.old-${2 ** 30}`;                             // set aside by a move that died
+      fs.mkdirSync(old); fs.renameSync(b.kbDir, path.join(old, 'kb'));
+      const extraEnv = { RUVNET_BRAIN_HOME: brainHome, RUVNET_BRAIN_KB: path.join(brainHome, 'kb') };
+      const text = b.doctor([], { extraEnv });
+      const json = JSON.parse(b.doctor(['--json'], { extraEnv }).stdout);
+      const move = json.lines.find((l) => l.id === 'move-leftover');
+      expect(move).toMatchObject({ state: 'fail', fix: `mv ${old} ${brainHome}` });
+      expect(text.text).toMatch(new RegExp(`✗ Move\\s+the original Brain set aside by an interrupted move — the ONLY copy of the Brain: ${old.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      expect(text.text).toContain(`fix: mv ${old} ${brainHome}`);
+      expect(json.failing).toEqual(expect.arrayContaining(['install', 'move-leftover']));
+      expect(text.status).toBe(1);
+      expect(fs.existsSync(path.join(old, 'kb', 'SOURCE.json'))).toBe(true); // reported, never touched
+    } finally { b.cleanup(); }
+  }, 120_000);
+});
+
 // Re-review S2: "AgentDB: recording ✗" was printed as narration but was not a line of the ONE verdict, so
 // it vanished from --doctor --json. It is now a verdict line (advisory '!': recording is a project's
 // opt-in memory, not the Brain's health), identical in text and JSON. Built with the REAL journal.
