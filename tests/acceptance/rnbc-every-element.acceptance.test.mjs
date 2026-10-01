@@ -16,10 +16,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildRnbcFixture, startRnbc, cleanupRnbc, REPO } from './helpers/rnbc-fixture.mjs';
+import { buildRnbcFixture, startRnbc, cleanupRnbc, REPO, schedulerEntry, schedulerState, registeredRunner } from './helpers/rnbc-fixture.mjs';
 import { inventoryInPage, writeLedger } from './helpers/rnbc-inventory.mjs';
 import { chromeExecutable } from './helpers/packed-console-fixture.mjs';
 
+// Bound for waiting on a page STATE (a repaint, a saved note, a card rendering). A pass returns the moment
+// the state appears, so this costs nothing when healthy; it only has to outlast a starved runner — RNBC
+// rows failed at 60s on a machine at load ~400 with the state arriving later, never on a wrong state.
+const STATE_WAIT_MS = 180_000;
 const PAGES = ['index.html', 'scope.html', 'tips.html', 'architecture.html', 'install-architecture.html', 'install-mockup.html'];
 const rows = new Map();          // `${page}|${key}` -> row
 const found = new Map();         // `${page}|${key}` -> inventory entry
@@ -83,10 +87,22 @@ async function inventory(page, name) {
 async function uc(page, loc) {
   // behavior:'instant' — the page sets scroll-behavior:smooth, so a default scroll is still moving
   // when the mouse lands, and the scroll itself closes any open info popover.
-  await loc.evaluate((e) => e.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }));
-  await page.waitForTimeout(80);
-  const b = await loc.boundingBox();
-  if (!b) throw new Error('element has no box (not rendered)');
+  // Then wait until the element stops MOVING: under CPU load a card above it can still be growing (a
+  // measurement landing) after the scroll, and a click aimed at a stale box lands on whatever slid
+  // under it — on a loaded Linux runner the Settings anchor click missed this way (dial 1770px away,
+  // card still closed). Stable = the same box across two animation frames; re-centre if it drifted.
+  let b = null;
+  for (let i = 0; i < 40; i++) {
+    await loc.evaluate((e) => e.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }));
+    const before = await loc.boundingBox();
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await page.waitForTimeout(80);
+    b = await loc.boundingBox();
+    if (!b) throw new Error('element has no box (not rendered)');
+    const vh = page.viewportSize()?.height ?? Infinity;
+    if (before && Math.abs(before.x - b.x) < 0.5 && Math.abs(before.y - b.y) < 0.5
+      && (b.height >= vh || (b.y >= 0 && b.y + b.height <= vh))) break;
+  }
   await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
 }
 const q = (page, key) => page.locator(`[data-qa-key="${key.replace(/"/g, '\\"')}"]`).first();
@@ -150,7 +166,6 @@ async function checkJump(page, name, key, targetSel) {
 
 beforeAll(async () => {
   fx = buildRnbcFixture();
-  fx.consoleDir ??= path.join(REPO, 'console');
   srv = await startRnbc(fx);
   browser = await chromium.launch({ executablePath: chromeExecutable(chromium) });
   ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -193,7 +208,12 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     await page.evaluate(() => { document.querySelector('#card-settings').open = false; });
     await q(page, 'anchor:#field-advocacy').scrollIntoViewIfNeeded();
     await uc(page, q(page, 'anchor:#field-advocacy'));
-    await page.waitForTimeout(500);
+    // wait on the STATE (card opened, dial scrolled into view), not a fixed sleep: under load the
+    // fragment navigation and its smooth scroll take longer than any constant
+    await page.waitForFunction(() => {
+      const t = document.querySelector('#field-advocacy')?.getBoundingClientRect().top;
+      return document.querySelector('#card-settings').open && t > -60 && t < 1000;
+    }, null, { timeout: 10_000 }).catch(() => {});
     const adv = await page.evaluate(() => ({ open: document.querySelector('#card-settings').open, top: document.querySelector('#field-advocacy')?.getBoundingClientRect().top }));
     record('index.html', 'anchor:#field-advocacy', { action: 'click (Settings card closed first)', observed: `settings card open=${adv.open}, dial top=${Math.round(adv.top)}px`, ok: adv.open && adv.top > -60 && adv.top < 1000 });
     await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
@@ -257,7 +277,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const cur = await ctx.newPage();
     await cur.route('**/api/trust', async (route) => { const real = await (await route.fetch()).json(); await route.fulfill({ json: { ...real, release: { ...(real.release || {}), ok: true, tag: 'v0.0.1' } } }); });
     await cur.goto(srv.url);
-    await cur.waitForFunction(() => document.querySelector('#body-trust [data-trust-ready]'), null, { timeout: 60_000 });
+    await cur.waitForFunction(() => document.querySelector('#body-trust [data-trust-ready]'), null, { timeout: STATE_WAIT_MS });
     const hiddenWhenCurrent = await cur.evaluate(() => document.querySelector('#brain-update').hidden);
     await cur.close();
     await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: srv.url });
@@ -267,7 +287,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
       await route.fulfill({ json: { ...real, release: { ...(real.release || {}), ok: true, tag: 'v99.0.0' } } });
     });
     await gp.goto(srv.url);
-    await gp.waitForFunction(() => !document.querySelector('#brain-update').hidden, null, { timeout: 60_000 });
+    await gp.waitForFunction(() => !document.querySelector('#brain-update').hidden, null, { timeout: STATE_WAIT_MS });
     const label = await gp.locator('#brain-update').innerText();
     const urlBefore = gp.url();
     await gp.locator('#brain-update').click();
@@ -278,7 +298,24 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     await gp.close();
     record('index.html', 'btn:update-gong', { action: 'older latest release (v0.0.1): inspect; newer release (v99.0.0): click', observed: `hidden when current=${hiddenWhenCurrent}; shown "${label}"; after click "${after}"; clipboard "${clip}"; installer --help documents --update=${helpOk}`, ok: hiddenWhenCurrent && /v99\.0\.0/.test(label) && clip === 'npx ruvnet-brain --update' && helpOk });
     await page.close();
-  }, 300_000);
+  }, 900_000);
+
+  // The page loads /api/state and /api/trust in parallel; the gong needs both (installed version from
+  // state, latest release from trust). Under load trust sometimes landed first, the gong was decided
+  // with no installed version, hidden, and never reconsidered — the header test then timed out waiting
+  // for it (RNBC load runs, 2026-10-01). Force that order: hold /api/state until trust has rendered.
+  it('update gong appears even when the release read lands before the machine state', async () => {
+    const p = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    let trustServed; const trustDone = new Promise((r) => { trustServed = r; });
+    await p.route('**/api/trust', async (r) => { const j = await (await r.fetch()).json(); await r.fulfill({ json: { ...j, release: { ...(j.release || {}), ok: true, tag: 'v99.0.0' } } }); trustServed(); });
+    await p.route('**/api/state', async (r) => { await trustDone; await p.waitForFunction(() => document.querySelector('#body-trust [data-trust-ready]'), null, { timeout: STATE_WAIT_MS }).catch(() => {}); await r.continue(); });
+    await p.goto(srv.url);
+    const shown = await p.waitForFunction(() => !document.querySelector('#brain-update').hidden && document.querySelector('#brain-ver') && !document.querySelector('#brain-ver').hidden, null, { timeout: 60_000 }).then(() => true, () => false);
+    const label = await p.locator('#brain-update').innerText().catch(() => '');
+    record('index.html', 'behaviour:update-gong-trust-before-state', { claim: 'a newer release shows the update gong whatever order the page data arrives in', action: 'serve /api/trust (v99.0.0) first, release /api/state only after the trust card rendered', observed: `gong shown=${shown} "${label}"`, ok: shown && /v99\.0\.0/.test(label) });
+    await p.close();
+    expect(rows.get('index.html|behaviour:update-gong-trust-before-state').verdict).toBe('PASS');
+  }, 900_000);
 
   it('Header at desktop and phone widths, with and without the update gong: nothing covers anything', async () => {
     for (const [w, h] of [[1440, 1000], [390, 844]]) {
@@ -286,7 +323,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
         const p = await browser.newPage({ viewport: { width: w, height: h } });
         await p.route('**/api/trust', async (r) => { const j = await (await r.fetch()).json(); await r.fulfill({ json: { ...j, release: { ...(j.release || {}), ok: true, tag: gong ? 'v99.0.0' : 'v0.0.1' } } }); });
         await p.goto(srv.url);
-        await p.waitForFunction((g) => document.querySelector('#body-trust [data-trust-ready]') && (!g || !document.querySelector('#brain-update').hidden), gong, { timeout: 60_000 });
+        await p.waitForFunction((g) => document.querySelector('#body-trust [data-trust-ready]') && (!g || !document.querySelector('#brain-update').hidden), gong, { timeout: STATE_WAIT_MS });
         await p.waitForTimeout(800);
         const res = await p.evaluate(() => {
           const els = [...document.querySelectorAll('.head-inner a, .head-inner button, .head-inner .ver-chip')].filter((e) => e.getBoundingClientRect().width);
@@ -303,7 +340,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
         await p.close();
       }
     }
-  }, 240_000);
+  }, 900_000);
 
   it('Brain power switch: off → sentinel written and the brain reads off; on → removed', async () => {
     const page = await openPage('index.html');
@@ -320,16 +357,16 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     await uc(page, q(page, 'btn:bp-switch'));
     const n0 = posts.length;
     await uc(page, page.locator('#bp-confirm-slot').getByRole('button', { name: 'Turn the brain off' }));
-    await page.waitForFunction(() => /OFF/.test(document.querySelector('#chips-brain')?.innerText || ''), null, { timeout: 30_000 });
+    await page.waitForFunction(() => /OFF/.test(document.querySelector('#chips-brain')?.innerText || ''), null, { timeout: STATE_WAIT_MS });
     const offNow = fs.existsSync(sentinel); const offRead = isOff();
     record('index.html', 'btn:bp-confirm:turn-the-brain-off', { claim: 'Turn the brain off', action: 'confirm off', observed: `POST ${postsSince(n0).map((p) => p.url).join(',')}; sentinel ${offNow}; brain-state.isBrainOff()=${offRead}; chip OFF`, ok: offNow && offRead === 'true' });
     await inventory(page, 'index.html');
     await uc(page, q(page, 'btn:bp-switch'));
-    await page.waitForFunction(() => /ON/.test(document.querySelector('#chips-brain')?.innerText || ''), null, { timeout: 30_000 });
+    await page.waitForFunction(() => /ON/.test(document.querySelector('#chips-brain')?.innerText || ''), null, { timeout: STATE_WAIT_MS });
     const onRead = isOff();
     record('index.html', 'btn:bp-switch', { claim: 'Turn it off / Turn it back on', action: 'off (with consent) then on', observed: `off: sentinel written + isBrainOff true; on: sentinel removed=${!fs.existsSync(sentinel)}, isBrainOff=${onRead}`, ok: offNow && !fs.existsSync(sentinel) && onRead === 'false' });
     await page.close();
-  }, 180_000);
+  }, 900_000);
 
   it('Brain profile: RuVector Only removes the other stores; Complete restores them; Cancel changes nothing', async () => {
     const page = await openPage('index.html');
@@ -345,7 +382,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const afterDismiss = stores();
     page.once('dialog', (d) => d.accept());
     await uc(page, q(page, 'btn:profile-apply'));
-    await page.waitForFunction(() => /RuVector Only is active/.test(document.querySelector('.bp-profile-result')?.innerText || document.body.innerText), null, { timeout: 60_000 });
+    await page.waitForFunction(() => /RuVector Only is active/.test(document.querySelector('.bp-profile-result')?.innerText || document.body.innerText), null, { timeout: STATE_WAIT_MS });
     const afterRv = stores();
     const mirror = readJSON(fx.settingsFile)?.settings?.brainProfile;
     record('index.html', 'radio:profile:ruvector', { action: 'select', observed: `Apply enabled=${enabled}`, ok: enabled });
@@ -353,12 +390,12 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     await inventory(page, 'index.html');
     await uc(page, q(page, 'radio:profile:complete'));
     await uc(page, q(page, 'btn:profile-apply'));
-    await page.waitForFunction(() => /Complete Brain is active/.test(document.body.innerText), null, { timeout: 60_000 });
+    await page.waitForFunction(() => /Complete Brain is active/.test(document.body.innerText), null, { timeout: STATE_WAIT_MS });
     const afterComplete = stores();
     record('index.html', 'radio:profile:complete', { action: 'select + Apply', observed: `stores ${afterRv} → ${afterComplete}`, ok: afterComplete === before });
     record('index.html', 'btn:profile-apply', { claim: 'Apply selection', action: 'RuVector (dismiss confirm), RuVector (accept), Complete', observed: `before ${before}; dismissed → ${afterDismiss}; RuVector → ${afterRv} (settings mirror ${mirror}); Complete → ${afterComplete}`, ok: afterDismiss === before && afterRv === 'ruvector.big.rvf' && mirror === 'ruvector' && afterComplete === before });
     await page.close();
-  }, 240_000);
+  }, 900_000);
 
   it('Settings (config.json): only touched fields save; each choice reaches its consumer; undo reverts the file AND the scheduler', async () => {
     const page = await openPage('index.html');
@@ -376,18 +413,18 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     // reset to provider=Codex only: reload so nothing else is touched
     await page.reload(); await settleIndex(page); await inventory(page, 'index.html');
     await uc(page, q(page, 'seglabel:provider:codex'));
-    const plist = path.join(fx.home, 'Library', 'LaunchAgents', 'com.ruvnet.brain-update.plist');
     let n0 = posts.length;
     await uc(page, q(page, 'btn:save:0'));
-    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note.n-ok', { timeout: 60_000 });
+    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note.n-ok', { timeout: STATE_WAIT_MS });
     const cfg1 = readJSON(fx.configFile);
     const house = (await (await page.request.get(new URL('/api/state', srv.url).toString())).json()).sections?.savings?.routerEngine?.house?.provider;
     const body1 = JSON.parse(postsSince(n0).find((p) => p.url === '/api/save-config')?.body || '{}');
-    record('index.html', 'btn:save:0', { claim: 'Save settings (config.json)', action: 'change ONLY Your model house → Codex, Save', observed: `posted ${JSON.stringify(body1.values)}; config.json ${JSON.stringify(cfg1)}; nightly plist present=${fs.existsSync(plist)}; consumer (router house) = ${house}`, ok: JSON.stringify(cfg1) === '{"provider":"codex"}' && !fs.existsSync(plist) && house === 'codex' });
+    const entry1 = schedulerEntry(fx);
+    record('index.html', 'btn:save:0', { claim: 'Save settings (config.json)', action: 'change ONLY Your model house → Codex, Save', observed: `posted ${JSON.stringify(body1.values)}; config.json ${JSON.stringify(cfg1)}; nightly ${entry1.kind} present=${!!entry1.text}; consumer (router house) = ${house}`, ok: JSON.stringify(cfg1) === '{"provider":"codex"}' && !entry1.text && house === 'codex' });
     await inventory(page, 'index.html');
     // undo of a first-ever save removes the file
     await uc(page, q(page, 'btn:save-undo:0'));
-    await page.waitForFunction(() => /restored from the backup|Settings restored/.test(document.querySelector('form.settings-form')?.innerText || ''), null, { timeout: 30_000 });
+    await page.waitForFunction(() => /restored from the backup|Settings restored/.test(document.querySelector('form.settings-form')?.innerText || ''), null, { timeout: STATE_WAIT_MS });
     record('index.html', 'btn:save-undo:0', { claim: 'Undo save', action: 'click after the first save', observed: `config.json exists=${fs.existsSync(fx.configFile)}`, ok: !fs.existsSync(fx.configFile) });
 
     // explicit choices: nightly ON (touched), routing OFF, qeFleet ON
@@ -398,21 +435,74 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     await uc(page, q(page, 'checkbox:setting:qeFleet'));
     n0 = posts.length;
     await uc(page, q(page, 'btn:save:0'));
-    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note.n-ok', { timeout: 90_000 });
+    // wait for the outcome, success or not: a refused save is a row with its reason, never a timeout
+    const note2 = await page.waitForSelector('form.settings-form >> nth=0 >> .form-note', { timeout: 90_000 }).then((h) => h.innerText());
     const cfg2 = readJSON(fx.configFile);
     const rc = routeCheap();
     const qe = nodeIn({}, `const m = await import(${JSON.stringify(path.join(REPO, 'plugin/scripts/runtime-preferences.mjs'))}); process.stdout.write(String(m.loadRuntimePreferences().values.qeFleet));`).out;
-    const plistOn = fs.existsSync(plist);
-    record('index.html', 'checkbox:setting:nightly', { action: 'toggle off/on (touched), Save', observed: `config nightly=${cfg2?.nightly}; LaunchAgent plist written under the fixture HOME=${plistOn} (launchctl never called in test mode)`, ok: cfg2?.nightly === true && plistOn });
+    // Platform-honest: the scheduler entry THIS OS uses (plist / crontab row / task), bound to the registered
+    // runner, and the installed console's own scheduler status. Real launchctl/crontab/schtasks never run.
+    const runner = registeredRunner(fx);
+    const entry2 = schedulerEntry(fx);
+    const status2 = schedulerState(fx);
+    record('index.html', 'checkbox:setting:nightly', { action: 'toggle off/on (touched), Save — on the console installed from npm pack (.console-runtime)', observed: `form: "${note2.slice(0, 70)}"; config nightly=${cfg2?.nightly}; ${process.platform} ${entry2.kind} under the fixture HOME present=${!!entry2.text}, bound to the registered runner ${path.basename(runner) || '(none)'}=${!!(entry2.text && runner && entry2.text.includes(runner))}; scheduler status=${status2.state}; served by ${path.relative(fx.home, fx.console)} (test mode: the OS scheduler is never called)`,
+      ok: cfg2?.nightly === true && !!entry2.text && !!runner && entry2.text.includes(runner) && status2.state === 'on' });
     record('index.html', 'radio:routing:off', { action: 'choose off, Save', observed: `config routing=${cfg2?.routing}; consumer route-cheap exit ${rc.status}: ${rc.stderr.trim().slice(0, 80)}`, ok: cfg2?.routing === 'off' && rc.status === 1 && /routing is off/i.test(rc.stderr) });
     record('index.html', 'checkbox:setting:qeFleet', { action: 'switch on, Save', observed: `config qeFleet=${cfg2?.qeFleet}; consumer runtime-preferences qeFleet=${qe} (the managed-CLI gate starts QE fleets only when true)`, ok: cfg2?.qeFleet === true && qe === 'true' });
     await inventory(page, 'index.html');
     await uc(page, q(page, 'btn:save-undo:0'));
-    await page.waitForFunction(() => /Settings restored|Undo didn/.test(document.querySelector('form.settings-form')?.innerText || ''), null, { timeout: 60_000 });
+    await page.waitForFunction(() => /Settings restored|Undo didn/.test(document.querySelector('form.settings-form')?.innerText || ''), null, { timeout: STATE_WAIT_MS });
     const rc2 = routeCheap();
-    record('index.html', 'btn:save-undo:0', { claim: 'Undo save', action: 'undo the nightly/routing/qe save', observed: `config.json exists=${fs.existsSync(fx.configFile)}; plist removed=${!fs.existsSync(plist)}; route-cheap now: ${rc2.stderr.trim().slice(0, 60)}`, ok: !fs.existsSync(fx.configFile) && !fs.existsSync(plist) && /not been enabled/i.test(rc2.stderr) });
+    const entry3 = schedulerEntry(fx); const status3 = schedulerState(fx);
+    record('index.html', 'btn:save-undo:0', { claim: 'Undo save', action: 'undo the nightly/routing/qe save', observed: `config.json exists=${fs.existsSync(fx.configFile)}; ${entry3.kind} removed=${!entry3.text}; scheduler status=${status3.state}; route-cheap now: ${rc2.stderr.trim().slice(0, 60)}`, ok: !fs.existsSync(fx.configFile) && !entry3.text && status3.state === 'off' && /not been enabled/i.test(rc2.stderr) });
     await page.close();
-  }, 300_000);
+  }, 900_000);
+
+  // Once nightly is a saved choice the page sends it with EVERY later save of this form. Changing only
+  // the model house must not re-run the installer or rewrite the scheduler entry (RNBC review 2026-10-01).
+  it('Settings (config.json): with nightly already on, saving only the model house leaves the scheduler alone', async () => {
+    const artifact = schedulerEntry(fx).file;   // this OS's scheduler entry file under the fixture HOME
+    const registration = path.join(fx.brainHome, 'scheduler', 'registration.json');
+    const calls = () => (fs.existsSync(fx.nightlyCallLog) ? fs.readFileSync(fx.nightlyCallLog, 'utf8').split('\n').filter(Boolean) : []);
+    const page = await openPage('index.html');
+    await settleIndex(page); await inventory(page, 'index.html');
+    const nightly = q(page, 'checkbox:setting:nightly');
+    await uc(page, nightly); await uc(page, nightly);        // touched, lands on "on"
+    await uc(page, q(page, 'btn:save:0'));
+    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note.n-ok', { timeout: 90_000 });
+    const onCalls = calls().length;
+    const onEntry = schedulerEntry(fx).text;
+    const artStat = onEntry && fs.existsSync(artifact) ? fs.statSync(artifact, { bigint: true }) : null;
+    const artBytes = artStat ? fs.readFileSync(artifact, 'utf8') : null;
+    const regStat = fs.existsSync(registration) ? fs.statSync(registration, { bigint: true }) : null;
+
+    await page.reload(); await settleIndex(page); await inventory(page, 'index.html');
+    await uc(page, q(page, 'seglabel:provider:openai'));
+    const n0 = posts.length;
+    await uc(page, q(page, 'btn:save:0'));
+    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note.n-ok', { timeout: 90_000 });
+    const sent = JSON.parse(postsSince(n0).find((p) => p.url === '/api/save-config')?.body || '{}').values || {};
+    const cfg = readJSON(fx.configFile) || {};
+    const newCalls = calls().slice(onCalls);
+    const artSame = !!artStat && fs.statSync(artifact, { bigint: true }).mtimeNs === artStat.mtimeNs && fs.readFileSync(artifact, 'utf8') === artBytes;
+    const regSame = !!regStat && fs.statSync(registration, { bigint: true }).mtimeNs === regStat.mtimeNs;
+    record('index.html', 'btn:save:0#nightly-unchanged', { claim: 'Save settings (config.json) — nightly already on', action: 'nightly on and saved; reload; change ONLY Your model house → ChatGPT; Save',
+      observed: `posted ${JSON.stringify(sent)}; installer nightly calls since: ${newCalls.length ? newCalls.map((c) => c.split(fx.home).join('~')).join(' | ') : 'none'}; ${schedulerEntry(fx).kind} untouched (mtime+bytes)=${artSame}; registration untouched=${regSame}; config provider=${cfg.provider} nightly=${cfg.nightly}`,
+      ok: sent.nightly === true && sent.provider === 'openai' && !newCalls.length && artSame && regSame && cfg.provider === 'openai' && cfg.nightly === true });
+
+    // put the scheduler back the way a person would: switch it off and save (the installed disable path)
+    await page.reload(); await settleIndex(page); await inventory(page, 'index.html');
+    await uc(page, q(page, 'checkbox:setting:nightly'));
+    await uc(page, q(page, 'btn:save:0'));
+    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note.n-ok', { timeout: 90_000 });
+    const offCalls = calls().slice(onCalls);
+    record('index.html', 'checkbox:setting:nightly#off', { claim: 'Nightly brain refresh — switch off', action: 'switch off, Save', observed: `config nightly=${readJSON(fx.configFile)?.nightly}; installer calls: ${offCalls.map((c) => c.split(fx.home).join('~')).join(' | ')}; ${schedulerEntry(fx).kind} removed=${!schedulerEntry(fx).text}; scheduler status=${schedulerState(fx).state}`,
+      ok: readJSON(fx.configFile)?.nightly === false && offCalls.length === 1 && /--disable-nightly/.test(offCalls[0]) && !schedulerEntry(fx).text && schedulerState(fx).state === 'off' });
+    fs.rmSync(fx.configFile, { force: true });   // later scenarios start from "never chosen", as before
+    await page.close();
+    expect(['btn:save:0#nightly-unchanged', 'checkbox:setting:nightly#off'].map((k) => rows.get(`index.html|${k}`))
+      .filter((r) => r.verdict !== 'PASS').map((r) => `${r.key}: ${r.observed}`)).toEqual([]);
+  }, 900_000);
 
   it('OpenRouter key: Show/Hide, Save encrypts it, both cards report it, undo removes it', async () => {
     const page = await openPage('index.html');
@@ -427,9 +517,12 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const hiddenType = await input.getAttribute('type');
     record('index.html', 'btn:secret:show', { action: 'click ×2', observed: `input type ${shownType} → ${hiddenType}`, ok: shownType === 'text' && hiddenType === 'password' });
     await uc(page, q(page, 'btn:save:0'));
-    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note', { timeout: 60_000 });
+    await page.waitForSelector('form.settings-form >> nth=0 >> .form-note', { timeout: STATE_WAIT_MS });
     const secrets = path.join(fx.home, '.config', 'ruvnet-brain', 'secrets.enc.json');
-    const hasSops = spawnSync('sops', ['--version']).status === 0;
+    // The tools the CONSOLE can reach (its PATH, not this test process's): a machine without SOPS+age
+    // (the Linux CI runner) must refuse the key, and then the box must keep offering "Add a key".
+    const onPath = (name) => String(fx.env.PATH || '').split(path.delimiter).some((d) => d && fs.existsSync(path.join(d, name)));
+    const hasSops = onPath('sops') && onPath('age-keygen');
     const enc = fs.existsSync(secrets) ? fs.readFileSync(secrets, 'utf8') : '';
     const state = await (await page.request.get(new URL('/api/state', srv.url).toString())).json();
     const plain = fs.existsSync(fx.configFile) ? fs.readFileSync(fx.configFile, 'utf8') : '';
@@ -440,9 +533,11 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     record('index.html', 'input:secret', { claim: 'OpenRouter API key', action: 'type a key, Save', observed: hasSops ? `form: "${formNote.slice(0, 60)}"; secrets.enc.json written=${!!enc} (plaintext inside=${enc.includes('sk-or-fixture')}); config.json plaintext=${plain.includes('sk-or-fixture')}; Settings key=${state.sections?.config?.values?.openrouterKey}; Savings OpenRouter key=${state.sections?.savings?.routerEngine?.keys?.openrouter}` : 'sops absent: refused with an explanation, nothing written', ok });
     // once a key exists the OpenRouter box offers "Manage" instead of "Add a key" — repaint and press it
     await page.evaluate(() => window.loadState && window.loadState());
-    await page.waitForTimeout(1500);
+    // wait on the repaint itself (the box's button label), never a fixed sleep
+    const wantLabel = hasSops ? 'Manage' : 'Add a key';
+    await page.waitForFunction((want) => [...document.querySelectorAll('.plan-action')].some((b) => b.textContent.trim() === want), wantLabel, { timeout: STATE_WAIT_MS }).catch(() => {});
     await inventory(page, 'index.html');
-    if (await q(page, 'jump:plan:manage').count()) await checkJump(page, 'index.html', 'jump:plan:manage', '#field-openrouterKey');
+    if (hasSops && await q(page, 'jump:plan:manage').count()) await checkJump(page, 'index.html', 'jump:plan:manage', '#field-openrouterKey');
     await inventory(page, 'index.html');
     if (await q(page, 'btn:secret:replace').count()) {
       await uc(page, q(page, 'btn:secret:replace'));
@@ -453,16 +548,20 @@ describe('RNBC — every element on every page, on an isolated console', () => {
       record('index.html', 'btn:secret:replace', { claim: 'Replace…', action: 'click while a key is stored', observed: `new-key input shown=${inputShown > 0}`, ok: inputShown > 0 });
       record('index.html', 'btn:secret:keep-existing', { claim: 'Keep existing', action: 'click', observed: `back to "•••• set" without saving=${setBack > 0}; secrets file untouched=${fs.existsSync(path.join(fx.home, '.config', 'ruvnet-brain', 'secrets.enc.json'))}`, ok: setBack > 0 });
     }
-    else record('index.html', 'jump:plan:manage', { action: 'look for Manage after saving a key', observed: 'the OpenRouter box still says "Add a key" after a key was saved', ok: false });
+    else if (hasSops) record('index.html', 'jump:plan:manage', { action: 'look for Manage after saving a key', observed: 'the OpenRouter box still says "Add a key" after a key was saved', ok: false });
+    else {
+      const labels = await page.locator('.plan-action').allInnerTexts();
+      record('index.html', 'jump:plan:add-a-key#no-sops', { claim: 'OpenRouter box after a refused key', action: 'save a key on a machine without SOPS+age, repaint', observed: `no key stored (secrets file present=${fs.existsSync(secrets)}); plan buttons: ${JSON.stringify(labels)}`, ok: !fs.existsSync(secrets) && labels.includes('Add a key') && !labels.includes('Manage') });
+    }
     await inventory(page, 'index.html');
     if (hasSops) {
       await uc(page, q(page, 'btn:save-undo:0'));
-      await page.waitForFunction(() => /Settings restored|Undo didn/.test(document.querySelector('form.settings-form')?.innerText || ''), null, { timeout: 60_000 });
+      await page.waitForFunction(() => /Settings restored|Undo didn/.test(document.querySelector('form.settings-form')?.innerText || ''), null, { timeout: STATE_WAIT_MS });
       record('index.html', 'btn:save-undo:0', { claim: 'Undo save', action: 'undo the key save', observed: `secrets file removed=${!fs.existsSync(secrets)}`, ok: !fs.existsSync(secrets) });
     }
     await page.reload(); await settleIndex(page); await inventory(page, 'index.html');
     await page.close();
-  }, 240_000);
+  }, 900_000);
 
   it('Settings (user): every choice reaches its consumer; undo reverts', async () => {
     const page = await openPage('index.html');
@@ -486,7 +585,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     record('index.html', 'behaviour:unsaved-settings-survive-repaint', { claim: 'choices you have not saved yet stay on screen', action: 'choose user / 1 / act / inherit, then let the page repaint before saving', observed: `still selected after repaint: learningScope=user ${kept.scope}, advocacy=1 ${kept.adv}`, ok: kept.scope === true && kept.adv === true });
     await inventory(page, 'index.html');
     await uc(page, q(page, 'btn:save:1'));
-    await page.waitForSelector('form.settings-form >> nth=1 >> .form-note.n-ok', { timeout: 60_000 });
+    await page.waitForSelector('form.settings-form >> nth=1 >> .form-note.n-ok', { timeout: STATE_WAIT_MS });
     const s = readJSON(fx.settingsFile)?.settings || {};
     const scope = spawnSync(process.execPath, [path.join(REPO, 'plugin/scripts/runtime-preferences.mjs'), '--learning-scope'], { cwd: fx.project, env: fx.env, encoding: 'utf8' }).stdout.trim();
     // newProjectDefaults: the SessionStart seeder writes the choices into a never-set-up project.
@@ -498,7 +597,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     // autoApply: the console's background measurement applies auto-eligible project fixes itself.
     const npxSettings = path.join(fx.npxProject, '.claude', 'settings.json');
     const npxBefore = fs.readFileSync(npxSettings, 'utf8');
-    spawnSync(process.execPath, [path.join(REPO, 'scripts/onboarding-console.mjs'), '--refresh-cache'], { cwd: fx.project, env: fx.env, encoding: 'utf8', timeout: 240_000 });
+    spawnSync(process.execPath, [fx.console, '--refresh-cache'], { cwd: fx.project, env: fx.env, encoding: 'utf8', timeout: 240_000 });
     const npxAfter = fs.readFileSync(npxSettings, 'utf8');
     const stateCache = readJSON(path.join(fx.home, '.claude', 'ruvnet-brain', 'state-cache.json'));
     record('index.html', 'radio:learningScope:user', { action: 'choose user, Save', observed: `settings learningScope=${s.learningScope}; consumer runtime-preferences --learning-scope → ${scope}`, ok: s.learningScope === 'user' && scope === 'user' });
@@ -514,14 +613,14 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const survived = await q(page, 'btn:save-undo:1').count();
     record('index.html', 'btn:save-undo:1#repaint', { claim: 'Undo save (after the page repaints)', action: 'save, let a re-measure repaint the page, look for Undo', observed: `Undo still offered after repaint: ${survived > 0}`, ok: survived > 0 });
     await uc(page, q(page, 'btn:save-undo:1'));
-    await page.waitForFunction(() => /Settings restored|Undo didn/.test(document.querySelectorAll('form.settings-form')[1]?.innerText || ''), null, { timeout: 30_000 });
+    await page.waitForFunction(() => /Settings restored|Undo didn/.test(document.querySelectorAll('form.settings-form')[1]?.innerText || ''), null, { timeout: STATE_WAIT_MS });
     const scopeAfter = spawnSync(process.execPath, [path.join(REPO, 'plugin/scripts/runtime-preferences.mjs'), '--learning-scope'], { cwd: fx.project, env: fx.env, encoding: 'utf8' }).stdout.trim();
     record('index.html', 'btn:save-undo:1', { claim: 'Undo save', action: 'undo the user-settings save', observed: `settings.json exists=${fs.existsSync(fx.settingsFile) && !!readJSON(fx.settingsFile)?.settings?.autoApply}; --learning-scope now ${scopeAfter}`, ok: scopeAfter === 'project' && readJSON(fx.settingsFile)?.settings?.autoApply !== true });
     record('index.html', 'btn:save:1', { claim: 'Save settings (settings.json)', action: 'save learn/jumps-in/act/new-projects', observed: `wrote ${JSON.stringify(s)}`, ok: s.learningScope === 'user' && s.autoApply === true });
     // re-measure with autoApply off again, so later scenarios see the machine as it now is
-    spawnSync(process.execPath, [path.join(REPO, 'scripts/onboarding-console.mjs'), '--refresh-cache'], { cwd: fx.project, env: fx.env, encoding: 'utf8', timeout: 240_000 });
+    spawnSync(process.execPath, [fx.console, '--refresh-cache'], { cwd: fx.project, env: fx.env, encoding: 'utf8', timeout: 240_000 });
     await page.close();
-  }, 400_000);
+  }, 900_000);
 
   it('Lessons: each switch changes what the gate delivers, and back', async () => {
     const page = await openPage('index.html');
@@ -555,12 +654,12 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const disabled = await cand.isDisabled();
     record('index.html', 'checkbox:lesson:QA-IMP-CAND', { action: 'inspect', observed: `disabled=${disabled} (imported, never ratified: cannot become policy); gate delivers it: ${lessonsFor('write-code').includes('QA-IMP-CAND')}`, ok: disabled && !lessonsFor('write-code').includes('QA-IMP-CAND') });
     await page.close();
-  }, 240_000);
+  }, 900_000);
 
   it('Recommendations: Skip/Show again, Apply/Cancel, Apply/Yes changes the project, Undo restores it, Fix all', async () => {
     const page = await openPage('index.html');
     await settleIndex(page);
-    await page.waitForSelector('article.rec', { timeout: 60_000 });
+    await page.waitForSelector('article.rec', { timeout: STATE_WAIT_MS });
     let inv = await inventory(page, 'index.html');
     const rec = inv.find((x) => x.key.startsWith('btn:rec:') && x.key.endsWith(':skip')).key.split(':').slice(2, -1).join(':');
     const card = page.locator(`article#${rec.replace(/:/g, '\\:')}`);
@@ -590,7 +689,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const rewired = changed !== original && !changed.includes('npx ruflo');
     record('index.html', `btn:rec:${rec}:apply`, { claim: 'Apply… → Yes, change my computer', action: 'consent and apply', observed: `POST ${postsSince(n0).map((p) => p.url).join(',')}; npx-project hook rewired off npx=${rewired}; card: ${/Applied/.test(appliedText) ? 'Applied — and reversible' : appliedText.slice(0, 80)}`, ok: rewired && /Applied/.test(appliedText) });
     await uc(page, card.getByRole('button', { name: 'Undo this change' }));
-    await card.locator('.reverted').waitFor({ timeout: 60_000 });
+    await card.locator('.reverted').waitFor({ timeout: STATE_WAIT_MS });
     const restored = fs.readFileSync(npxSettings, 'utf8') === original;
     record('index.html', `btn:rec:${rec}:undo-this-change`, { claim: 'Undo this change', action: 'click after apply', observed: `npx-project settings byte-identical to before=${restored}`, ok: restored });
     await uc(page, card.getByRole('button', { name: 'Offer it again' }));
@@ -605,7 +704,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     await uc(page, batch.getByRole('button', { name: 'Cancel' }));
     const unchanged = fs.readFileSync(npxSettings, 'utf8') === original;
     record('index.html', fixKey, { claim: 'Fix all', action: 'open confirm, Cancel', observed: `confirm listed ${listed} fix(es); Cancel left files unchanged=${unchanged}`, ok: listed >= 1 && unchanged });
-    await page.reload(); await settleIndex(page); await page.waitForSelector('article.rec', { timeout: 60_000 }); await inventory(page, 'index.html');
+    await page.reload(); await settleIndex(page); await page.waitForSelector('article.rec', { timeout: STATE_WAIT_MS }); await inventory(page, 'index.html');
     await uc(page, q(page, fixKey));
     await uc(page, page.locator('#recs-batch').getByRole('button', { name: 'Yes, fix all verified items' }));
     await page.locator('#recs-batch .form-note').waitFor({ timeout: 120_000 });
@@ -616,7 +715,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const batchRestored = fs.readFileSync(npxSettings, 'utf8') === original;
     record('index.html', `btn:fixall:yes-fix-all-verified-items`, { claim: 'Yes, fix all verified items', action: 'Fix all → Yes, then the per-card undo', observed: `"${batchText.slice(0, 50)}"; file changed=${batchChanged}; undo restored=${batchRestored}`, ok: /1 applied/.test(batchText) && batchChanged && batchRestored });
     await page.close();
-  }, 400_000);
+  }, 900_000);
 
   it('Savings: the smart-routing button saves routing and route-cheap obeys it', async () => {
     const page = await openPage('index.html');
@@ -624,16 +723,16 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const inv = await inventory(page, 'index.html');
     const cta = inv.find((x) => x.key.startsWith('btn:routing-cta:'))?.key;
     await uc(page, q(page, cta));
-    await page.waitForFunction(() => /Smart routing: (chosen|ON|off)/.test(document.querySelector('.mh-cta')?.innerText || ''), null, { timeout: 30_000 });
+    await page.waitForFunction(() => /Smart routing: (chosen|ON|off)/.test(document.querySelector('.mh-cta')?.innerText || ''), null, { timeout: STATE_WAIT_MS });
     const r1 = readJSON(fx.configFile)?.routing; const c1 = routeCheap();
     const off = page.locator('.mh-cta').getByRole('button', { name: 'Turn off' });
     await uc(page, off);
-    await page.waitForFunction(() => /Smart routing: off/.test(document.querySelector('.mh-cta')?.innerText || ''), null, { timeout: 30_000 });
+    await page.waitForFunction(() => /Smart routing: off/.test(document.querySelector('.mh-cta')?.innerText || ''), null, { timeout: STATE_WAIT_MS });
     const r2 = readJSON(fx.configFile)?.routing; const c2 = routeCheap();
     record('index.html', cta, { claim: 'Turn on smart routing', action: 'click', observed: `config routing=${r1}; route-cheap passes the routing gate and stops at the next one: "${c1.stderr.trim().slice(0, 70)}"`, ok: r1 === 'auto' && !/routing is off|not been enabled/i.test(c1.stderr) });
     record('index.html', 'btn:routing-cta:turn-off', { claim: 'Turn off', action: 'click', observed: `config routing=${r2}; route-cheap: "${c2.stderr.trim().slice(0, 60)}"`, ok: r2 === 'off' && /routing is off/i.test(c2.stderr) });
     await page.close();
-  }, 180_000);
+  }, 900_000);
 
   it('Freshness: the ↻ button and the age chip start a real re-measure that lands', async () => {
     const page = await openPage('index.html');
@@ -650,11 +749,11 @@ describe('RNBC — every element on every page, on an isolated console', () => {
       await page.waitForTimeout(16_000); // past the server's 15s debounce
     }
     await page.close();
-  }, 400_000);
+  }, 900_000);
 
   it('scope.html: view buttons, search, sortable headers, links, theme', async () => {
     const page = await openPage('scope.html');
-    await page.waitForSelector('#repos-table tbody tr', { timeout: 30_000 });
+    await page.waitForSelector('#repos-table tbody tr', { timeout: STATE_WAIT_MS });
     const inv = await inventory(page, 'scope.html');
     const firstRow = () => page.locator('#repos-table tbody tr').first().innerText();
     for (const e of inv) {
@@ -691,7 +790,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     const body = await page.locator('body').innerText();
     record('scope.html', 'facts:buckets', { claim: 'current / behind / not in brain / unverified', action: 'compare with the fixture COVERAGE.json', observed: body.match(/current[\s\S]{0,40}/i)?.[0]?.replace(/\s+/g, ' ') || '', ok: /behind/i.test(body) && /ruvector/i.test(body) });
     await page.close();
-  }, 120_000);
+  }, 900_000);
 
   it('tips.html, architecture.html, install pages: every control', async () => {
     for (const name of ['tips.html', 'architecture.html', 'install-architecture.html', 'install-mockup.html']) {
@@ -744,7 +843,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
       }
       await page.close();
     }
-  }, 180_000);
+  }, 900_000);
 
   // A page can serve HTTP 200, have zero controls, and still be broken: on 2026-10-01 a truncated favicon
   // line on install-architecture.html left its href quote open, the parser swallowed the whole <style>
@@ -782,7 +881,7 @@ describe('RNBC — every element on every page, on an isolated console', () => {
     }
     const broken = served.map((name) => rows.get(`${name}|page:stylesheet-and-head`)).filter((r) => r.verdict !== 'PASS');
     expect(broken.map((r) => `${r.page}: ${r.observed}`)).toEqual([]);
-  }, 120_000);
+  }, 900_000);
 
   it('every element found has a ledger row; nothing failed; no JS errors or failed requests', () => {
     const missing = [...found.keys()].filter((id) => !rows.has(id));

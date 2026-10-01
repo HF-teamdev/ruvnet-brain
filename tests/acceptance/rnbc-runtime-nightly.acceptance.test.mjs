@@ -20,6 +20,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { schedulerEntry } from './helpers/rnbc-fixture.mjs';
 
 const REPO = path.resolve(import.meta.dirname, '../..');
 const LABEL = 'com.ruvnet.brain-update';
@@ -151,6 +152,8 @@ describe('the installed Console (.console-runtime from npm pack) drives the nigh
     expect(registration).toMatchObject({ identity: LABEL, runnerSha256: sha(path.join(fx.payload, 'bin', 'nightly-refresh.mjs')) });
     expect(path.dirname(registration.runnerPath)).toBe(path.join(fx.brainHome, 'scheduler'));
     expect(sha(registration.runnerPath)).toBe(registration.runnerSha256);
+    // this OS's scheduler entry (plist / crontab row / task, test-mode) runs exactly the registered runner
+    expect(schedulerEntry(fx).text, schedulerEntry(fx).kind).toContain(registration.runnerPath);
     if (darwin) {
       const plist = fs.readFileSync(plistPath(), 'utf8');
       expect(plist).toContain(`<string>${LABEL}</string>`);
@@ -166,18 +169,17 @@ describe('the installed Console (.console-runtime from npm pack) drives the nigh
     const calls = nightlyCalls().length;
     const reg = path.join(fx.brainHome, 'scheduler', 'registration.json');
     const regStat = fs.statSync(reg, { bigint: true });
-    const plistStat = darwin ? fs.statSync(plistPath(), { bigint: true }) : null;
-    const plistBytes = darwin ? fs.readFileSync(plistPath(), 'utf8') : null;
+    const artifact = schedulerEntry(fx).file;
+    const artStat = fs.statSync(artifact, { bigint: true });
+    const artBytes = fs.readFileSync(artifact, 'utf8');
     // Exactly what the page posts when the person changes only the model house: the already-chosen
     // nightly value travels with it.
     const res = await post('/api/save-config', { provider: 'codex', nightly: true });
     expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
     expect(nightlyCalls().slice(calls), 'no installer --enable-nightly for an unchanged choice').toEqual([]);
     expect(fs.statSync(reg, { bigint: true }).mtimeNs).toBe(regStat.mtimeNs);
-    if (darwin) {
-      expect(fs.statSync(plistPath(), { bigint: true }).mtimeNs).toBe(plistStat.mtimeNs);
-      expect(fs.readFileSync(plistPath(), 'utf8')).toBe(plistBytes);
-    }
+    expect(fs.statSync(artifact, { bigint: true }).mtimeNs, schedulerEntry(fx).kind).toBe(artStat.mtimeNs);
+    expect(fs.readFileSync(artifact, 'utf8')).toBe(artBytes);
     const cfg = JSON.parse(fs.readFileSync(path.join(fx.home, '.claude', 'ruvnet-brain', 'config.json'), 'utf8'));
     expect(cfg).toMatchObject({ provider: 'codex', nightly: true });
     expect(schedulerState().state).toBe('on');
@@ -189,7 +191,7 @@ describe('the installed Console (.console-runtime from npm pack) drives the nigh
     expect(off, JSON.stringify(off)).toMatchObject({ ok: true });
     expect(nightlyCalls().slice(calls).filter((l) => l.includes('--disable-nightly'))).toHaveLength(1);
     expect(schedulerState().state).toBe('off');
-    if (darwin) expect(fs.existsSync(plistPath())).toBe(false);
+    expect(schedulerEntry(fx).text, schedulerEntry(fx).kind).toBeNull();
     calls = nightlyCalls().length;
     const again = await post('/api/save-config', { provider: 'openai', nightly: false });
     expect(again, JSON.stringify(again)).toMatchObject({ ok: true });
