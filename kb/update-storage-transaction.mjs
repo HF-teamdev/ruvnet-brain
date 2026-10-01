@@ -35,10 +35,12 @@ function nearestExisting(dir) {
 }
 
 /** Free bytes available to this user on the filesystem holding `dir` (or its nearest existing parent). */
-export function availableBytes(dir, env = process.env) {
+export function availableBytes(dir, env = process.env, statfs = fs.statfsSync) {
   // Test seam, honoured only under RUVNET_BRAIN_TEST=1: a full disk cannot be produced on demand.
   if (env.RUVNET_BRAIN_TEST === '1' && /^\d+$/.test(String(env.RUVNET_TEST_FREE_BYTES || ''))) return Number(env.RUVNET_TEST_FREE_BYTES);
-  const stat = fs.statfsSync(nearestExisting(dir));
+  // fs.statfsSync arrived in Node 18.15; the package supports node >= 18. Say so plainly instead of a TypeError.
+  if (typeof statfs !== 'function') throw new Error(`this Node (${process.version}) cannot measure free disk space (no fs.statfsSync; needs 18.15+)`);
+  const stat = statfs(nearestExisting(dir));
   return Number(stat.bavail) * Number(stat.bsize);
 }
 
@@ -60,29 +62,37 @@ export function directoryBytes(dir) {
 
 const gb = (bytes) => `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 
+// The ONE supported way to put the Brain on a bigger disk (CONTRIBUTING.md, "Putting the Brain on another
+// disk"). Not RUVNET_BRAIN_HOME: an env var never reaches GUI-launched hosts or launchd, and the installer
+// ignores it while the MCP server honours it — a split brain.
+export const MOVE_BRAIN_HINT = 'move the Brain to a bigger disk with  npx ruvnet-brain --move-brain <folder on that disk>';
+
 /**
- * `requirements`: [{ dir, bytes, purpose }]. Requirements on the same filesystem add up. Returns
+ * `requirements`: [{ dir, bytes, purpose, brain? }]. Requirements on the same filesystem add up. A group
+ * holds the Brain unless every requirement in it says `brain: false` (e.g. a temp-dir unpack), and only
+ * such a group is offered `bigger` as the alternative to freeing space. Returns
  * { ok, shortfalls: [{ dir, needBytes, freeBytes, shortBytes, purposes }], message }.
  */
 export function checkDiskSpace(requirements, { available = availableBytes, deviceOf = (dir) => fs.statSync(nearestExisting(dir)).dev,
-  headroom = DISK_HEADROOM_BYTES, what = 'apply this update' } = {}) {
+  headroom = DISK_HEADROOM_BYTES, what = 'apply this update', bigger = MOVE_BRAIN_HINT } = {}) {
   const byDevice = new Map();
-  for (const { dir, bytes, purpose } of requirements) {
+  for (const { dir, bytes, purpose, brain = true } of requirements) {
     const device = deviceOf(dir);
-    const group = byDevice.get(device) || { dir: nearestExisting(dir), bytes: 0, purposes: [] };
+    const group = byDevice.get(device) || { dir: nearestExisting(dir), bytes: 0, purposes: [], brain: false };
     group.bytes += bytes;
     group.purposes.push(`${purpose} ${gb(bytes)}`);
+    group.brain ||= brain !== false;
     byDevice.set(device, group);
   }
   const shortfalls = [];
   for (const group of byDevice.values()) {
     const needBytes = group.bytes + headroom;
     const freeBytes = available(group.dir);
-    if (freeBytes < needBytes) shortfalls.push({ dir: group.dir, needBytes, freeBytes, shortBytes: needBytes - freeBytes, purposes: group.purposes });
+    if (freeBytes < needBytes) shortfalls.push({ dir: group.dir, needBytes, freeBytes, shortBytes: needBytes - freeBytes, purposes: group.purposes, brain: group.brain });
   }
   const message = shortfalls.map((s) => `not enough free disk space to ${what}: ${s.dir} has ${gb(s.freeBytes)} free and needs `
-    + `${gb(s.needBytes)} (${s.purposes.join(' + ')} + ${gb(headroom)} headroom). Free ${gb(s.shortBytes)} on that disk, or `
-    + 'put the Brain on a bigger disk with RUVNET_BRAIN_HOME. Nothing was changed.').join('\n');
+    + `${gb(s.needBytes)} (${s.purposes.join(' + ')} + ${gb(headroom)} headroom). Free ${gb(s.shortBytes)} on that disk`
+    + `${s.brain && bigger ? `, or ${bigger}` : ''}. Nothing was changed.`).join('\n');
   return { ok: shortfalls.length === 0, shortfalls, message };
 }
 

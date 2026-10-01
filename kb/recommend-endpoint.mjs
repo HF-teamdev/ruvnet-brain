@@ -13,7 +13,9 @@
  * endpoint never writes anything but its own descriptor and socket.
  *
  * DESCRIPTOR: <brainHome>/run/recommend-<pid>.json = { pid, socket, token, startedAt, schema }.
- * Removed on exit. A hook treats a descriptor whose pid is not alive as stale and ignores it.
+ * Removed on exit. A hook treats a descriptor whose pid is not alive as stale and ignores it. The socket is
+ * <brainHome>/run/recommend-<pid>.sock, or /tmp/ruvnet-brain-<uid>/recommend-<pid>.sock when that path is too
+ * long for a Unix socket (SOCKET_PATH_MAX below).
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -43,6 +45,28 @@ function socketPath(brainHome, pid) {
   return process.platform === 'win32'
     ? `\\\\.\\pipe\\ruvnet-brain-recommend-${pid}`
     : path.join(runDir(brainHome), `recommend-${pid}.sock`);
+}
+
+// A Unix socket path is capped by sockaddr_un.sun_path: measured 104 bytes on macOS (105 → listen EINVAL),
+// 108 incl. NUL on Linux. A long HOME / RUVNET_BRAIN_HOME (or a Brain moved to a deep folder) pushes
+// <brainHome>/run/recommend-<pid>.sock past it, and the endpoint silently never started. Then the socket
+// goes in ONE short per-user directory, the same on every process of this user (not os.tmpdir(), which
+// differs between a GUI host and a terminal): /tmp/ruvnet-brain-<uid>, 0700, owned by this user.
+export const SOCKET_PATH_MAX = process.platform === 'linux' ? 107 : 104;
+export function shortSocketDir(uid = typeof process.getuid === 'function' ? process.getuid() : null) {
+  return uid === null || uid === undefined ? null : path.join('/tmp', `ruvnet-brain-${uid}`);
+}
+
+/** The short directory, created 0700 if absent; null unless it is a real directory private to this user. */
+function privateShortDir(dir) {
+  if (!dir) return null;
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (e) { if (e?.code !== 'EEXIST') return null; }
+  try {
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== process.getuid()) return null;
+    if ((st.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
+    return (fs.lstatSync(dir).mode & 0o077) === 0 ? dir : null;
+  } catch { return null; }
 }
 
 /** A directory that looks like the plugin's card snapshot, not an arbitrary path a client named. */
@@ -83,7 +107,18 @@ export async function startRecommendEndpoint({ brainHome, onActivity = () => {},
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(dir, 0o700); } catch { /* best effort on filesystems without modes */ }
     sweepStale(dir);
-    const sock = socketPath(brainHome, process.pid);
+    let sock = socketPath(brainHome, process.pid);
+    if (process.platform !== 'win32' && Buffer.byteLength(sock) > SOCKET_PATH_MAX) {
+      const short = privateShortDir(shortSocketDir());
+      if (!short) {
+        log(`[recommend-endpoint] not started: socket path ${sock} is ${Buffer.byteLength(sock)} bytes (limit ${SOCKET_PATH_MAX}) `
+          + `and the short fallback ${shortSocketDir()} is not a private directory of this user`);
+        return null;
+      }
+      sweepStale(short);
+      log(`[recommend-endpoint] ${sock} is ${Buffer.byteLength(sock)} bytes (limit ${SOCKET_PATH_MAX}); listening in ${short} instead`);
+      sock = path.join(short, `recommend-${process.pid}.sock`);
+    }
     if (process.platform !== 'win32') fs.rmSync(sock, { force: true });
     const token = crypto.randomBytes(24).toString('hex');
     let held = null; // { key, promise }

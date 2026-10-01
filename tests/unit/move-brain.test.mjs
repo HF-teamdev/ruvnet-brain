@@ -7,19 +7,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
-import { moveBrain, MoveRefused } from '../../scripts/move-brain.mjs';
+import { defaultOps, moveBrain, MoveRefused, sweepStaleEndpoints } from '../../scripts/move-brain.mjs';
 import { brainLocation, unmountedNotice, volumeOf } from '../../plugin/scripts/brain-location.mjs';
 import { runStorageTransaction, treeIdentity } from '../../kb/update-storage-transaction.mjs';
+import { acquireRefreshLock, refreshLockPath, releaseRefreshLock } from '../../kb/refresh-run.mjs';
+import { sweepStale } from '../../kb/recommend-endpoint.mjs';
 import { health } from '../../plugin/scripts/session-start-health.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const temps = [];
-const temp = (prefix) => { const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); temps.push(dir); return dir; };
+// Unix socket paths are capped near 104 bytes and macOS's os.tmpdir() alone is ~49, so socket cases use /tmp.
+const SHORT_TMP = process.platform === 'win32' ? os.tmpdir() : '/tmp';
+const temp = (prefix, base = os.tmpdir()) => { const dir = fs.realpathSync(fs.mkdtempSync(path.join(base, prefix))); temps.push(dir); return dir; };
 afterEach(() => { while (temps.length) fs.rmSync(temps.pop(), { recursive: true, force: true }); });
 
 /** An installed Brain shape: kb with a store and the reader dependency, plus brain-home state. */
-function installedBrain() {
-  const home = temp('move-home-');
+function installedBrain(base) {
+  const home = temp('move-home-', base);
   const brain = path.join(home, '.cache', 'ruvnet-brain');
   const kb = path.join(brain, 'kb');
   fs.mkdirSync(path.join(kb, 'node_modules', '@xenova', 'transformers'), { recursive: true });
@@ -94,6 +98,292 @@ describe('--move-brain', () => {
     expect(refusal({ back: true })).toMatch(/already at its default location/);
     expect(fs.lstatSync(brain).isSymbolicLink()).toBe(false); // every refusal left the Brain where it was
     expect(fs.readdirSync(disk).sort()).toEqual(['full']);
+  });
+});
+
+const refusalOf = (fn) => { try { fn(); return null; } catch (e) { expect(e).toBeInstanceOf(MoveRefused); return e.message; } };
+const leftovers = (brain) => fs.readdirSync(path.dirname(brain)).filter((n) => /\.(old|link|link-old|moving)-/.test(n));
+
+// S1 (review 2026-10-01, reproduced on a real exFAT image: "3 files / 4100 bytes vs 7 files / 20484 bytes"):
+// macOS writes an AppleDouble ._<name> beside every copied file with xattrs on exFAT/FAT/NTFS, so a whole-tree
+// digest never matched and every move to such a disk refused with "files changed while copying".
+describe('--move-brain onto a disk that adds its own metadata (exFAT/FAT/NTFS)', () => {
+  /** A copier that behaves like macOS writing to exFAT: the real copy, plus AppleDouble files and volume metadata. */
+  const exfatLikeCopy = (extra = () => {}) => (src, dest, filter) => {
+    defaultOps.copyTree(src, dest, filter);
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile() && !entry.name.startsWith('._')) fs.writeFileSync(path.join(dir, `._${entry.name}`), Buffer.alloc(4096, 1));
+      }
+    };
+    walk(dest);
+    fs.writeFileSync(path.join(dest, '.DS_Store'), 'ds');
+    fs.mkdirSync(path.join(dest, '.fseventsd'));
+    fs.writeFileSync(path.join(dest, '.fseventsd', 'fseventsd-uuid'), 'u');
+    extra(dest);
+  };
+
+  it('moves: destination-only AppleDouble ._ files and volume metadata are not differences', () => {
+    const { home, brain } = installedBrain();
+    const before = treeIdentity(brain).sha256;
+    const dest = path.join(temp('move-exfat-'), 'ruvnet-brain');
+    const moved = moveBrain({ home, to: dest, ops: { copyTree: exfatLikeCopy() } });
+    expect(moved.to).toBe(dest);
+    expect(fs.realpathSync(brain)).toBe(dest);
+    expect(fs.existsSync(path.join(dest, 'kb', '._store.rvf'))).toBe(true); // the disk's metadata is left alone
+    expect(fs.readFileSync(path.join(dest, 'kb', 'store.rvf'))).toEqual(Buffer.alloc(4096, 7));
+    expect(leftovers(brain)).toEqual([]);
+    expect(before).toBeTruthy();
+  });
+
+  it('red: anything else the copy gained, or a file whose bytes differ, refuses — naming it, and nothing moves', () => {
+    const { home, brain } = installedBrain();
+    const disk = temp('move-exfat-');
+    const extraFile = refusalOf(() => moveBrain({ home, to: path.join(disk, 'a'),
+      ops: { copyTree: exfatLikeCopy((dest) => fs.writeFileSync(path.join(dest, 'kb', 'stray.json'), '{}')) } }));
+    expect(extraFile).toMatch(/^the copy does not match the original: kb[\\/]stray\.json is in the copy but not in the original\. .*The copy was removed and the Brain is unchanged at /);
+    // Same size, one byte different: a size/count comparison would pass this; the per-file digest does not.
+    const corrupt = refusalOf(() => moveBrain({ home, to: path.join(disk, 'b'),
+      ops: { copyTree: exfatLikeCopy((dest) => { const f = path.join(dest, 'kb', 'store.rvf'); const b = fs.readFileSync(f); b[100] ^= 1; fs.writeFileSync(f, b); }) } }));
+    expect(corrupt).toMatch(/kb[\\/]store\.rvf differs \(4096 bytes in the original, 4096 in the copy\)/);
+    expect(corrupt).not.toMatch(/files changed while copying; retry/); // the old misleading line
+    expect(fs.lstatSync(brain).isSymbolicLink()).toBe(false);
+    expect(fs.readdirSync(disk)).toEqual([]);
+  });
+
+  it('red: a ._ file that IS part of the Brain is still compared (only destination-only metadata is ignored)', () => {
+    const { home, brain } = installedBrain();
+    fs.writeFileSync(path.join(brain, 'kb', '._mine'), 'real data');
+    const message = refusalOf(() => moveBrain({ home, to: path.join(temp('move-exfat-'), 'b'),
+      ops: { copyTree: (src, dest, filter) => { defaultOps.copyTree(src, dest, filter); fs.writeFileSync(path.join(dest, 'kb', '._mine'), 'changed!!'); } } }));
+    expect(message).toMatch(/kb[\\/]\._mine differs/);
+  });
+
+  it.runIf(process.platform === 'darwin')('a real exFAT disk image: the move succeeds, and a disk root is refused as a target', (ctx) => {
+    const work = temp('move-dmg-');
+    const image = path.join(work, 'disk.dmg');
+    const mount = path.join(work, 'mnt');
+    const made = spawnSync('hdiutil', ['create', '-size', '64m', '-fs', 'ExFAT', '-volname', 'RVBTEST', image, '-quiet']);
+    const attached = made.status === 0 && spawnSync('hdiutil', ['attach', image, '-nobrowse', '-mountpoint', mount, '-quiet']).status === 0;
+    if (!attached) { ctx.skip(); return; }
+    try {
+      const { home, brain } = installedBrain();
+      for (const f of ['kb/store.rvf', 'kb/SOURCE.json', 'active.json']) spawnSync('xattr', ['-w', 'com.example.probe', 'x', path.join(brain, f)]);
+      const measured = [];
+      const available = (dir) => { measured.push(dir); return 1e12; };
+      expect(refusalOf(() => moveBrain({ home, to: mount, available }))).toMatch(/is the top of a disk; choose a folder on it, e\.g\. {2}--move-brain .*\/mnt\/ruvnet-brain$/);
+      const dest = path.join(mount, 'ruvnet-brain');
+      moveBrain({ home, to: dest, available });
+      expect(fs.realpathSync(brain)).toBe(fs.realpathSync(dest));
+      expect(fs.statSync(measured.at(-1)).dev).toBe(fs.statSync(mount).dev); // space measured on the target disk
+      expect(fs.readFileSync(path.join(brain, 'kb', 'store.rvf'))).toEqual(Buffer.alloc(4096, 7));
+    } finally {
+      spawnSync('hdiutil', ['detach', mount, '-force', '-quiet']);
+    }
+  }, 120_000); // hdiutil create/attach/detach take seconds, more on a loaded machine
+});
+
+// S2: a SIGKILLed search worker leaves run/recommend-<pid>.sock behind, and the move died with a raw stack
+// ("unsupported filesystem entry in transaction tree: run/recommend-<pid>.sock").
+describe.skipIf(process.platform === 'win32')('--move-brain with sockets in the Brain', () => {
+  /** Bind a real Unix socket at `file` in a child, then SIGKILL it: the socket file stays, its pid is dead. */
+  const staleSocket = (dir) => {
+    const child = spawnSync(process.execPath, ['-e', `const p = require('path').join(${JSON.stringify(dir)}, 'recommend-' + process.pid + '.sock');
+require('net').createServer().listen(p, () => { console.log(p); process.kill(process.pid, 'SIGKILL'); });`], { encoding: 'utf8' });
+    const file = child.stdout.trim();
+    expect(fs.lstatSync(file).isSocket()).toBe(true);
+    return file;
+  };
+
+  it('a stale recommender socket is swept like the endpoint sweeps it, a live one is not copied, and the move succeeds', async () => {
+    const { home, brain } = installedBrain(SHORT_TMP);
+    const run = path.join(brain, 'run');
+    fs.mkdirSync(run, { mode: 0o700 });
+    const stale = staleSocket(run);
+    fs.writeFileSync(stale.replace(/\.sock$/, '.json'), '{}');
+    const net = await import('node:net');
+    const live = net.createServer();
+    await new Promise((resolve) => live.listen(path.join(run, `recommend-${process.pid}.sock`), resolve));
+    try {
+      const dest = path.join(temp('mvd-', SHORT_TMP), 'ruvnet-brain');
+      moveBrain({ home, to: dest });
+      expect(fs.realpathSync(brain)).toBe(dest);
+      expect(fs.readdirSync(path.join(dest, 'run'))).toEqual([]); // stale swept; the live socket is not data
+      expect(fs.readFileSync(path.join(dest, 'kb', 'store.rvf'))).toEqual(Buffer.alloc(4096, 7));
+    } finally { live.close(); }
+  });
+
+  it('the stale rule is the endpoint\'s own (kb/recommend-endpoint.mjs sweepStale) on the same directory', () => {
+    const make = () => {
+      const run = temp('mvs-', SHORT_TMP);
+      staleSocket(run);
+      fs.writeFileSync(path.join(run, `recommend-${process.pid}.json`), '{}'); // alive: kept
+      fs.writeFileSync(path.join(run, `recommend-${2 ** 22 + 7}.json`), '{}'); // dead: swept
+      fs.writeFileSync(path.join(run, 'other.sock.txt'), 'x');
+      return run;
+    };
+    const a = make(); const b = make();
+    expect(sweepStaleEndpoints(a)).toBe(sweepStale(b));
+    expect(fs.readdirSync(a).map((n) => n.replace(/\d+/, 'N')).sort()).toEqual(fs.readdirSync(b).map((n) => n.replace(/\d+/, 'N')).sort());
+    expect(fs.readdirSync(a).sort()).toEqual([`recommend-${process.pid}.json`, 'other.sock.txt'].sort());
+  });
+
+  it('red: a socket anywhere else is a clean refusal naming the file — never a stack trace — and nothing is copied', () => {
+    const { home, brain } = installedBrain(SHORT_TMP);
+    const sock = staleSocket(path.join(brain, 'kb'));
+    const disk = temp('mvd-', SHORT_TMP);
+    const message = refusalOf(() => moveBrain({ home, to: path.join(disk, 'ruvnet-brain') }));
+    expect(message).toBe(`${sock} is a socket, which cannot be copied to another disk. Stop whatever created it (or remove it if nothing is using it), then retry. Nothing was moved.`);
+    expect(fs.readdirSync(disk)).toEqual([]);
+    expect(fs.lstatSync(brain).isSymbolicLink()).toBe(false);
+  });
+});
+
+// S3: the steps after the copy (rename the brain home aside, swap the link) were unguarded: a failure left a
+// full copy at the target and a stray link, with a raw error.
+describe('--move-brain: a failure during the swap puts everything back', () => {
+  /** ops whose `renameSync` throws on the call whose (from, to) matches `when`. */
+  const failingRename = (when, code = 'EIO', times = 1) => {
+    let left = times;
+    return { renameSync: (a, b) => {
+      if (left > 0 && when(a, b)) { left--; const e = new Error(`injected ${code}`); e.code = code; throw e; }
+      return fs.renameSync(a, b);
+    } };
+  };
+
+  it.each([
+    ['setting the brain home aside', (brain) => (a) => a === brain],
+    ['putting the link in place', (brain) => (a, b) => b === brain && a.includes('.link-')],
+    ['moving the copy into the target', () => (a) => a.includes('.moving-')],
+  ])('local → disk, failing at %s: the Brain is unchanged, the copy removed, no stray link', (_step, when) => {
+    const { home, brain } = installedBrain();
+    const before = treeIdentity(brain).sha256;
+    const disk = temp('move-disk-');
+    const dest = path.join(disk, 'ruvnet-brain');
+    fs.mkdirSync(dest); // an empty target folder the user made: it must be there again afterwards
+    const message = refusalOf(() => moveBrain({ home, to: dest, ops: failingRename(when(brain)) }));
+    expect(message).toMatch(/^moving the Brain failed while trying to .* \(EIO: injected EIO\)\. Everything was put back: the Brain is unchanged at /);
+    expect(fs.lstatSync(brain).isDirectory()).toBe(true);
+    expect(fs.lstatSync(brain).isSymbolicLink()).toBe(false);
+    expect(treeIdentity(brain).sha256).toBe(before);
+    expect(fs.readdirSync(disk)).toEqual(['ruvnet-brain']);
+    expect(fs.readdirSync(dest)).toEqual([]);
+    expect(leftovers(brain)).toEqual([]);
+    expect(fs.existsSync(refreshLockPath(path.join(brain, 'kb')))).toBe(false); // the lock was released
+  });
+
+  it('moving a second time when the link cannot be renamed over (Windows junction semantics) sets it aside and succeeds', () => {
+    const { home, brain } = installedBrain();
+    const first = path.join(temp('move-disk-a-'), 'ruvnet-brain');
+    const second = path.join(temp('move-disk-b-'), 'ruvnet-brain');
+    moveBrain({ home, to: first });
+    const moved = moveBrain({ home, to: second, ops: failingRename((a, b) => b === brain && a.includes('.link-'), 'EPERM') });
+    expect(moved.to).toBe(second);
+    expect(fs.lstatSync(brain).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(brain)).toBe(second);
+    expect(fs.existsSync(first)).toBe(false);
+    expect(leftovers(brain)).toEqual([]);
+  });
+
+  it('moving a second time, failing even after setting the old link aside: the old link is restored', () => {
+    const { home, brain } = installedBrain();
+    const first = path.join(temp('move-disk-a-'), 'ruvnet-brain');
+    const disk = temp('move-disk-b-');
+    moveBrain({ home, to: first });
+    const message = refusalOf(() => moveBrain({ home, to: path.join(disk, 'ruvnet-brain'),
+      ops: failingRename((a, b) => b === brain && a.includes('.link-'), 'EPERM', 2) }));
+    expect(message).toMatch(new RegExp(`Everything was put back: the Brain is unchanged at ${first} \\(${brain} links to it\\)\\.$`));
+    expect(fs.realpathSync(brain)).toBe(first);
+    expect(fs.readdirSync(disk)).toEqual([]);
+    expect(leftovers(brain)).toEqual([]);
+  });
+
+  it('--back failing at the last rename: the link to the disk copy is restored', () => {
+    const { home, brain } = installedBrain();
+    const disk = path.join(temp('move-disk-'), 'ruvnet-brain');
+    moveBrain({ home, to: disk });
+    const message = refusalOf(() => moveBrain({ home, back: true, ops: failingRename((a, b) => b === brain && a.includes('.moving-')) }));
+    expect(message).toMatch(/Everything was put back/);
+    expect(fs.lstatSync(brain).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(brain)).toBe(disk);
+    expect(leftovers(brain)).toEqual([]);
+  });
+
+  it('red: when undoing fails too, the message says where the intact original is and that the path must be repointed', () => {
+    const { home, brain } = installedBrain();
+    const dest = path.join(temp('move-disk-'), 'ruvnet-brain');
+    let setAside = null;
+    const ops = { renameSync: (a, b) => {
+      if (a === brain) setAside = b;
+      if (a.includes('.link-') && b === brain) { const e = new Error('injected'); e.code = 'EIO'; throw e; }
+      if (setAside && a === setAside && b === brain) { const e = new Error('restore blocked'); e.code = 'EACCES'; throw e; }
+      return fs.renameSync(a, b);
+    } };
+    const message = refusalOf(() => moveBrain({ home, to: dest, ops }));
+    expect(message.startsWith('moving the Brain failed while trying to put the link at ')).toBe(true);
+    expect(message).toContain(`and undoing it also failed at: set ${brain} aside (EACCES: restore blocked). The original Brain is intact at ${setAside}; ${brain} must point to it again`);
+    expect(fs.readFileSync(path.join(setAside, 'kb', 'store.rvf'))).toEqual(Buffer.alloc(4096, 7)); // really intact where it says
+    expect(fs.existsSync(dest)).toBe(false); // the copy was taken back and removed
+  });
+
+  it('holds the updater\'s refresh lock for the whole move, and refuses while a live update holds it', () => {
+    const { home, brain } = installedBrain();
+    const kb = path.join(brain, 'kb');
+    let seen = null;
+    moveBrain({ home, to: path.join(temp('move-disk-'), 'ruvnet-brain'), ops: { copyTree: (src, dest, filter) => {
+      seen = JSON.parse(fs.readFileSync(path.join(refreshLockPath(kb), 'owner.json'), 'utf8'));
+      // An update starting now is refused (same exact-identity rule the updater uses).
+      expect(() => acquireRefreshLock({ kbDir: kb, brainHome: brain })).toThrow(/another refresh run is active/);
+      defaultOps.copyTree(src, dest, filter);
+    } } });
+    expect(seen).toMatchObject({ pid: process.pid, receiptSeed: { action: 'move-brain' } });
+    expect(fs.existsSync(refreshLockPath(kb))).toBe(false);
+    const held = acquireRefreshLock({ kbDir: kb, brainHome: brain });
+    try {
+      expect(refusalOf(() => moveBrain({ home, to: path.join(temp('move-disk-'), 'x') }))).toMatch(/^an update is running or its lock is unclear \(another refresh run is active/);
+    } finally { releaseRefreshLock(held); }
+  });
+});
+
+describe('--move-brain: disk-space edge cases', () => {
+  it('Node without fs.statfsSync (< 18.15) degrades to "cannot measure" and still moves, never a TypeError', () => {
+    const { home, brain } = installedBrain();
+    const lines = [];
+    const dest = path.join(temp('move-disk-'), 'ruvnet-brain');
+    const moved = moveBrain({ home, to: dest, log: (l) => lines.push(l),
+      available: () => { throw new TypeError('fs.statfsSync is not a function'); } });
+    expect(fs.realpathSync(brain)).toBe(dest);
+    expect(moved.warnings[0]).toMatch(/^could not measure free space on .* \(fs\.statfsSync is not a function\); copying anyway/);
+    expect(lines.filter((l) => l.startsWith('could not measure free space'))).toHaveLength(1); // said once
+  });
+
+  it('when the old copy cannot be removed after a successful swap, the move stands and says where the unused copy is', () => {
+    const { home, brain } = installedBrain();
+    const dest = path.join(temp('move-disk-'), 'ruvnet-brain');
+    const moved = moveBrain({ home, to: dest, ops: { rmSync: () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } } });
+    expect(fs.realpathSync(brain)).toBe(dest);
+    expect(moved.warnings).toEqual([expect.stringMatching(/^the previous copy at .*ruvnet-brain\.old-\d+ could not be removed \(EBUSY: busy\); it is no longer used — delete it by hand\.$/)]);
+  });
+
+  it('running out of space part-way is a clean refusal, and the partial copy is removed', () => {
+    const { home, brain } = installedBrain();
+    const disk = temp('move-disk-');
+    const message = refusalOf(() => moveBrain({ home, to: path.join(disk, 'ruvnet-brain'), ops: { copyTree: (src, dest) => {
+      fs.mkdirSync(dest); fs.writeFileSync(path.join(dest, 'partial'), 'x');
+      const e = new Error('no space left on device'); e.code = 'ENOSPC'; throw e;
+    } } }));
+    expect(message).toMatch(/ran out of space while copying\. The partial copy was removed and the Brain is unchanged at /);
+    expect(fs.readdirSync(disk)).toEqual([]);
+    expect(fs.lstatSync(brain).isSymbolicLink()).toBe(false);
+  });
+
+  it('a short disk names the shortfall and suggests a bigger disk — never RUVNET_BRAIN_HOME', () => {
+    const { home } = installedBrain();
+    const message = refusalOf(() => moveBrain({ home, to: path.join(temp('move-disk-'), 'b'), available: () => 10 }));
+    expect(message).toMatch(/^not enough free disk space to move the Brain: .* or choose a folder on a bigger disk\. Nothing was changed\.$/);
+    expect(message).not.toMatch(/RUVNET_BRAIN_HOME/);
   });
 });
 

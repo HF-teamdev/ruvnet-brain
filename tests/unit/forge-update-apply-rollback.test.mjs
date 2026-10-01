@@ -268,7 +268,8 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     const { code, out } = await runWithEnv({ RUVNET_BRAIN_TEST: '1', RUVNET_TEST_FREE_BYTES: '1000' }, '--apply');
 
     expect(code, out).toBe(6);
-    expect(out).toMatch(/not enough free disk space to apply this update: .* has 0\.00 GB free and needs \d+\.\d\d GB \(unpacked bundle .* \+ new generation .* \+ 0\.25 GB headroom\)\. Free \d+\.\d\d GB on that disk, or put the Brain on a bigger disk with RUVNET_BRAIN_HOME\. Nothing was changed\./);
+    expect(out).toMatch(/not enough free disk space to apply this update: .* has 0\.00 GB free and needs \d+\.\d\d GB \(unpacked bundle .* \+ new generation .* \+ 0\.25 GB headroom\)\. Free \d+\.\d\d GB on that disk, or move the Brain to a bigger disk with {2}npx ruvnet-brain --move-brain <folder on that disk>\. Nothing was changed\./);
+    expect(out).not.toMatch(/RUVNET_BRAIN_HOME/);
     expect(fs.readdirSync(kbDir).sort()).toEqual(before);
     expect(JSON.parse(fs.readFileSync(path.join(kbDir, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.0.7');
     expect(fs.readdirSync(root).filter((n) => /\.next-|\.rollback-|\.failed-|kb\.bak-/.test(n))).toEqual([]);
@@ -277,6 +278,39 @@ describe('forge-update --apply (issues #106 + #108)', () => {
     const ok = await runWithEnv({ RUVNET_BRAIN_TEST: '1', RUVNET_TEST_FREE_BYTES: String(64 * 1024 ** 3) }, '--apply');
     expect(ok.code, ok.out).toBe(0);
   });
+
+  // Review S6: the estimate left out the private-store files restorePrivateFilesIntoCandidate copies into the new
+  // generation, so a brain with a large private store passed the preflight and could run out of space half-way.
+  it('counts private-store bytes carried into the new generation: refused when only they do not fit', async () => {
+    const current = sourceJson({ releaseTag: 'v4.0.7', brainVersion: '4.0.7', builtUtc: '2026-07-31T04:39:28.414Z', stores: [STORE_A] });
+    current.stores.mynotes = { kbName: 'mynotes', updateManaged: false, sourceCommit: null, builtUtc: '2026-08-01T00:00:00.000Z' };
+    layDown(kbDir, current);
+    const privateBytes = Buffer.alloc(8 * 1024 ** 2, 3); // 8 MiB of private vectors
+    fs.writeFileSync(path.join(kbDir, 'mynotes.big.rvf'), privateBytes);
+    const generations = JSON.parse(fs.readFileSync(path.join(kbDir, 'RVF-GENERATIONS.json'), 'utf8'));
+    generations.stores.mynotes = { file: 'mynotes.big.rvf', bytes: privateBytes.length,
+      sha256: crypto.createHash('sha256').update(privateBytes).digest('hex'), model: 'fixture-model', dimensions: 384 };
+    fs.writeFileSync(path.join(kbDir, 'RVF-GENERATIONS.json'), `${JSON.stringify(generations)}\n`);
+    fs.writeFileSync(path.join(kbDir, 'repo-aliases.json'), JSON.stringify({}));
+    fs.writeFileSync(path.join(kbDir, 'PRIVATE-STORES.json'), JSON.stringify({ privateStores: ['mynotes'] }));
+    publish(sourceJson({ releaseTag: 'v4.0.8', brainVersion: '4.0.8', builtUtc: '2026-08-02T12:00:00.000Z', stores: [STORE_A] }), 'v4.0.8',
+      (stage) => fs.writeFileSync(path.join(stage, 'repo-aliases.json'), JSON.stringify({})));
+    const { zipDeclaredBytes } = await import('../../kb/zip-extract.mjs');
+    const unpacked = zipDeclaredBytes(path.join(root, 'bundle-v4.0.8.zip'));
+    // Temp and the brain share this test's filesystem, so the public-only need is 2 × unpacked + headroom.
+    // Give exactly that plus half the private store: enough without the private bytes, short with them.
+    const free = 256 * 1024 ** 2 + 2 * unpacked + privateBytes.length / 2;
+    const { code, out } = await runWithEnv({ RUVNET_BRAIN_TEST: '1', RUVNET_TEST_FREE_BYTES: String(free) }, '--apply');
+    expect(code, out).toBe(6);
+    expect(out).toMatch(/not enough free disk space to apply this update: .*\(unpacked bundle .* \+ new generation .* \+ private stores carried into it 0\.01 GB \+ 0\.25 GB headroom\)/);
+    expect(JSON.parse(fs.readFileSync(path.join(kbDir, 'SOURCE.json'), 'utf8')).releaseTag).toBe('v4.0.7');
+    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf'))).toEqual(privateBytes);
+    expect(fs.readdirSync(root).filter((n) => /\.next-|\.rollback-|\.failed-|kb\.bak-/.test(n))).toEqual([]);
+    // With the private bytes' room as well, the same release applies and the private store survives.
+    const ok = await runWithEnv({ RUVNET_BRAIN_TEST: '1', RUVNET_TEST_FREE_BYTES: String(free + privateBytes.length) }, '--apply');
+    expect(ok.code, ok.out).toBe(0);
+    expect(fs.readFileSync(path.join(kbDir, 'mynotes.big.rvf'))).toEqual(privateBytes);
+  }, 120_000); // two real signed applies; slow under load
 
   it('rejects invalid staged ReleaseCoverage before backup or live-tree mutation', async () => {
     const current = sourceJson({

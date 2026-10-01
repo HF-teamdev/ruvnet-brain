@@ -3190,20 +3190,38 @@ export function ruvAuthorshipIntent(query) {
 // "In LatentMesh ADR-001, ..." finds latentmesh's own ADR-001 through it (the recall gate lost
 // that question when store names were dropped everywhere; measured 2026-10-01, final-a2adf94a).
 // `forStore(name)` gives the tokens the identifier lane may use while searching `name`.
+// ONLY NAMES ARE NAMES (review S5, 2026-10-01). The alias registry also lists CODE SYMBOLS a store owns
+// (kb/repo-aliases.json: ruvector -> RvfStore, RvfDatabase), so "Where does agentdb call
+// RvfDatabase.openReadonly?" lost RvfDatabase in every store but ruvector — exactly where it was asked about.
+// So a registered alias suppresses widening only when it is NAME-shaped (one word, or words joined by
+// spaces/hyphens; not camelCase/PascalCase/snake_case/dotted — kb/identifier-lane.mjs's own symbol shapes),
+// and ANY token the query itself uses as code (`Name.member`, `Name(`, `Name::`) is an identifier whatever
+// it is called. Ownership is a MULTI-map: one name may belong to several stores ("metaharness" is both a
+// deployed store and an alias of agent-harness-generator), and forStore(name) keeps it when ANY owner is name.
+const CODE_SHAPED_ALIAS = /^(?:[a-z]+(?:[A-Z][a-z0-9]+)+|(?:[A-Z][a-z0-9]+){2,}|[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+|.*[.()]|.*::.*)$/;
 export function queryIdentifiers(dir, query) {
-  const owner = new Map(); // lower-cased store key or alias -> lower-cased store key
-  for (const r of discoverRepos(dir)) owner.set(r.toLowerCase(), r.toLowerCase());
+  const owners = new Map(); // lower-cased store key or name-shaped alias -> Set of lower-cased store keys
+  const own = (name, store) => {
+    const key = String(name).toLowerCase();
+    if (!owners.has(key)) owners.set(key, new Set());
+    owners.get(key).add(String(store).toLowerCase());
+  };
+  for (const r of discoverRepos(dir)) own(r, r);
   for (const [canonical, aliases] of Object.entries(loadRepoAliases(dir) || {})) {
-    const c = String(canonical).toLowerCase();
-    owner.set(c, c);
-    for (const a of aliases || []) owner.set(String(a).toLowerCase(), c);
+    own(canonical, canonical);
+    for (const a of aliases || []) if (!CODE_SHAPED_ALIAS.test(String(a).trim())) own(a, canonical);
   }
+  const usedAsCode = new Set();
+  // Immediately followed by member access, a path separator or a call: "Name.method", "Name::new", "Name(".
+  // "RuVector. Then", "RuVector (the store)" are prose, not code.
+  for (const m of String(query || '').matchAll(/([A-Za-z_$][\w$-]*)(?:\.[A-Za-z_$]|::|\()/g)) usedAsCode.add(m[1].toLowerCase());
   const exact = exactIdentifiers(query);
   const scan = scannableIdentifiers(query);
-  const keep = (t) => !owner.has(String(t).toLowerCase());
+  const ownersOf = (t) => (usedAsCode.has(String(t).toLowerCase()) ? null : owners.get(String(t).toLowerCase()));
+  const keep = (t) => !ownersOf(t);
   const forStore = (store) => {
-    const own = String(store).toLowerCase();
-    const ok = (t) => keep(t) || owner.get(String(t).toLowerCase()) === own;
+    const name = String(store).toLowerCase();
+    const ok = (t) => keep(t) || ownersOf(t).has(name);
     return { identifierTokens: exact.filter(ok), identifierScanTokens: scan.filter(ok) };
   };
   return { identifierTokens: exact.filter(keep), identifierScanTokens: scan.filter(keep), forStore };
