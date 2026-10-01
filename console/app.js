@@ -359,6 +359,7 @@ function renderHost(host, generatedAt) {
       BRAIN_INSTALLED_VERSION = String(host.brainVersion);
       const vc = $('#brain-ver');
       if (vc) { vc.textContent = `v${BRAIN_INSTALLED_VERSION}`; vc.hidden = false; }
+      if (LAST_TRUST) renderUpdateGong(LAST_TRUST);
     }
     const meta = $('#host-meta');
     if (meta) {
@@ -3560,6 +3561,10 @@ function trustSkeleton() {
 /* ---------------------------------------------- header update gong (owner, 2026-07-24) */
 
 let BRAIN_INSTALLED_VERSION = null; // set by renderHost from /api/state's host.brainVersion
+// The last /api/trust payload. State and trust load in parallel; when trust lands first the gong is
+// decided with no installed version, so renderHost decides it again once the version is known
+// (RNBC 2026-10-01: under load the gong never appeared).
+let LAST_TRUST = null;
 
 // Numeric x.y.z only; -dev/-rc suffixes are deliberately ignored so a tie is NEVER "newer" —
 // a false gong is the nag this page promises not to be. Latest unreachable (null) is UNKNOWN,
@@ -3595,6 +3600,7 @@ function renderUpdateGong(t) {
 async function loadTrust() {
   try {
     const t = await getJSON('/api/trust');
+    LAST_TRUST = t;
     renderTrust(t);
     renderUpdateGong(t);
   } catch (err) {

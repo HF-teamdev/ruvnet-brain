@@ -203,7 +203,7 @@ export function buildBrief({ projectDir, env = process.env, home = os.homedir(),
   const now_ = `NOW: ${oneLine(branch, 80) || 'no branch'} @ ${oneLine(headLine, 160) || 'no commits'}${version ? ` · package ${oneLine(version, 40)}` : ''}${latestTag ? ` · latest tag ${oneLine(latestTag, 60)}` : ''} (git, live)`;
   const tail = [
     recordingLine(status, now),
-    `MORE: /ruvnet-brain:rnb-brief, or node "${path.join(pluginRoot, 'scripts', 'continuity-brief.mjs')}" --full [--kind ${EVENT_KINDS.join('|')}] [--since 7d]`,
+    `MORE: ${env.RUVNET_HOOK_HOST === 'codex' ? '' : '/ruvnet-brain:rnb-brief, or '}node "${path.join(pluginRoot, 'scripts', 'continuity-brief.mjs')}" --full [--kind ${EVENT_KINDS.join('|')}] [--since 7d]`,
   ];
   const block = (list, caps, offset) => {
     const body = [];
