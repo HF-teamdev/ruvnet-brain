@@ -132,7 +132,7 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   // A plain `npx ruvnet-brain` install holds no refresh lock (review S6). It is IN PROGRESS while its activation
   // marker, its young stage, or a kb.install-prior-<ts>-<pid> rollback copy names a live pid: nothing beside the KB moves.
   // Proof of life is bounded by TIME too (re-review S5): an old marker or a reused / EPERM pid no longer freezes it.
-  const young = (at) => Number.isFinite(at) && now - at <= policy.staleStageMs;
+  const young = (at) => Number.isFinite(at) && now - at >= -60_000 && now - at <= policy.staleStageMs; // a FUTURE stamp is stale
   const priorParts = (name) => name.slice(`${base}.install-prior-`.length).split('-').map(Number);
   const installing = (() => {
     const marker = readJson(path.join(roots.kbParent, `.${base}.install-activation.lock`));

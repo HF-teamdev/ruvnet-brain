@@ -303,6 +303,9 @@ describe('inventory: everything the Brain owns is classified', () => {
       ['marker, my pid, 3 h old', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: now - 3 * 3_600_000 }), false],
       ['marker, another user\'s pid (EPERM), 3 h old', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 1, at: now - 3 * 3_600_000 }), false],
       ['marker, another user\'s pid (EPERM), fresh', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 1, at: now }), true],
+      // Re-review a6 NIT: a FUTURE 'at' (clock skew, a corrupt marker) gave a negative age that read as young forever.
+      ['marker, EPERM pid, dated 3 h in the FUTURE', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 1, at: now + 3 * 3_600_000 }), false],
+      ['install-prior named 3 h in the FUTURE with my pid', (m, now) => kbTree(path.join(m.brainHome, `kb.install-prior-${now + 3 * 3_600_000}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } }), false],
       ['install-prior named 3 h ago with my pid', (m, now) => kbTree(path.join(m.brainHome, `kb.install-prior-${now - 3 * 3_600_000}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } }), false],
     ];
     for (const [label, plant, blocks] of cases) {
