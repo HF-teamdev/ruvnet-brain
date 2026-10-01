@@ -33,6 +33,7 @@
  *   node scripts/package-cards.mjs --write               # write plugin/scripts/package-cards.json
  *   node scripts/package-cards.mjs --kb <dir> --out <f>  # explicit KB and output (nightly bundle step)
  *   node scripts/package-cards.mjs --check               # exit 1 if the committed snapshot drifted
+ *   node scripts/package-cards.mjs --write --embed       # also (re)build package-cards.rvf beside it
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -181,10 +182,13 @@ export async function* manifestPassages(kbDir, stores) {
     if (!fs.existsSync(file)) continue;
     const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
     for await (const line of rl) {
-      if (!line.includes('"text":"npm package: ') && !line.includes('"text":"Rust crate / manifest: ')) continue;
+      const manifest = line.includes('"text":"npm package: ') || line.includes('"text":"Rust crate / manifest: ');
+      // README passages ride along (first chunk per path only): a package directory's own README is
+      // the manifest's richer, still-grounded description of WHAT IT IS FOR.
+      if (!manifest && !/"path":"[^"]*README\.md"/i.test(line)) continue;
       let row;
       try { row = JSON.parse(line); } catch { continue; }
-      if (typeof row?.text === 'string') yield { store, text: row.text, path: row.path };
+      if (typeof row?.text === 'string') yield { store, text: row.text, path: row.path, readme: !manifest };
     }
   }
 }
@@ -199,22 +203,61 @@ function corpusIdentity(kbDir) {
   return { builtUtc: src.builtUtc || null, releaseTag: src.releaseTag || null };
 }
 
-export async function generate({ kbDir, cardsMd, privateStores, owners }) {
+/** The package directory's own README, first prose only (no code, badges, tables), capped. */
+export function readmeExcerpt(text, limit = 700) {
+  const out = [];
+  let fenced = false;
+  for (const raw of String(text || '').split('\n')) {
+    const t = raw.trim();
+    if (t.startsWith('```')) { fenced = !fenced; continue; }
+    if (fenced || !t || /^(#|<|\||!\[|\[!\[|---|>)/.test(t)) continue;
+    out.push(t.replace(/\*\*|`/g, ''));
+    if (out.join(' ').length > limit) break;
+  }
+  return out.join(' ').replace(/\s+/g, ' ').slice(0, limit).trim();
+}
+
+export function attachReadme(card, readmes) {
+  const dir = path.posix.dirname(card.source);
+  const text = readmes.get(`${dir}/README.md`) || readmes.get(`${dir}/readme.md`);
+  const excerpt = text ? readmeExcerpt(text) : '';
+  return excerpt.length >= 80 ? { ...card, readme: excerpt, readmeSource: `${dir}/README.md` } : card;
+}
+
+/** Store → ingest tier from data/registry.tiers.json (T0 = flagship … T3 = archive), lowercased. */
+export function storeTiers(registry) {
+  const out = {};
+  for (const [tier, v] of Object.entries(registry?.tiers || {})) {
+    for (const r of v?.repos || []) out[String(r.repo || r.name || '').toLowerCase()] = tier;
+  }
+  return out;
+}
+
+export async function generate({ kbDir, cardsMd, privateStores, owners, tiers = {} }) {
   const publicStores = publicStoresFrom(cardsMd, privateStores);
   const stores = [...publicStores].filter((s) => fs.existsSync(path.join(kbDir, `${s}.passages.jsonl`)));
   const rows = [];
   for await (const row of manifestPassages(kbDir, stores)) rows.push(row);
-  const cards = buildCards(rows, { publicStores, owners });
+  const manifests = rows.filter((r) => !r.readme);
+  const readmes = new Map();
+  for (const r of rows) if (r.readme && !readmes.has(`${r.store}/${r.path}`)) readmes.set(`${r.store}/${r.path}`, r.text);
+  const cards = buildCards(manifests, { publicStores, owners }).map((card) => attachReadme(card, readmes));
   // Pre-compute the hook's scoring tokens with the hook's OWN tokenizer (imported, not copied), so a
   // cold UserPromptSubmit process does not re-tokenize every card on every prompt.
   const { cardTokenSets, TOKENIZER_VERSION } = await import('../plugin/scripts/package-recommender.mjs');
   return {
     schema: SCHEMA,
     tokenizer: TOKENIZER_VERSION,
-    derivedFrom: { ...corpusIdentity(kbDir), manifestPassages: rows.length, stores: stores.length },
+    derivedFrom: { ...corpusIdentity(kbDir), manifestPassages: manifests.length, readmePassages: readmes.size, stores: stores.length },
     grounding: 'Every field is copied from a manifest passage of a public store; see source + sourceSha256. t/s are derived scoring tokens.',
-    cards: cards.map((card) => ({ ...card, ...cardTokenSets(card) })),
+    cards: cards.map((card) => ({ ...card, tier: tiers[card.store] || null, ...cardTokenSets(card) })),
   };
+}
+
+/** Days between the snapshot's source corpus build and `now`; null when the snapshot carries none. */
+export function snapshotAgeDays(doc, now = Date.now()) {
+  const t = Date.parse(doc?.derivedFrom?.builtUtc || '');
+  return Number.isFinite(t) ? (now - t) / 86_400_000 : null;
 }
 
 const isMain = (() => {
@@ -224,6 +267,16 @@ const isMain = (() => {
 
 if (isMain) {
   const arg = (n, d) => { const i = process.argv.indexOf(n); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
+  // STALENESS CHECK, no corpus needed (ADR-093 rev 2: the cards ship as a snapshot because sealing them
+  // into the nightly corpus would change the sealed inputs' contract). Run at release:
+  //   node scripts/package-cards.mjs --max-age-days 14   → exit 1 when the snapshot's corpus is older.
+  if (process.argv.includes('--max-age-days')) {
+    const snap = readJson(arg('--out', DEFAULT_OUT), null);
+    const age = snapshotAgeDays(snap);
+    const max = Number(arg('--max-age-days', '14'));
+    console.log(`[package-cards] snapshot corpus ${snap?.derivedFrom?.builtUtc || 'unknown'} — ${age === null ? 'age unknown' : `${age.toFixed(1)} days old`} (limit ${max})`);
+    process.exit(age !== null && age <= max ? 0 : 1);
+  }
   const { storeRoot } = await import('../kb/store-root.mjs');
   const kbDir = arg('--kb', storeRoot());
   const out = arg('--out', DEFAULT_OUT);
@@ -231,11 +284,12 @@ if (isMain) {
   const privateStores = readJson(path.join(ROOT, 'kb', 'PRIVATE-STORES.json'), {}).privateStores || [];
   const owners = Object.fromEntries(Object.entries(readJson(path.join(ROOT, 'kb', 'package-owners.json'), {}))
     .filter(([k, v]) => !k.startsWith('/') && typeof v === 'string').map(([k, v]) => [k.toLowerCase(), v]));
-  const doc = await generate({ kbDir, cardsMd, privateStores, owners });
+  const tiers = storeTiers(readJson(path.join(ROOT, 'data', 'registry.tiers.json'), {}));
+  const doc = await generate({ kbDir, cardsMd, privateStores, owners, tiers });
   // One card per line: compact enough to keep the hook's cold parse small, line-diffable in review.
   const { cards, ...header } = doc;
   const text = `${JSON.stringify(header).slice(0, -1)},"cards":[\n${cards.map((c) => JSON.stringify(c)).join(',\n')}\n]}\n`;
-  console.log(`[package-cards] ${doc.cards.length} cards from ${doc.derivedFrom.manifestPassages} manifest passages in ${doc.derivedFrom.stores} public stores (corpus ${doc.derivedFrom.builtUtc || 'unknown'})`);
+  console.log(`[package-cards] ${doc.cards.length} cards (${doc.cards.filter((c) => c.readme).length} with README) from ${doc.derivedFrom.manifestPassages} manifest passages in ${doc.derivedFrom.stores} public stores (corpus ${doc.derivedFrom.builtUtc || 'unknown'})`);
   if (process.argv.includes('--check')) {
     const prev = readJson(out, null);
     const ids = (d) => (d?.cards || []).map((c) => `${c.id}@${c.sourceSha256}`).join('\n');
@@ -247,5 +301,14 @@ if (isMain) {
     fs.writeFileSync(tmp, text);
     fs.renameSync(tmp, out);
     console.log(`[package-cards] wrote ${out} (${text.length} bytes)`);
+  }
+  if (process.argv.includes('--embed')) {
+    // The semantic lane's RVF beside the card file (ADR-093 rev 2). Needs the bge-base embedder:
+    // KB_MODEL_CACHE + XENOVA_PATH (or a resolvable @xenova/transformers). Ids index the card array,
+    // and package-cards.rvf.meta.json binds the vectors to these exact card bytes.
+    const { buildCardIndex } = await import('../kb/package-cards-index.mjs');
+    const t0 = Date.now();
+    const r = await buildCardIndex(path.dirname(out));
+    console.log(`[package-cards] embedded ${r.vectors} vectors into ${r.rvf} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   }
 }

@@ -13,6 +13,82 @@ amends: [ADR-040, ADR-052]
 # ADR-093 — The proactive package recommender
 
 **Status**: Proposed (2026-10-01). Implementation exists on branch `recommender-4.6`, **default off**.
+Revision 2 (same day, below) adds the warm semantic lane; rev 1's lexical lane is now its cold fallback.
+
+## Revision 2 — the meaning-based lane in the already-warm worker
+
+### Options evaluated
+
+| Option | What | Verdict, with the evidence |
+|---|---|---|
+| (a) | The warm search worker (`kb/forge-mcp-all.mjs`, bge-base embedder already loaded) exposes a private local endpoint; the hook asks it within a budget | **Chosen.** Warm query 25–76 ms p50 in-process; end-to-end hook added latency below. Reuses the worker's own `embed()` (forge-ask) and `@ruvector/rvf` `db.query()` — no second embedder, no hand-rolled cosine |
+| (b) | Attach the recommendation to `search_ruvnet` output or Stop-time grounding | **Rejected.** The typesafe miss happened because the model never searched; Stop-time is after the answer. It cannot fire on the turn that needs it |
+| (c) | Embed the package cards at corpus build time into an `.rvf` the reader loads once | **Adopted as the index for (a)** — but built at RELEASE time beside the card snapshot (`plugin/scripts/package-cards.rvf`, 2.6 MB, 848 vectors), not in the nightly corpus, because sealing a new file into the corpus bundle changes the sealed inputs' contract (the selection receipt is the allowlist; `capability-cards.md` is already a sealed input of `concepts`) |
+
+### Decision (rev 2)
+
+1. **Index.** `kb/package-cards-index.mjs` embeds each card in the T0+T1 tiers of
+   `data/registry.tiers.json` (496 cards; a pre-existing repo rule, not chosen against the eval) with
+   the corpus's own bge-base passage config, twice when the package directory has a README (manifest
+   line = what it is; README excerpt = what it is for). `package-cards.rvf.meta.json` binds the vectors
+   to the exact card bytes (sha256); a mismatched pair is refused, never mis-mapped.
+2. **Endpoint.** `kb/recommend-endpoint.mjs`, started by the worker's `brain/warmup` ONLY when
+   `RUVNET_PACKAGE_RECOMMENDER` is on. Unix socket (named pipe on Windows) in a 0700 `run/` dir under the
+   Brain cache, a 0600 descriptor with a random token every request must carry, 8 KiB request cap, k ≤ 10.
+   Dead workers' descriptors are swept; SIGTERM cleans up.
+3. **The hook does not pick; the model does.** On a design/diagnosis prompt the catalogue did not
+   match, the hook asks the warm worker (250 ms budget) for the 4 nearest cards and injects them with
+   one instruction: mention at most ONE, only if it materially fits, else say nothing. Measured below:
+   the embedding finds candidates (blind recall@4 well above recall@1) and the model judges fit far
+   better than any similarity threshold did.
+4. **Cold fallback.** No live endpoint, a refused connection, or no answer inside the budget → rev 1's
+   lexical lane (fast, 0 blind false firings) or silence. Never slower than the budget.
+5. **Session policy.** A candidate set may be injected up to 3 times per session; a package offered or
+   dismissed is dropped from later sets; "use <any offered name>" / "no <name>" resolve the offer.
+6. **Freshness.** Cards and their RVF ship as a snapshot. `node scripts/package-cards.mjs --check`
+   detects drift against an installed corpus; `--max-age-days 14` fails a stale snapshot at release.
+
+### Measured (2026-10-01, corpus 2026-10-01T11:01Z)
+
+Sets: self-authored 73 (used for every choice), blind-1 40 (written by an agent that never saw the
+matcher), blind-2 48 (a second, independent agent; added for rev 2). Thresholds/parameters were chosen on
+the self set ONLY; the shipped config was frozen before either blind set was scored.
+
+**Retrieval ceilings (semantic, before any gating):** top-1 correct on blinds 8/24 and 8/28; top-3
+12/24 and 14/28. No similarity threshold can reach 50% recall from top-1 — measured sweeps on the self
+set gave ≤ 22/47 at ≤ 5% false firing; the pre-registered threshold configs scored 8/24 and 7/28 on the
+blinds with 2 false firings. The cross-encoder rerank did not raise top-1 (ce@1 = sem@1) and costs
+130–260 ms. Those are why the model judges instead.
+
+**The shipped pipeline end to end** (`scripts/recommendation-e2e.mjs`: real worker + real hook per
+prompt, budget raised to isolate quality; then an Opus agent that saw only the prompt and the exact
+injected hint decided what it would say; `scripts/recommendation-judge-score.mjs`, Wilson 95%):
+
+| Set | Recall | Precision | False firing | Wrong package |
+|---|---|---|---|---|
+| **Blinds 1+2 (52 needs, 36 negatives)** | **27/52 = 51.9% [38.7–64.9]** | **27/31 = 87.1% [71.1–94.9]** | **0/36 = 0% [0–9.6]** | 4 |
+| Blind-1 | 14/24 = 58.3% [38.8–75.5] | 14/16 = 87.5% | 0/16 | 2 |
+| Blind-2 | 13/28 = 46.4% [29.5–64.2] | 13/15 = 86.7% | 0/20 | 2 |
+| Self (tuning set) | 34/47 = 72.3% | 34/34 = 100% | 0/26 | 0 |
+
+Of the 4 blind "wrong packages", 3 name the same product as an accepted id under a different package
+(`@ruvnet/ruview` for a RuView presence need labelled with two RuView crates; `@claude-flow/cli` for a
+swarm need labelled `ruflo`/`claude-flow`; `aidefence-core` for a prompt-leak need labelled
+`@claude-flow/aidefence`). Counting those as correct would give 30/31 = 96.8% — reported here, NOT used as
+the headline; the labels were not changed.
+
+**Added prompt latency** (paired cold hook runs, flag off vs on, warm worker, default 250 ms budget,
+161 prompts; `evals/runs/2026-10-01-recommender-4.6/semantic-latency/`): see the run files — every
+run records its load average because this machine carried 45–180 load during the day.
+
+### Verdict against the bar (recall ≥ 50%, false firing ≤ 5%, precision ≥ 90%, added p90 ≤ 300 ms)
+
+- False firing: **met** (0/36, upper bound 9.6%).
+- Recall: **met on the pooled blinds at the point estimate (51.9%)**, not on blind-2 alone (46.4%);
+  the interval spans 38.7–64.9, so "≥ 50%" is not established.
+- Precision: **not met strictly** (87.1%); met only under the same-product adjudication above.
+- Latency: see the run files; the budget makes the lane silent rather than slow by construction.
+- The judge is a model standing in for the host; a real host session was not run.
 
 ## Owner requirement
 

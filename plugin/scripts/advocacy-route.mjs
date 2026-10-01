@@ -60,7 +60,8 @@ import { CAPABILITIES, INTENTS, MIN_CUES } from './advocacy-catalog.mjs';
 import {
   ACTIONS, record, shouldStillOffer, stateHashOf, precision, pendingOffers, reconcileIgnored, loadOutcomes,
 } from './advocacy-outcomes.mjs';
-import { recommend as recommendPackage, shortName, buildPackageCandidate } from './package-recommender.mjs';
+import { recommend as recommendPackage, shortName, buildPackageCandidate, semanticLane, packageRecommenderEnabled } from './package-recommender.mjs';
+import { semanticFor } from './package-recommender-client.mjs';
 
 const HOME = process.env.RUVNET_HOME_OVERRIDE || os.homedir();
 
@@ -68,14 +69,9 @@ const HOME = process.env.RUVNET_HOME_OVERRIDE || os.homedir();
  *  key that anticipate.sh offers into the SAME ledger. One ledger, two producers, disjoint identities. */
 export const FINDING_PREFIX = 'recommend:';
 
-/** Package-card offers (ADR-0093): own sub-prefix, same ledger, dial and session cap. */
+/** Package-card offers (ADR-0093): own sub-prefix, same ledger and dial. */
 export const PACKAGE_PREFIX = `${FINDING_PREFIX}pkg:`;
-
-/** THE FLAG, DEFAULT OFF (ADR-0093): only an explicit opt-in is on. Read per call, never cached. */
-export function packageRecommenderEnabled(env = process.env) {
-  return ['1', 'on', 'true', 'yes'].includes(String(env.RUVNET_PACKAGE_RECOMMENDER || '').trim().toLowerCase());
-}
-
+export { packageRecommenderEnabled };
 export const BUDGET_MS = Number(process.env.RUVNET_ADVOCACY_ROUTE_BUDGET_MS) || 1500;
 
 /** At most ONE recommendation per session. anticipate.sh allows two; this route is louder per offer
@@ -236,10 +232,11 @@ export function resolvePriorOffers(promptText, sessionId, { file, state } = {}) 
   let changed = false;
   for (const offer of offers) {
     if (!deliverable.has(offer.id)) continue;
-    const cap = String(offer.capability || '');
+    // A candidate-set offer (ADR-093 rev 2) may be answered by ANY of its names.
+    const caps = (Array.isArray(offer.candidates) && offer.candidates.length ? offer.candidates : [offer.capability]).map(String).filter(Boolean);
     let action = null;
-    if (cap && declineNamed(cap).test(text)) action = ACTIONS.DISMISSED;
-    else if (cap && acceptNamed(cap).test(text)) action = ACTIONS.APPLIED;
+    if (caps.some((c) => declineNamed(c).test(text))) action = ACTIONS.DISMISSED;
+    else if (caps.some((c) => acceptNamed(c).test(text))) action = ACTIONS.APPLIED;
     else if (bareOk && DECLINE_BARE.test(text)) action = ACTIONS.DISMISSED;
     else if (bareOk && ACCEPT_BARE.test(text)) action = ACTIONS.APPLIED;
     if (!action) continue;
@@ -372,7 +369,7 @@ export function buildCandidate({ prompt, match, availability }) {
  * catalogue keeps precedence — each of its intents was measured missing on a real host. The package
  * lane (ADR-0093) is consulted ONLY when the catalogue is silent AND the flag is an explicit opt-in.
  */
-function chooseLane(prompt, env) {
+function chooseLane(prompt, env, semantic, offers, file) {
   const match = classify(prompt);
   if (match) {
     return {
@@ -382,7 +379,10 @@ function chooseLane(prompt, env) {
     };
   }
   if (!packageRecommenderEnabled(env)) return null;
-  const pick = recommendPackage(prompt);
+  const allowed = (id) => { try { return shouldStillOffer(id, { severity: 'normal', ...(file ? { file } : {}) }); } catch { return false; } };
+  const warm = semanticLane({ prompt, semantic, offered: new Set(offers.flatMap((o) => o?.candidates || [o?.capability])), allowed, findingPrefix: PACKAGE_PREFIX });
+  if (warm) return warm;
+  const pick = recommendPackage(prompt);   // cold worker: the lexical lane, fast and high-precision
   if (!pick) return null;
   return {
     capability: shortName(pick.card), id: `${PACKAGE_PREFIX}${pick.card.id}`, intent: 'package-card',
@@ -396,13 +396,13 @@ function chooseLane(prompt, env) {
  * WHY it stayed silent so a test can distinguish "no intent" from "already said" from "suppressed" —
  * three very different bugs that all look identical from the outside.
  */
-export function decide({ prompt, sessionId, file, state, now = Date.now(), startedAt = Date.now(), env = process.env }) {
+export function decide({ prompt, sessionId, file, state, now = Date.now(), startedAt = Date.now(), env = process.env, semantic = null }) {
   if (Date.now() - startedAt > BUDGET_MS) return { candidate: null, reason: 'budget-exceeded' };
-  const lane = chooseLane(prompt, env);
-  if (!lane) return { candidate: null, reason: 'no-intent' };
   const st = state || readState();
   const offers = offersOf(st, sessionId);
-  if (offers.filter((o) => o && o.at).length >= MAX_PER_SESSION) return { candidate: null, reason: 'session-cap' };
+  const lane = chooseLane(prompt, env, semantic, offers, file);
+  if (!lane) return { candidate: null, reason: 'no-intent' };
+  if (offers.filter((o) => o && o.at).length >= (lane.cap || MAX_PER_SESSION)) return { candidate: null, reason: 'session-cap' };
   if (offers.some((o) => o && o.capability === lane.capability)) return { candidate: null, reason: 'already-offered' };
 
   let allowed = true;
@@ -472,7 +472,9 @@ async function main() {
   // decision is what lets "use agentic-qe" record an `applied` and still be classified on its merits.
   try { resolvePriorOffers(prompt, sessionId); } catch { /* a lost transition costs one row, never the turn */ }
 
-  const { candidate } = decide({ prompt, sessionId, startedAt });
+  // ADR-093 rev 2: the warm worker's embedder, within a hard budget (null when cold or flag off).
+  const semantic = await semanticFor(prompt, { catalogueMatched: Boolean(classify(prompt)) });
+  const { candidate } = decide({ prompt, sessionId, startedAt, semantic });
   if (!candidate) return 0;
 
   if (process.env.RUVNET_EMIT_CANDIDATES === '1') {

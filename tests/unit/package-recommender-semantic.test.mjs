@@ -1,0 +1,199 @@
+/**
+ * package-recommender-semantic.test.mjs — the warm-worker semantic lane (ADR-093 rev 2).
+ *
+ * The endpoint is exercised for real (a real Unix socket / named pipe, a real token, real timeouts);
+ * only the card index behind it is a fake, because loading bge-base in a unit test would make it slow
+ * and network-shaped. The real embedder path is measured by scripts/recommendation-e2e.mjs.
+ * Each guard has a `red:` twin that breaks it and watches the property fail.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import * as kbEndpoint from '../../kb/recommend-endpoint.mjs';
+import { openCardIndex } from '../../kb/package-cards-index.mjs';
+import * as client from '../../plugin/scripts/package-recommender-client.mjs';
+import * as rec from '../../plugin/scripts/package-recommender.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SCRIPTS = path.join(ROOT, 'plugin', 'scripts');
+const PROMPT = 'so I need to sort incoming support emails into billing, bug report or feature request, ideally locally';
+
+let home;
+let ep;
+beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-')); });
+afterEach(() => { try { ep?.close(); } catch { /* closed */ } ep = null; fs.rmSync(home, { recursive: true, force: true }); });
+
+const fakeIndex = (hits, delayMs = 0) => async () => ({
+  size: hits.length,
+  query: async () => { if (delayMs) await new Promise((r) => setTimeout(r, delayMs)); return hits; },
+});
+const card = (id) => ({ card: { id }, similarity: 0.7 });
+const env = () => ({ RUVNET_BRAIN_HOME: home, RUVNET_PACKAGE_RECOMMENDER: '1' });
+
+describe('parity between the plugin and kb copies (they cannot import each other, issue #32)', () => {
+  it('brain home and the flag rule agree on every input', () => {
+    const cases = [{ RUVNET_BRAIN_HOME: '/x' }, { XDG_CACHE_HOME: '/c', HOME: '/h' }, { HOME: '/h' }, { USERPROFILE: 'C:\\u' }];
+    for (const e of cases) expect(client.brainHomeFromEnv(e)).toBe(kbEndpoint.brainHomeFromEnv(e));
+    for (const v of ['1', 'on', 'TRUE', ' yes ', '0', 'off', '', 'maybe']) {
+      expect(rec.packageRecommenderEnabled({ RUVNET_PACKAGE_RECOMMENDER: v })).toBe(kbEndpoint.recommenderFlagOn({ RUVNET_PACKAGE_RECOMMENDER: v }));
+    }
+  });
+});
+
+describe('the endpoint and the hook client, over a real socket', () => {
+  it('green: a warm endpoint answers with candidates inside the budget', async () => {
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('@ruvector/typesafe'), card('@ruvector/router')]), signals: false });
+    expect(ep).not.toBeNull();
+    const t = Date.now();
+    const r = await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: env() });
+    expect(Date.now() - t).toBeLessThan(250);
+    expect(r.candidates.map((c) => c.id)).toEqual(['@ruvector/typesafe', '@ruvector/router']);
+  });
+
+  it('red: a request without the descriptor token is refused', async () => {
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('x')]), signals: false });
+    const desc = path.join(home, 'run', `recommend-${process.pid}.json`);
+    const d = JSON.parse(fs.readFileSync(desc, 'utf8'));
+    fs.writeFileSync(desc, JSON.stringify({ ...d, token: crypto.randomBytes(24).toString('hex') }));
+    const r = await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: env() });
+    expect(r.candidates).toBeNull();
+    expect(r.reason).toBe('unauthorized');
+  });
+
+  it('descriptor and socket are private to the user', async () => {
+    if (process.platform === 'win32') return;
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('x')]), signals: false });
+    expect(fs.statSync(path.join(home, 'run')).mode & 0o077).toBe(0);
+    expect(fs.statSync(path.join(home, 'run', `recommend-${process.pid}.json`)).mode & 0o077).toBe(0);
+  });
+
+  it('cold (no endpoint) is silent and immediate', async () => {
+    const t = Date.now();
+    const r = await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: env() });
+    expect(r).toEqual({ candidates: null, reason: 'no-warm-worker' });
+    expect(Date.now() - t).toBeLessThan(50);
+  });
+
+  it('a slow worker is abandoned at the budget — silent, never slow', async () => {
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('x')], 1500), signals: false });
+    const t = Date.now();
+    const r = await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, budgetMs: 200, env: env() });
+    const ms = Date.now() - t;
+    expect(r.candidates).toBeNull();
+    expect(ms).toBeGreaterThanOrEqual(190);
+    expect(ms).toBeLessThan(400);
+  });
+
+  it('a dead worker\'s descriptor is ignored by the client and swept by the next endpoint', async () => {
+    const run = path.join(home, 'run');
+    fs.mkdirSync(run, { recursive: true });
+    const deadPid = 2 ** 22 + 12345;   // above any default pid_max on macOS/Linux
+    fs.writeFileSync(path.join(run, `recommend-${deadPid}.json`), JSON.stringify({ pid: deadPid, socket: path.join(run, 'nope.sock'), token: 't', startedAt: '2099-01-01' }));
+    expect(client.liveEndpoints(env())).toEqual([]);
+    expect(kbEndpoint.sweepStale(run)).toBe(1);
+    expect(fs.existsSync(path.join(run, `recommend-${deadPid}.json`))).toBe(false);
+  });
+
+  it('semanticFor never touches a socket when the flag is off or the prompt is a chore', async () => {
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('x')]), signals: false });
+    expect(await client.semanticFor(PROMPT, { env: { RUVNET_BRAIN_HOME: home } })).toBeNull();
+    expect(await client.semanticFor('commit this and push it please', { env: env() })).toBeNull();
+    expect(await client.semanticFor(PROMPT, { env: env(), catalogueMatched: true })).toBeNull();
+    expect((await client.semanticFor(PROMPT, { env: env() })).candidates).toHaveLength(1);
+  });
+});
+
+describe('the semantic lane turns candidates into one hint', () => {
+  const index = rec.loadIndex([path.join(SCRIPTS, 'package-cards.json')]);
+  const semantic = { candidates: ['@ruvector/typesafe', '@ruvector/router', 'ruvector-hybrid', '@ruvector/kge', '@ruvector/diskann'].map((id) => ({ id, similarity: 0.6 })) };
+
+  it('lists at most SEMANTIC_K cards with their source paths and the measured instruction', () => {
+    const lane = rec.semanticLane({ prompt: PROMPT, semantic, index });
+    const c = lane.build();
+    expect(c.candidates).toHaveLength(rec.SEMANTIC_K);
+    expect(c.copy).toContain('ruvector/npm/packages/typesafe/package.json');
+    expect(c.copy).toContain('Never mention more than one');
+    expect(lane.cap).toBe(rec.SEMANTIC_MAX_PER_SESSION);
+  });
+
+  it('drops dismissed and already-offered packages; empty after filtering is silence', () => {
+    const lane = rec.semanticLane({ prompt: PROMPT, semantic, index, offered: new Set(['typesafe']), allowed: (id) => !id.endsWith('router') });
+    expect(lane.build().candidates).toEqual(['ruvector-hybrid', '@ruvector/kge', '@ruvector/diskann']);
+    expect(rec.semanticLane({ prompt: PROMPT, semantic, index, allowed: () => false })).toBeNull();
+  });
+
+  it('red: a chore prompt gets no hint even with candidates in hand', () => {
+    expect(rec.semanticLane({ prompt: 'commit this and push it to the branch please', semantic, index })).toBeNull();
+  });
+});
+
+describe('the real hook producer, warm and cold', () => {
+  // Async spawn: the endpoint lives in THIS process, so a blocking spawnSync could never be answered.
+  const produce = (prompt, extra = {}) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(SCRIPTS, 'advocacy-route.mjs')], {
+      env: {
+        PATH: process.env.PATH, HOME: home, RUVNET_HOME_OVERRIDE: home, RUVNET_BRAIN_HOME: home,
+        RUVNET_EMIT_CANDIDATES: '1', RUVNET_PACKAGE_RECOMMENDER: '1',
+        RUVNET_ADVOCACY_ROUTE_STATE: path.join(home, 'state.json'), RUVNET_ADVOCACY_OUTCOMES: path.join(home, 'o.jsonl'),
+        RUVNET_ADVOCACY_ROUTE_ROOTS: path.join(home, 'none'), ...extra,
+      },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', (code) => resolve({ code, cand: out.trim() ? JSON.parse(out.trim()) : null }));
+    child.stdin.end(JSON.stringify({ session_id: 's', prompt }));
+  });
+
+  it('warm: the hint is the candidate set from the worker, with the one-mention instruction', async () => {
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('@ruvector/typesafe'), card('ruvector-hybrid')]), signals: false });
+    const { code, cand } = await produce(PROMPT);
+    expect(code).toBe(0);
+    expect(cand.candidates).toEqual(['@ruvector/typesafe', 'ruvector-hybrid']);
+    expect(cand.copy).toContain('Never mention more than one');
+  });
+
+  it('cold: no worker → the lexical lane answers alone (never a wait)', async () => {
+    const { cand } = await produce('so I need to sort incoming support emails into billing, bug report or feature request, ideally locally without paying for an LLM call on every single one');
+    expect(cand.findingId).toBe('recommend:pkg:@ruvector/typesafe');
+    expect(cand.candidates).toBeUndefined();
+  });
+
+  it('red: flag off → the endpoint is never asked and nothing is emitted', async () => {
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('@ruvector/typesafe')]), signals: false });
+    const { cand } = await produce(PROMPT, { RUVNET_PACKAGE_RECOMMENDER: '0' });
+    expect(cand).toBeNull();
+  });
+});
+
+describe('snapshot staleness (the cards ship as a snapshot, not in the sealed corpus)', () => {
+  it('age is measured from the source corpus build; unknown is null, never zero', async () => {
+    const { snapshotAgeDays } = await import('../../scripts/package-cards.mjs');
+    const now = Date.parse('2026-10-15T00:00:00Z');
+    expect(snapshotAgeDays({ derivedFrom: { builtUtc: '2026-10-01T00:00:00Z' } }, now)).toBe(14);
+    expect(snapshotAgeDays({ derivedFrom: {} }, now)).toBeNull();
+    expect(snapshotAgeDays(null, now)).toBeNull();
+  });
+});
+
+describe('the shipped card index is bound to the shipped cards', () => {
+  it('green: package-cards.rvf.meta.json carries the sha of package-cards.json and the bge model', () => {
+    const meta = JSON.parse(fs.readFileSync(path.join(SCRIPTS, 'package-cards.rvf.meta.json'), 'utf8'));
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(path.join(SCRIPTS, 'package-cards.json'))).digest('hex');
+    expect(meta.cardsSha256).toBe(sha);
+    expect(meta.embed.model).toBe('Xenova/bge-base-en-v1.5');
+    expect(meta.tiers).toEqual(['T0', 'T1']);
+  });
+  it('red: a card file that drifted from its vectors is refused, not mis-mapped', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pci-'));
+    try {
+      for (const f of ['package-cards.json', 'package-cards.rvf', 'package-cards.rvf.meta.json']) fs.copyFileSync(path.join(SCRIPTS, f), path.join(dir, f));
+      fs.appendFileSync(path.join(dir, 'package-cards.json'), ' ');
+      expect(await openCardIndex(dir)).toBeNull();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});

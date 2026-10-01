@@ -1,0 +1,1 @@
+{"tiers":["T0","T1"],"vectors":848,"embed":{"model":"Xenova/bge-base-en-v1.5","dimensions":768,"pooling":"cls","normalize":true,"queryPrefix":"Represent this sentence for searching relevant passages: "},"cards":"package-cards.json","cardsSha256":"1d2d448412711508c1b6562b6af2729465151a56e3e7eb156dfc181d86178069"}
