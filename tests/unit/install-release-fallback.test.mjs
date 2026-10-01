@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SRC = fs.readFileSync(path.join(ROOT, 'bin', 'install.mjs'), 'utf8');
@@ -52,6 +53,15 @@ describe('install.mjs RELEASE_VERSION — the offline safety net', () => {
       .filter((line) => !line.trim().startsWith('//')).join('\n');
     expect(failurePath).not.toMatch(/RELEASE_VERSION|safe and complete/);
     expect(failurePath).toMatch(/throw /);
+  });
+
+  it('--help no longer promises the fallback: it says a failed lookup stops and names --version', () => {
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin', 'install.mjs'), '--help'], { encoding: 'utf8', timeout: 30_000 });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/RuvNet Brain installer/);
+    expect(r.stdout).not.toMatch(/falls? back to a known-good/i);
+    expect(r.stdout).toMatch(/STOPS with the reason and downloads\s+nothing/);
+    expect(r.stdout).toMatch(/--version <tag>/);
   });
 });
 

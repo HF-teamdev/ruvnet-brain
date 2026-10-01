@@ -5355,8 +5355,9 @@ function showHelp() {
   console.log(`
 RuvNet Brain installer
 
-By default this installs the LATEST published Release (it asks GitHub which one that is),
-and falls back to a known-good version if GitHub can't be reached.
+By default this installs the LATEST published Release (it asks GitHub which one that is).
+If GitHub can't be reached or rate-limits the check, it STOPS with the reason and downloads
+nothing; re-run later, or pick a release yourself with  --version <tag>.
 
 Usage:
   npx ruvnet-brain                         Install the brain + Claude Code plugin (recommended, npm)
