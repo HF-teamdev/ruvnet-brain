@@ -85,6 +85,14 @@ const STANDALONE = [
   ['abstain-threshold-sweep', 'human-run measurement harness: replays measured runs at other abstain thresholds (no model) and reports confident hits, confident misses, off-topic abstain and held-out routed with Wilson intervals; nothing to schedule'],
   ['route-latency-warm','human-run measurement harness: paired warm latency of two or more search runtimes in one process, load-gated, with paired bootstrap intervals; minutes to hours of model time, never scheduled'],
   ['route-index-memory', 'human-run measurement harness: retained memory and cold/warm time of the router metadata index (needs node --expose-gc); nothing to schedule'],
+  ['recommendation-eval', 'human-run measurement harness (ADR-0093): scores the package recommender against evals/recommendation-eval*.json with Wilson intervals; its frozen numbers are asserted by tests/unit/package-recommender.test.mjs, which imports evaluate()'],
+  ['recommendation-e2e', 'human-run measurement harness (ADR-0093 rev 2): spawns the real search worker in a temp brain home and the real hook producer per eval prompt; load-gated and model-bound, so never scheduled'],
+  ['recommendation-judge-score', 'human-run measurement harness (ADR-0093 rev 2): scores a host-model judge\'s picks against an e2e judge key with Wilson intervals; nothing to schedule'],
+  ['recommendation-floor', 'human-run measurement harness (ADR-0093 rev 3): derives the semantic similarity floor on the tuning set only and applies it to judged e2e runs; nothing to schedule'],
+  ['recommendation-real-host', 'human-run measurement harness (ADR-0093 rev 3): fresh `claude -p` sessions with this checkout\'s hook against a warm worker; spends model budget, never scheduled'],
+  ['recommendation-real-host-score', 'human-run measurement harness (ADR-0093 rev 3): scores a real-host run and its agreement with the simulated host; nothing to schedule'],
+  ['recommendation-latency','human-run measurement harness (ADR-0093): paired cold-process latency of advocacy-route with the package flag off vs on; load-sensitive, so never scheduled'],
+  ['package-cards', 'ADR-0093 (Proposed) package-card generator, run by hand to refresh plugin/scripts/package-cards.json from the installed corpus. NOT YET NIGHTLY: the bundle step that would seal package-cards.json into the signed corpus is ADR-0093 phase 2 and is deliberately unbuilt while the recommender is default-off'],
   ['dream-issue-gate','pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
   ['sync-census', 'explicit maintainer census writer; a destructive source-to-surface refresh is never scheduled'],
   ['customer-state-matrix', 'human-run release-qualification harness (2026-09-30): applies ONE published release through the real '
@@ -123,7 +131,7 @@ const STANDALONE = [
     + '`--window`). Its former automatic 36-hour dump was deliberately retired from the machine-wide '
     + 'SessionStart hook after 61KB of output hid the current checkpoint; SessionStart now prints the '
     + 'checkpoint plus a compact lesson index and directs topic recall through `ruflo memory search`.'],
-  ['onboarding-console', 'human-started local server reached through the shipped `/rvbc`, `/rvcb`, '
+  ['onboarding-console', 'human-started local server reached through the shipped `/rnbc`, `/rnb`, `/rvbc`, `/rvcb`, '
     + '`/brain-console`, and `/ruvnet-brain:configure` command documents. The command host executes '
     + 'those instructions; there is intentionally no in-process source caller for a long-running CLI.'],
   ['ingest-meeting', 'one-shot ingestion, run by hand'],
