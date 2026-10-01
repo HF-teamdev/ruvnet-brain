@@ -121,6 +121,7 @@ export function runSessionSnapshotHook(projectDir, event, {
   writeMetadata = true,
   makeStoreFactory = boundedStoreFactory,
   spawnReplay = replayOutboxDetached,
+  ordered = null,
 } = {}) {
   // The detached worker re-runs a QUEUED boundary; its session receipt was already written then.
   const metadataWritten = writeMetadata ? writeSessionSnapshot(projectDir, event) : false;
@@ -157,154 +158,206 @@ export function runSessionSnapshotHook(projectDir, event, {
     return { ...idle, skipped: 'project has not adopted the canonical store' };
   }
 
-  const deadlineAt = now() + budgetMs;
-  const storeFactory = makeStoreFactory(deadlineAt);
   const root = resolution.projectRoot;
   const pendingCount = () => {
     try { return new ProgressionOutbox({ projectRoot: root }).pendingSnapshots().length; } catch { return 0; }
   };
 
-  // CAUSAL ORDER: OLD DEBT FIRST, THEN THIS BOUNDARY'S SNAPSHOT. The producer links a new snapshot to
-  // the COMMITTED heads (project-progression-producer.mjs), so a snapshot captured while an interrupted
-  // one is still only in the outbox would not descend from it — after replay the project would have
-  // two unrelated heads (tests/acceptance/cross-host-project-resume.test.mjs caught exactly that when
-  // a 4.4.0 draft captured first). So:
-  //   • the budget can hold a replay → replay inline, then produce and capture (the original order);
-  //   • it cannot, and debt is pending → neither fits here in causal order, so this capture is QUEUED
-  //     behind the debt and a DETACHED, bounded, single-instance worker replays and THEN captures it.
-  //     On Codex no boundary ever has the replay budget (Stop 3700ms effective, SessionEnd 1900ms, no
-  //     PreCompact), so "wait for the next boundary" used to mean never (4.4.0 review S1).
-  let replayed = 0;
-  if (budgetMs >= REPLAY_MIN_BUDGET_MS) {
-    try {
-      replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
-    } catch { /* the debt stays durable in the outbox; this capture is still worth attempting */ }
-  } else {
-    const pending = pendingCount();
-    if (pending > 0) {
-      const queued = queueCapture({ projectDir: root, event, host, payload });
-      const handed = queued && spawnReplay({ projectDir: root });
-      return { ...idle, replayed: 0, progressionCaptured: false, deferredToReplayer: Boolean(queued),
-        replaySkipped: `outbox replay deferred: budget ${budgetMs}ms < ${REPLAY_MIN_BUDGET_MS}ms; ${pending} pending, `
-          + `this capture ${queued ? 'queued behind it' : 'NOT queued (queue unwritable)'}`
-          + `${queued ? (handed ? ', handed to a detached replayer' : ' (a replayer is already running and drains the queue)') : ''}` };
+  // CAUSAL ORDER. The producer links a new snapshot to the COMMITTED heads
+  // (project-progression-producer.mjs), so a snapshot produced while older work is uncommitted would
+  // not descend from it and the project would end with two unrelated heads
+  // (tests/acceptance/cross-host-project-resume.test.mjs). "Older work" is BOTH the outbox (captures
+  // interrupted after their fsync) AND the capture queue (whole boundaries waiting for a worker).
+  //
+  // THE REPLAY LOCK IS THE RIGHT TO COMMIT IN ORDER (4.4.0 re-review S-A). Every boundary takes it
+  // before doing anything that commits. If it cannot — a live worker holds it — or older work is
+  // queued, or (on a short budget) outbox debt cannot be replayed here, this boundary QUEUES itself
+  // behind that work and the lock passes to a DETACHED, bounded worker that drains everything in
+  // order. On Codex no boundary has the replay budget (Stop 3700ms effective, SessionEnd 1900ms, no
+  // PreCompact). Any boundary, of any budget, therefore also drains a queue a dead worker stranded.
+  // `ordered` is the worker's own re-entry: it already holds the lock and is draining in order.
+  let token = ordered;
+  const handOff = (why) => {
+    const queued = queueCapture({ projectDir: root, event, host, payload });
+    const handed = queued ? spawnReplay({ projectDir: root, token }) : false;
+    if (!handed && token && token !== ordered) releaseReplayLock(root, token);
+    return { ...idle, replayed: 0, progressionCaptured: false, deferredToReplayer: Boolean(queued),
+      replaySkipped: `${why}; this capture ${queued ? 'queued behind it' : 'NOT queued (queue unwritable)'}`
+        + `${queued ? (handed ? ', handed to a detached worker' : ' (a live worker holds the lock and drains the queue)') : ''}` };
+  };
+  if (!ordered) {
+    token = takeReplayLock(root);
+    if (!token) return handOff('a worker is committing older work');
+    const queuedAhead = queuedCaptures(root).length;
+    if (queuedAhead) return handOff(`${queuedAhead} older capture(s) queued`);
+    if (budgetMs < REPLAY_MIN_BUDGET_MS) {
+      const pending = pendingCount();
+      if (pending) return handOff(`outbox replay deferred: budget ${budgetMs}ms < ${REPLAY_MIN_BUDGET_MS}ms; ${pending} pending`);
     }
   }
 
-  let produced;
+  let handedLock = false;
   try {
-    produced = produce({ resolution, payload, host, trigger: event });
-  } catch (error) {
-    return { ...idle, replayed, skipped: `producer failed: ${error.message}` };
-  }
-  if (produced.skipped) return { ...idle, replayed, skipped: produced.skipped.reason };
+    const deadlineAt = now() + budgetMs;
+    const storeFactory = makeStoreFactory(deadlineAt);
+    let replayed = 0;
+    if (budgetMs >= REPLAY_MIN_BUDGET_MS) {
+      try {
+        replayed = storeFactory({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
+      } catch { /* the debt stays durable in the outbox; this capture is still worth attempting */ }
+    }
 
-  let result;
-  try {
-    result = captureProgression({
-      host,
-      payload: { ...payload, hook_event_name: event, projectProgression: produced.projectProgression },
-      projectDir,
-      storeFactory,
-    });
-  } catch (error) {
-    // NOT LOST — DEFERRED. capture() fsyncs the snapshot to the durable outbox BEFORE it writes to
-    // the store, so a budget overrun here leaves the evidence on disk. On a short budget nothing later
-    // in this process can settle it, so it goes straight to the detached replayer.
-    const handed = budgetMs < REPLAY_MIN_BUDGET_MS && pendingCount() > 0 && spawnReplay({ projectDir: root });
-    return { ...idle, replayed, skipped: `capture deferred: ${error.message}`,
-      ...(handed ? { replaySkipped: 'deferred capture handed to a detached replayer' } : {}) };
+    let produced;
+    try {
+      produced = produce({ resolution, payload, host, trigger: event });
+    } catch (error) {
+      return { ...idle, replayed, skipped: `producer failed: ${error.message}` };
+    }
+    if (produced.skipped) return { ...idle, replayed, skipped: produced.skipped.reason };
+
+    let result;
+    try {
+      result = captureProgression({
+        host,
+        payload: { ...payload, hook_event_name: event, projectProgression: produced.projectProgression },
+        projectDir,
+        storeFactory,
+      });
+    } catch (error) {
+      // NOT LOST — DEFERRED. capture() fsyncs the snapshot to the durable outbox BEFORE it writes to
+      // the store, so a budget overrun leaves the evidence on disk. On a short budget nothing later in
+      // this process can settle it, so the lock goes straight to a detached worker.
+      handedLock = !ordered && budgetMs < REPLAY_MIN_BUDGET_MS && pendingCount() > 0 && spawnReplay({ projectDir: root, token });
+      return { ...idle, replayed, skipped: `capture deferred: ${error.message}`,
+        ...(handedLock ? { replaySkipped: 'deferred capture handed to a detached worker' } : {}) };
+    }
+    return {
+      metadataWritten,
+      progressionCaptured: true,
+      turn,
+      replayed,
+      receipt: result.receipt,
+      provenance: produced.provenance,
+    };
+  } finally {
+    if (!ordered && !handedLock) releaseReplayLock(root, token);
   }
-  return {
-    metadataWritten,
-    progressionCaptured: true,
-    turn,
-    replayed,
-    receipt: result.receipt,
-    provenance: produced.provenance,
-  };
 }
 
-/** How long the detached replayer may spend per step. Nobody waits for it; the bound stops a stuck ruflo. */
-export const DETACHED_REPLAY_BUDGET_MS = 60_000;
+/**
+ * How long the detached worker may spend per step. The lock is refreshed between steps and goes stale
+ * after REPLAY_LOCK_STALE_MS, which is more than twice a step, so a live worker never looks dead.
+ */
+export const DETACHED_REPLAY_BUDGET_MS = 45_000;
+export const REPLAY_LOCK_STALE_MS = 120_000;
 const REPLAY_LOCK = '.progression-replay.lock';
 const QUEUE_PREFIX = '.progression-capture-queue-';
 const lockPath = (projectDir) => path.join(projectDir, '.swarm', REPLAY_LOCK);
+const readLock = (projectDir) => { try { return fs.readFileSync(lockPath(projectDir), 'utf8').trim(); } catch { return null; } };
+let queueSeq = 0;
 
-/** Queue one boundary's capture for the detached worker (0600, inside the project's own .swarm). */
+/** Queue one boundary's capture for the worker (0600, inside the project's own .swarm), in arrival order. */
 export function queueCapture({ projectDir, event, host, payload, now = Date.now() }) {
   try {
-    const file = path.join(projectDir, '.swarm', `${QUEUE_PREFIX}${String(now).padStart(15, '0')}-${process.pid}.json`);
+    queueSeq += 1;
+    const name = `${QUEUE_PREFIX}${String(now).padStart(15, '0')}-${String(process.hrtime.bigint() % 1_000_000_000n).padStart(9, '0')}-${process.pid}-${queueSeq}.json`;
+    const file = path.join(projectDir, '.swarm', name);
     fs.writeFileSync(file, JSON.stringify({ event, host, payload }), { flag: 'wx', mode: 0o600 });
     return file;
   } catch { return null; }
 }
 
-function queuedCaptures(projectDir) {
+export function queuedCaptures(projectDir) {
   try {
     return fs.readdirSync(path.join(projectDir, '.swarm')).filter((n) => n.startsWith(QUEUE_PREFIX) && n.endsWith('.json'))
       .sort().map((n) => path.join(projectDir, '.swarm', n));
   } catch { return []; }
 }
 
-/** Take the single-replayer lock (stale after twice the replay budget). True when this caller holds it. */
+/**
+ * Take the lock. Returns this holder's TOKEN, or null when a live holder has it. A lock not refreshed
+ * for REPLAY_LOCK_STALE_MS belongs to a dead worker and is taken over: renamed aside first, so two
+ * would-be successors cannot both win the exclusive create.
+ */
 export function takeReplayLock(projectDir, now = Date.now()) {
   const lock = lockPath(projectDir);
+  const token = `${process.pid}-${now}-${Math.random().toString(36).slice(2, 10)}`;
+  const create = () => { fs.writeFileSync(lock, `${token}\n`, { flag: 'wx', mode: 0o600 }); return token; };
+  try { return create(); } catch { /* held, or stale */ }
   try {
-    fs.writeFileSync(lock, `${process.pid} ${now}\n`, { flag: 'wx', mode: 0o600 });
-    return true;
-  } catch {
-    try {
-      if (now - fs.statSync(lock).mtimeMs > 2 * DETACHED_REPLAY_BUDGET_MS) {
-        fs.writeFileSync(lock, `${process.pid} ${now}\n`, { mode: 0o600 });
-        return true;
-      }
-    } catch { /* vanished between the two calls: the other replayer finished */ }
-    return false;
-  }
+    if (now - fs.statSync(lock).mtimeMs <= REPLAY_LOCK_STALE_MS) return null;
+    const aside = `${lock}.stale-${process.pid}-${now}`;
+    fs.renameSync(lock, aside);
+    fs.rmSync(aside, { force: true });
+    return create();
+  } catch { return null; }
 }
 
-/** Spawn the detached replayer if none holds the lock. Returns whether one was started. Never throws. */
-export function replayOutboxDetached({ projectDir, spawnFn = spawn } = {}) {
+/** Heartbeat: refresh the lock's mtime if (and only if) this holder still owns it. */
+export function refreshReplayLock(projectDir, token) {
+  if (!token || readLock(projectDir) !== token) return false;
+  try { const t = new Date(); fs.utimesSync(lockPath(projectDir), t, t); return true; } catch { return false; }
+}
+
+/** Release ONLY a lock this holder owns; a successor's lock is never deleted. */
+export function releaseReplayLock(projectDir, token) {
+  if (!token || readLock(projectDir) !== token) return false;
+  try { fs.rmSync(lockPath(projectDir), { force: true }); return true; } catch { return false; }
+}
+
+/** Hand the lock (or take it, if free) to a detached worker. Returns whether one was started. Never throws. */
+export function replayOutboxDetached({ projectDir, token = null, spawnFn = spawn } = {}) {
+  const held = token || takeReplayLock(projectDir);
+  if (!held) return false;
   try {
-    if (!takeReplayLock(projectDir)) return false;
     const child = spawnFn(process.execPath, [fileURLToPath(import.meta.url), '--replay-outbox'], {
-      cwd: projectDir, detached: true, stdio: 'ignore', env: { ...process.env, RUVNET_REPLAY_LOCK_HELD: '1' },
+      cwd: projectDir, detached: true, stdio: 'ignore', windowsHide: true,
+      env: { ...process.env, RUVNET_REPLAY_LOCK_TOKEN: held },
     });
     child.unref?.();
     return true;
   } catch {
-    try { fs.rmSync(lockPath(projectDir), { force: true }); } catch { /* best effort */ }
+    releaseReplayLock(projectDir, held);
     return false;
   }
 }
 
 /**
- * The detached worker's body, holding the lock: replay the outbox, then run every queued capture IN
- * ORDER (each with the full budget, so each replays before it captures — the causal order), then
- * release the lock. A capture queued while the lock was held is picked up by the re-check after release.
+ * The detached worker's body, holding the lock `token`: replay the outbox, then run every queued capture
+ * IN ORDER — each re-entering the boundary as `ordered`, so it replays before it produces — refreshing
+ * the lock between steps and STOPPING the moment the lock is no longer its own (a successor took it
+ * over: running on would duplicate its work). Releases only its own lock, then re-checks for captures
+ * queued while it held it.
  */
-export function runOutboxReplay({ projectDir, budgetMs = DETACHED_REPLAY_BUDGET_MS, makeStoreFactory = boundedStoreFactory,
-  now = Date.now, runCapture = runSessionSnapshotHook } = {}) {
+export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_LOCK_TOKEN || null, budgetMs = DETACHED_REPLAY_BUDGET_MS,
+  makeStoreFactory = boundedStoreFactory, now = Date.now, runCapture = runSessionSnapshotHook } = {}) {
+  let held = token || takeReplayLock(projectDir);
   let replayed = 0;
-  for (let round = 0; round < 8; round += 1) {
+  for (let round = 0; held && round < 8; round += 1) {
     try {
+      if (!refreshReplayLock(projectDir, held)) return replayed;
       const resolution = resolveProjectStore({ projectDir });
-      replayed += makeStoreFactory(now() + budgetMs)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath }).replay().length;
+      const store = makeStoreFactory(now() + budgetMs)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath });
+      for (const snapshot of store.outbox.pendingSnapshots()) {
+        if (!refreshReplayLock(projectDir, held)) return replayed;
+        store.outbox.markCommitted(store.appendExact(snapshot));
+        replayed += 1;
+      }
       for (const file of queuedCaptures(projectDir)) {
+        if (!refreshReplayLock(projectDir, held)) return replayed;
         let job = null;
         try { job = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* torn: dropped below */ }
         try {
           if (job) runCapture(projectDir, job.event, { rawInput: JSON.stringify(job.payload), host: job.host,
-            budgetMs, makeStoreFactory, now, spawnReplay: () => false, writeMetadata: false,
+            budgetMs, makeStoreFactory, now, ordered: held, writeMetadata: false,
             captureTurn: () => ({ recorded: false, skipped: 'detached replay' }) });
         } catch { /* a failed capture leaves its own snapshot durable in the outbox */ }
         try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
       }
-    } finally {
-      try { fs.rmSync(lockPath(projectDir), { force: true }); } catch { /* best effort */ }
+    } catch { /* the debt stays durable; the next boundary hands it on again */ } finally {
+      releaseReplayLock(projectDir, held);
     }
-    if (!queuedCaptures(projectDir).length || !takeReplayLock(projectDir)) break;
+    held = queuedCaptures(projectDir).length ? takeReplayLock(projectDir) : null;
   }
   return replayed;
 }
