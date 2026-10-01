@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { consoleEnv, replaceStaleConsoles } from '../../scripts/console-instances.mjs';
+import { consoleEnv, pidReused, processStartMs, readConsoleReceipts, replaceStaleConsoles } from '../../scripts/console-instances.mjs';
 
 const temps = [];
 const temp = (prefix) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); temps.push(dir); return dir; };
@@ -18,7 +18,7 @@ function receiptFixture(over = {}) {
   const entry = path.join(temp('console-instances-runtime-'), 'onboarding-console.mjs');
   fs.writeFileSync(entry, '// current runtime\n');
   const receipt = { product: 'ruvnet-brain-console', schema: 1, apiContract: 1, pid: process.pid, port: 7499,
-    startedAt: '2026-09-30T10:00:00.000Z', scope, scriptRealpath: '/old/onboarding-console.mjs', runtimeVersion: '4.3.39',
+    startedAt: new Date().toISOString(), scope, scriptRealpath: '/old/onboarding-console.mjs', runtimeVersion: '4.3.39',
     sourceSha256: 'a'.repeat(64), controlToken: 'b'.repeat(48), ...over };
   const file = path.join(receiptDir, 'scope.json');
   fs.writeFileSync(file, JSON.stringify(receipt));
@@ -72,5 +72,48 @@ describe('replaceStaleConsoles — a live pid whose port does not answer', () =>
       probe: () => ({ ...f.publicIdentity, pid: 1 }), spawnFn: () => { throw new Error('must not launch'); } });
     expect(results).toEqual([expect.objectContaining({ replaced: false })]);
     expect(fs.existsSync(f.file)).toBe(true);
+  });
+});
+
+// 4.4.1: a receipt whose pid was REUSED by an unrelated process used to be kept forever, so every update
+// said "restart Console" until that process exited. The process start time tells them apart.
+describe('a reused pid is recognised by process start time', () => {
+  it.skipIf(process.platform === 'win32')('processStartMs reads this process\'s real start time', () => {
+    const started = processStartMs(process.pid);
+    expect(Number.isFinite(started)).toBe(true);
+    expect(started).toBeLessThanOrEqual(Date.now() + 1_000);
+    expect(Date.now() - started).toBeLessThan(24 * 3_600_000);
+  });
+
+  it.skipIf(process.platform === 'win32')('drops a receipt whose live pid started AFTER the receipt was written; keeps the same busy Console', () => {
+    const reused = receiptFixture({ startedAt: '2020-01-01T00:00:00.000Z' }); // this pid's process did not exist then
+    const { live, pruned } = readConsoleReceipts(reused.receiptDir, { probe: () => null });
+    expect(live).toEqual([]);
+    expect(pruned).toEqual([expect.objectContaining({ pid: process.pid, reason: 'pid reused by a process started after the receipt' })]);
+    expect(fs.existsSync(reused.file)).toBe(false);
+    // The receipt's own process (started before it wrote startedAt), busy and silent: never dropped.
+    const busy = receiptFixture({ startedAt: new Date().toISOString() });
+    expect(readConsoleReceipts(busy.receiptDir, { probe: () => null }).live).toHaveLength(1);
+    expect(fs.existsSync(busy.file)).toBe(true);
+    // An unreadable start time is not proof of reuse.
+    const unknown = receiptFixture({ startedAt: '2020-01-01T00:00:00.000Z' });
+    expect(readConsoleReceipts(unknown.receiptDir, { probe: () => null, startMs: () => null }).live).toHaveLength(1);
+  });
+
+  it('pidReused needs the process to start more than 2s after startedAt', () => {
+    const at = Date.parse('2026-10-01T06:00:00.000Z');
+    const receipt = { pid: 4242, startedAt: new Date(at).toISOString() };
+    expect(pidReused(receipt, { startMs: () => at - 5_000 })).toBe(false);
+    expect(pidReused(receipt, { startMs: () => at + 2_000 })).toBe(false);
+    expect(pidReused(receipt, { startMs: () => at + 2_001 })).toBe(true);
+  });
+});
+
+describe('consoleEnv — host-session identity is not carried into a long-lived Console', () => {
+  it('drops RUVNET_BRAIN_ACTIVE_VERSION, RUVNET_HOOK_HOST, RUVNET_NODE_BIN and CLAUDE* (keeps CLAUDE_CONFIG_DIR)', () => {
+    const env = consoleEnv({ HOME: '/h', RUVNET_BRAIN_ACTIVE_VERSION: '0.0.0-session', RUVNET_HOOK_HOST: 'claude', RUVNET_NODE_BIN: '/n',
+      CLAUDECODE: '1', CLAUDE_PROJECT_DIR: '/p', CLAUDE_PLUGIN_ROOT: '/r', CLAUDE_SESSION_ID: 's', CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CONFIG_DIR: '/cfg', ANTHROPIC_API_KEY: 'sk-a' }, 7411);
+    expect(env).toEqual({ HOME: '/h', CLAUDE_CONFIG_DIR: '/cfg', ANTHROPIC_API_KEY: 'sk-a', CONSOLE_PORT: '7411' });
   });
 });

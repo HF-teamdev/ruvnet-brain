@@ -8,8 +8,10 @@ import { resolveProjectStore } from '../../plugin/scripts/project-store-resolver
 import {
   ProjectProgressionStore,
   projectResumePayloadToBound,
+  cleanLegacyRufloDebris,
   ensurePrivateDir,
   rufloCwdFor,
+  rufloRunDir,
   rufloScratchRoot,
 } from '../../plugin/scripts/project-progression-store.mjs';
 import { resolveRuflo } from '../../plugin/scripts/ruflo-bin.mjs';
@@ -229,7 +231,11 @@ describe('managed ProjectProgression append and readback', () => {
     ]);
     expect(fake.calls.every((call) => call.options.env.RUFLO_DAEMON_AUTOSTART === '0')).toBe(true);
     // ruflo never runs inside the customer's project: one per-user scratch cwd outside it (rufloCwdFor).
-    expect(fake.calls.every((call) => call.options.cwd === rufloCwdFor(bridge.resolution.canonicalAgentDbPath))).toBe(true);
+    // One fresh private run-* dir per call inside the project's scratch dir, removed after the call.
+    const projectScratch = rufloCwdFor(bridge.resolution.canonicalAgentDbPath);
+    expect(fake.calls.every((call) => path.dirname(call.options.cwd) === projectScratch
+      && path.basename(call.options.cwd).startsWith('run-') && !fs.existsSync(call.options.cwd))).toBe(true);
+    expect(new Set(fake.calls.map((call) => call.options.cwd)).size).toBe(fake.calls.length);
     expect(fake.calls.every((call) => path.relative(projectRoot, call.options.cwd).startsWith('..'))).toBe(true);
     expect(bridge.outbox.pendingSnapshots()).toEqual([]);
   });
@@ -484,4 +490,83 @@ describe('managed ProjectProgression append and readback', () => {
     expect(fs.existsSync(path.join(storeDir, '.swarm'))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, '.swarm'))).toBe(false);
   }, 180_000);
+
+  // 4.4.1: ruflo copies every value it touches into <cwd>/.swarm/hnsw.metadata.json. 4.4.0 kept one cwd per
+  // project, so that copy grew without bound and outlived the project. Each call now gets a fresh run dir
+  // that is removed afterwards — proven against real ruflo that nothing needed later lived there.
+  realRufloIt('the per-project scratch holds nothing after real captures, and later reads still work', () => {
+    const projectRoot = temporaryProject();
+    const resolution = resolveProjectStore({ projectDir: projectRoot });
+    const env = { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' };
+    const projectScratch = rufloCwdFor(resolution.canonicalAgentDbPath);
+    // Seed what 4.4.0 left behind in the project scratch (a cwd ruflo had already used).
+    const initialized = spawnSync(ruflo, ['memory', 'init', '--backend', 'agentdb', '--path', resolution.canonicalAgentDbPath],
+      { cwd: projectScratch, env, encoding: 'utf8', timeout: 120_000 });
+    expect(initialized.status, initialized.stderr || initialized.stdout).toBe(0);
+    expect(fs.readdirSync(projectScratch).length).toBeGreaterThan(0);
+    const bridge = new ProjectProgressionStore({ projectDir: projectRoot, rufloBinary: ruflo, reader: null,
+      clock: () => '2026-10-01T10:00:00.000Z' });
+    const snapshot = progression(projectRoot);
+    bridge.capture(snapshot);
+    expect(fs.readdirSync(projectScratch)).toEqual([]); // 4.4.0 leftovers cleared, this call's run dir removed
+    const successor = progression(projectRoot, { sequence: 2, dedupId: 'turn-s:tool-s:post', parentEventKeys: [snapshot.eventKey] });
+    bridge.capture(successor);
+    // Every read goes through a fresh, empty cwd: if ruflo needed its cwd metadata, these would fail.
+    const restored = bridge.restoreLatest({ pageSize: 1 });
+    expect(restored.payload.heads).toEqual([successor.eventKey]);
+    expect(restored.payload.evidence).toMatchObject({ structurallyEnumerated: 2, exactRetrieved: 2 });
+    expect(bridge.appendExact(snapshot)).toMatchObject({ alreadyStored: true });
+    expect(fs.readdirSync(projectScratch)).toEqual([]);
+  }, 300_000);
+
+  // 4.3.40 ran ruflo with cwd <project>/.swarm: upgraded projects carry its cwd artifacts inside the store
+  // directory, including .swarm/.swarm/hnsw.metadata.json (snapshot content). The tree below is made the
+  // way 4.3.40 made it: real ruflo, cwd = .swarm, --path = .swarm/memory.db.
+  realRufloIt('removes exactly the 4.3.40 ruflo artifacts inside .swarm, keeping the store, outbox and queue', () => {
+    const projectRoot = temporaryProject();
+    const resolution = resolveProjectStore({ projectDir: projectRoot });
+    const storeDir = path.dirname(resolution.canonicalAgentDbPath);
+    fs.mkdirSync(storeDir, { recursive: true });
+    const env = { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' };
+    const legacy = (args) => spawnSync(ruflo, args, { cwd: storeDir, env, encoding: 'utf8', timeout: 120_000 });
+    expect(legacy(['memory', 'init', '--backend', 'agentdb', '--path', resolution.canonicalAgentDbPath]).status).toBe(0);
+    expect(legacy(['memory', 'store', '--key', 'legacy-row', '--value', '{"kept":true}', '--namespace', 'legacy',
+      '--path', resolution.canonicalAgentDbPath]).status).toBe(0);
+    fs.writeFileSync(path.join(storeDir, 'project-progression-outbox.jsonl'), '');
+    fs.writeFileSync(path.join(storeDir, 'agentdb-sessions.jsonl'), '{"q":1}\n');
+    const before = fs.readdirSync(storeDir).sort();
+    expect(before).toEqual(expect.arrayContaining(['.swarm', '.claude', '.claude-flow', 'ruvector.db']));
+    expect(fs.readFileSync(path.join(storeDir, '.swarm', 'hnsw.metadata.json'), 'utf8')).toContain('kept');
+
+    const opened = new ProjectProgressionStore({ projectDir: projectRoot, rufloBinary: ruflo });
+    expect(opened.legacyDebris.refused).toEqual([]);
+    expect(opened.legacyDebris.removed.map((entry) => path.basename(entry)).sort()).toEqual(['.claude', '.claude-flow', '.swarm', 'ruvector.db']);
+    expect(fs.readdirSync(storeDir).sort()).toEqual(before.filter((name) => !['.swarm', '.claude', '.claude-flow', 'ruvector.db'].includes(name)));
+    expect(fs.readdirSync(storeDir)).toEqual(expect.arrayContaining(['memory.db', 'project-progression-outbox.jsonl', 'agentdb-sessions.jsonl']));
+    const read = spawnSync(ruflo, ['memory', 'retrieve', '--key', 'legacy-row', '--namespace', 'legacy', '--value-only',
+      '--path', resolution.canonicalAgentDbPath], { cwd: rufloRunDir(resolution.canonicalAgentDbPath), env, encoding: 'utf8', timeout: 120_000 });
+    expect(JSON.parse(read.stdout)).toEqual({ kept: true }); // the store of record is untouched
+    expect(new ProjectProgressionStore({ projectDir: projectRoot, rufloBinary: ruflo }).legacyDebris).toEqual({ removed: [], refused: [] });
+  }, 300_000);
+
+  it('never follows a symlink and never removes an artifact holding anything unexpected', () => {
+    const projectRoot = temporaryProject();
+    const storeDir = path.join(projectRoot, '.swarm');
+    fs.mkdirSync(path.join(storeDir, '.swarm'), { recursive: true });
+    fs.writeFileSync(path.join(storeDir, 'memory.db'), 'store');
+    fs.writeFileSync(path.join(storeDir, '.swarm', 'hnsw.metadata.json'), '{}');
+    fs.writeFileSync(path.join(storeDir, '.swarm', 'user-notes.md'), 'mine'); // not a ruflo artifact
+    const target = temporaryProject();
+    fs.writeFileSync(path.join(target, 'harness-active-policy.json'), '{}');
+    fs.symlinkSync(target, path.join(storeDir, '.claude-flow'));
+    fs.symlinkSync(path.join(target, 'harness-active-policy.json'), path.join(storeDir, 'ruvector.db'));
+    const result = cleanLegacyRufloDebris(storeDir);
+    expect(result.removed).toEqual([]);
+    expect(result.refused.map(({ path: entry, reason }) => [path.basename(entry), reason]).sort()).toEqual([
+      ['.claude-flow', 'symbolic link'], ['.swarm', 'unexpected entries: user-notes.md'], ['ruvector.db', 'symbolic link']]);
+    expect(fs.readFileSync(path.join(storeDir, '.swarm', 'user-notes.md'), 'utf8')).toBe('mine');
+    expect(fs.lstatSync(path.join(storeDir, '.claude-flow')).isSymbolicLink()).toBe(true);
+    expect(fs.readdirSync(target)).toEqual(['harness-active-policy.json']);
+    expect(fs.readFileSync(path.join(storeDir, 'memory.db'), 'utf8')).toBe('store');
+  });
 });
