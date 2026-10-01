@@ -111,7 +111,7 @@ describe('a reused pid is recognised by process start time', () => {
 
 describe('consoleEnv — host-session identity is not carried into a long-lived Console', () => {
   it('drops RUVNET_BRAIN_ACTIVE_VERSION, RUVNET_HOOK_HOST, RUVNET_NODE_BIN and CLAUDE* (keeps CLAUDE_CONFIG_DIR)', () => {
-    const env = consoleEnv({ HOME: '/h', RUVNET_BRAIN_ACTIVE_VERSION: '4.4.0', RUVNET_HOOK_HOST: 'claude', RUVNET_NODE_BIN: '/n',
+    const env = consoleEnv({ HOME: '/h', RUVNET_BRAIN_ACTIVE_VERSION: '0.0.0-session', RUVNET_HOOK_HOST: 'claude', RUVNET_NODE_BIN: '/n',
       CLAUDECODE: '1', CLAUDE_PROJECT_DIR: '/p', CLAUDE_PLUGIN_ROOT: '/r', CLAUDE_SESSION_ID: 's', CLAUDE_CODE_ENTRYPOINT: 'cli',
       CLAUDE_CONFIG_DIR: '/cfg', ANTHROPIC_API_KEY: 'sk-a' }, 7411);
     expect(env).toEqual({ HOME: '/h', CLAUDE_CONFIG_DIR: '/cfg', ANTHROPIC_API_KEY: 'sk-a', CONSOLE_PORT: '7411' });
