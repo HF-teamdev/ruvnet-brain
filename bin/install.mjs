@@ -35,7 +35,7 @@ import {
 import { applyManagedCatalogUpdate } from '../scripts/model-router-catalog.mjs';
 import { cmpVersion } from '../scripts/stack-sync.mjs';
 import {
-  inspectInstalledBrain, classifySmokeEvidence, classifySmokeFailure, coldModels, DOCTOR_SMOKE_QUERY, doctorSmokeArgs,
+  inspectInstalledBrain, classifySmokeEvidence, classifySmokeFailure, classifyWarmupFailure, coldModels, DOCTOR_SMOKE_QUERY, doctorSmokeArgs,
   MODEL_WARMUP_SCRIPT, MODEL_WARMUP_TIMEOUT_MS,
 } from '../scripts/installed-brain-health.mjs';
 import { validateCoverageDirectory } from '../plugin/scripts/coverage-integrity.mjs';
@@ -2612,11 +2612,13 @@ function ensureVerifier(cacheDir) {
   } catch { return 'unavailable'; }
 }
 
+/** The installed verifier: the module, or { broken } when the file is there but will not load (an install
+ * defect, ✗), or null when no verifier exists at all (neither installed nor shippable — "cannot settle"). */
 async function loadCitationVerifier(cacheDir) {
   ensureVerifier(cacheDir);
   const p = path.join(cacheDir, 'verify-citation.mjs');
   if (!fs.existsSync(p)) return null;
-  try { return await import(pathToFileURL(p).href); } catch { return null; }
+  try { return await import(pathToFileURL(p).href); } catch (error) { return { broken: String(error?.message || error).slice(0, 200) }; }
 }
 
 // Proving grounding means proving the answer's CITATION RESOLVES — that the file it points at is a
@@ -2667,17 +2669,14 @@ async function smokeQuery(cacheDir) {
     } else if (w.status === 3) {
       info(c.dim('this bundle predates the separate warm-up step — the question below includes it'));
     } else {
-      const why = w.error ? w.error.message
-        : w.signal ? `stopped by ${w.signal} after ${warmSecs}s (${MODEL_WARMUP_TIMEOUT_MS / 1000}s limit)`
-          : `exited ${w.status} after ${warmSecs}s`;
-      warn(`could not prepare the local models — ${why}`);
+      // ONE classification (installed-brain-health.mjs classifyWarmupFailure): spawnSync's own timeout is
+      // advisory (a slow machine); a native crash (a signal with no ETIMEDOUT) is a broken runtime, ✗.
+      const v = classifyWarmupFailure({ error: w.error, signal: w.signal, status: w.status, secs: warmSecs, limitSecs: MODEL_WARMUP_TIMEOUT_MS / 1000 });
+      warn(`could not prepare the local models — the warm-up ${v.cause}`);
       const err = `${w.stderr || ''}`.trim();
       if (err) for (const line of err.split('\n').slice(0, 8)) info(c.dim(`    ${line.slice(0, 200)}`));
-      // A warm-up that ran out of time is a slow machine, not a broken one: advisory (!), same as the
-      // reader's own deadline. A crash or a launch failure stays a failure.
-      const timedOut = Boolean(w.signal) && !w.error;
-      return { ran: true, grounded: false, reason: `model-warmup-${timedOut ? 'timeout' : 'failed'}: ${why}`, stderr: err.slice(0, 4000),
-        ...(timedOut ? { slow: true, warmupTimeout: true } : {}) };
+      return { ran: true, grounded: false, reason: `model-warmup-${v.kind}: ${v.cause}`, stderr: err.slice(0, 4000),
+        ...(v.advisory ? { slow: true, warmupTimeout: true } : {}) };
     }
   }
   info(`Q: ${c.cyan(`"${Q}"`)}`);
@@ -2757,6 +2756,10 @@ async function smokeQuery(cacheDir) {
   }
 
   const verifier = await loadCitationVerifier(cacheDir);
+  if (verifier?.broken) {
+    warn(`the installed citation verifier does not load (${verifier.broken}) — grounding cannot be proven until it is reinstalled`);
+    return { ran: true, grounded: false, reason: `reader-broken: verify-citation.mjs does not load (${verifier.broken})` };
+  }
   if (!verifier) {
     info(`the brain answered in ${secs}s, but this bundle predates the citation verifier —`);
     info(c.dim('  re-run `npx ruvnet-brain` to refresh it, and grounding will be PROVEN, not assumed'));
@@ -3215,7 +3218,7 @@ async function doctorRun({ json }) {
   try {
     const mod = await import(new URL('../scripts/selfcheck.mjs', import.meta.url).href);
     if (smoke.grounded === true) {
-      mod.writeInstallState({ grounding: 'proven', reason: null, clearedBy: 'doctor-live-proof' });
+      mod.writeInstallState({ grounding: 'proven', reason: null, clearedBy: 'doctor-live-proof', coverageSha256: liveCoverageSha256(cacheDir) });
     }
     persistedGrounding = mod.readInstallState();
     groundingUnprovenPersisted = mod.groundingUnproven(persistedGrounding);
@@ -3256,7 +3259,7 @@ async function doctorRun({ json }) {
     ...(hookResult ? [check('hooks', 'Hooks', hookResult.exitCode !== 0, 'automatic Brain hook continuity policy', 'npx ruvnet-brain')] : []),
     check('identity', 'Identity', !installedIdentity.healthy, installedIdentity.healthy ? 'search engine, validator and archive manifest agree'
       : installedIdentity.issues.join('; '), 'npx ruvnet-brain@latest --update'),
-    groundingCheckLine({ smoke, persisted: persistedGrounding }),
+    groundingCheckLine({ smoke, persisted: persistedGrounding, coverageSha256: liveCoverageSha256(cacheDir) }),
     ...(cx.host ? [check('codex', 'Codex', codexFailed, codexFailed ? (codexWiringFailed ? 'host detected but NOT wired'
       : codexReadinessFailed ? 'MCP readiness blocked' : 'lifecycle hooks unhealthy') : 'wired', 'npx ruvnet-brain')] : []),
     check('nightly', 'Nightly', nightlyFailed, `${nightlyHealth.state}${nightlyHealth.runHealth?.state ? `, last run ${nightlyHealth.runHealth.state}` : ''}`,
@@ -5317,25 +5320,35 @@ export function probeRufloOperationalHealth({ cli = 'ruflo', run = (args) => ruf
   });
 }
 
+/** sha256 of the live COVERAGE.json: the identity a persisted grounding verdict is bound to. */
+export function liveCoverageSha256(kbDir) {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(path.join(kbDir, 'COVERAGE.json'))).digest('hex'); } catch { return null; }
+}
+
 /**
  * THE Grounding line of the doctor's one verdict (ADR-058 §D8), from the live question and the persisted
- * verdict only:
- *   live proven                         ✓ (and the persisted verdict was just rewritten to proven)
- *   persisted UNPROVEN, live not proven ✗ — the persisted verdict gates
- *   reader missing / incomplete         ✗ — an install defect, fix: reinstall
- *   live answered but NOT grounded      ✗
- *   warm-up or answer ran out of time   ! — a slow machine, advisory (owner ruling), fix: run it again
- *   live not verifiable (the verifier will not load): the persisted verdict decides — proven ✓ (named as
- *     not re-proven live), anything else ✗. This is the one case the live question cannot settle.
+ * verdict only (owner ruling: a WARM-UP timeout is advisory; the timed QUESTION timing out is ✗):
+ *   live proven                              ✓ (and the persisted verdict was just rewritten, bound to these bytes)
+ *   persisted UNPROVEN, live not proven      ✗ — the persisted verdict gates
+ *   reader missing / incomplete / broken     ✗ — an install defect, fix: reinstall (a verifier that throws on
+ *                                              import is "broken", not "cannot settle")
+ *   warm-up crashed, answer wrong or late    ✗
+ *   model warm-up ran out of time            ! — a slow machine, advisory, fix: run it again
+ *   NO verifier at all (none installed, none shippable): the live question cannot settle it, so a persisted
+ *     'proven' verdict FOR THESE BYTES (coverage digest) passes, named as not re-proven live; anything else ✗.
+ *     Only this narrow case can pass without a live proof.
  */
-export function groundingCheckLine({ smoke = {}, persisted = null } = {}) {
+export function groundingCheckLine({ smoke = {}, persisted = null, coverageSha256 = null } = {}) {
   const line = (state, detail, fix = null) => ({ id: 'grounding', label: 'Grounding', state, detail, fix: state === 'ok' ? null : fix });
+  // Coarse by design (tests/unit/install-state.test.mjs): any recorded state that is not literally 'proven' is unproven.
+  const recorded = persisted && typeof persisted === 'object' ? persisted : null;
   if (smoke.grounded === true) return line('ok', `proven (${smoke.receipt?.path || 'cited passage'})`);
-  if (persisted && persisted.grounding !== 'proven') return line('fail', `recorded UNPROVEN${persisted.reason ? ` (${persisted.reason})` : ''}`, 'npx ruvnet-brain');
+  if (recorded && recorded.grounding !== 'proven') return line('fail', `recorded UNPROVEN${recorded.reason ? ` (${recorded.reason})` : ''}`, 'npx ruvnet-brain');
   if (smoke.grounded === null) {
-    return persisted?.grounding === 'proven'
-      ? line('ok', `not re-proven live (${smoke.reason || 'verifier unavailable'}); last proven${persisted.clearedBy ? ` by ${persisted.clearedBy}` : ''}`)
-      : line('fail', `not verifiable live (${smoke.reason || 'verifier unavailable'}) and never proven on this machine`, 'npx ruvnet-brain');
+    const forTheseBytes = recorded?.grounding === 'proven' && Boolean(coverageSha256) && recorded.coverageSha256 === coverageSha256;
+    return forTheseBytes
+      ? line('ok', `not re-proven live (${smoke.reason || 'no verifier'}); last proven for these bytes${recorded.clearedBy ? ` by ${recorded.clearedBy}` : ''}`)
+      : line('fail', `not verifiable live (${smoke.reason || 'no verifier'}) and never proven for these bytes`, 'npx ruvnet-brain');
   }
   if (smoke.warmupTimeout) return line('warn', `not proven in time (${smoke.reason || 'slow'})`, 'npx ruvnet-brain --doctor (again, when the machine is less busy)');
   return line('fail', `not proven (${smoke.reason || (smoke.ran === false ? 'the live question did not run' : 'unknown')})`, 'npx ruvnet-brain');
@@ -6349,6 +6362,8 @@ the installer reports that boot-level declarations changed.
     mod.writeInstallState({
       grounding,
       reason: !smoke ? 'verify-skipped' : (smoke.grounded === true ? null : (smoke.reason || (smoke.ran ? 'not-grounded' : 'no-answer'))),
+      // The verdict is about THESE bytes: a later corpus no longer inherits it (re-review S1).
+      coverageSha256: liveCoverageSha256(cacheDir),
     });
     if (grounding !== 'proven' && process.env.RUVNET_STRICT_INSTALL === '1') {
       die(
