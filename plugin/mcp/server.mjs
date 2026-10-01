@@ -273,10 +273,14 @@ async function ensureChild() {
         recordStartupFailure({ phase, startedAt, generation: c.generation, error: e });
         throw new Error(`brain worker failed to initialize: ${e.message}`);
       }
+      // kbDir: WHICH knowledge base this worker opened (ADR-0098 positive confirmation "In use") — the
+      // physical path, so a worker still serving a replaced or second copy is visible, not assumed.
+      let openedKb = KB;
+      try { openedKb = fs.realpathSync(KB); } catch { /* reported as spelled */ }
       writeReadiness({
         state: 'ready', phase, generation: c.generation,
         workerPid: c.proc.pid, elapsedMs: Date.now() - startedAt,
-        retryable: false, retryState: 'none',
+        retryable: false, retryState: 'none', kbDir: openedKb,
       });
       armChildIdleTimer(c);
       return c;

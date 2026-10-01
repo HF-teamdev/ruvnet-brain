@@ -1,6 +1,6 @@
 # Contributing to RuvNet Brain — the one rulebook
 
-Updated: 2026-09-30
+Updated: 2026-10-01
 Created: 2026-07-07
 
 This file is the **only** place that says how to version, release, update the knowledge corpus,
@@ -212,6 +212,39 @@ SOURCE.json writers (`kb/forge-build.mjs`, `kb/forge-refresh.mjs`, `scripts/corp
 literals. `tests/unit/one-source-projection.test.mjs` enforces this by census (grep) and by an
 exact ledger-to-SOURCE.json equality proof. The old one-shot migration
 `scripts/stamp-existing-rvf-generations.mjs` went dead as a result and was deleted.
+
+## Footprint guarantees (what a user's machine holds — ADR-098)
+
+**One knowledge base, current, in use, nothing building up.** `plugin/scripts/brain-footprint.mjs` is the
+one classifier of everything the Brain owns: the brain home (`RUVNET_BRAIN_HOME`, symlinks resolved), KB
+siblings (`kb.bak-*`, `kb.install-preserved-*`, `kb.install-prior-*`, `kb.pre-update-*`, `kb.next-/rollback-/
+failed-*`, `*-quarantine-*`), the Claude (`CLAUDE_CONFIG_DIR`) and Codex (`CODEX_HOME`) plugin caches, npm
+`_npx` copies of `ruvnet-brain`, ruflo scratch, logs and lifecycle receipts. Each is **must-exist**,
+**may-exist (bounded)**, **must-not-exist**, or **unowned** (reported, never removed). Add a new on-disk
+artifact only together with its classification there, or `--doctor` will report it as cruft.
+
+- **Removal is proof-gated.** A KB copy is deleted only when `plugin/scripts/kb-copy-proof.mjs` shows nothing
+  in it is unique: every private-store file (fence of live AND copy, plus `updateManaged:false`) byte-identical
+  in live; every other file a public release file or installer-written. Anything else keeps the copy and is
+  named. Links are never followed; trees of an in-progress storage transaction, a foreign refresh lock, and
+  live leases are kept; plugin generations go only through `prunePluginGenerations` (lease-aware).
+- **Enforced automatically**: after install/forced reinstall (the installer releases its own preserved
+  generation once the new one validates), before and after every `--update` (incl. the SessionStart
+  knowledge self-heal), and by a detached SessionStart sweep at most every 6h when the name-only scan
+  finds cruft. By hand: `npx ruvnet-brain --clean`.
+- **Bounds**: ledgers in `LOG_FILES` rotate to `<name>.1` past 2 MiB; `.last-*.log` files are truncated to
+  their tail past 512 KiB; one npx installer copy, never older than the current version; lifecycle receipts
+  by lifecycle-evidence-v1 (16 MiB). Budget = live KB + models + 512 MiB.
+- **Positive confirmation** after every install/update and in `npx ruvnet-brain --doctor`
+  (`--doctor --json` for scripts; exit 0 only when every provable line is green): Software = npm latest,
+  Hosts = runtime, Knowledge = exactly one copy, built < 48h, signature verified (bound to the live
+  COVERAGE.json), corpus tag; In use = the search worker opened that copy, last answer; Footprint vs budget;
+  No cruft. Every ✗ names one command. SessionStart prints one `[RuvNet Brain — FOOTPRINT …]` line only
+  when the footprint is wrong.
+- **Proof it holds**: `tests/integration/footprint-three-updates.test.mjs` (real install, forced reinstall,
+  three updates, planted cruft, all lines green, and the same run with the sweep cut out goes red);
+  `tests/unit/brain-footprint.test.mjs` (classification, safety, BREAK-IT mutants). The corpus canary's
+  three-update footprint check is opt-in: `scripts/corpus-canary.mjs --footprint-updates`.
 
 ## Hooks (what runs automatically)
 

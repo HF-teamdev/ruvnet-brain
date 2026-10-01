@@ -23,8 +23,11 @@ import crypto from 'node:crypto';
 import { applyBrainProfile, readBrainProfile } from '../kb/brain-profile.mjs';
 import { acquireRefreshLock, finishRefreshReceipt, openRefreshReceipt, physicalPath, recordRefreshAdvisory,
   recordRefreshPhase, settleRefreshRun, UPDATE_REFRESH_PHASES } from '../kb/refresh-run.mjs';
-import { pruneLifecycleEvidence } from '../kb/lifecycle-evidence-retention.mjs';
+import { assessLifecycleEvidence, pruneLifecycleEvidence } from '../kb/lifecycle-evidence-retention.mjs';
 import { checkDiskSpace, recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
+import { footprintRoots, sweepFootprint } from '../plugin/scripts/brain-footprint.mjs';
+import { kbCopyProof } from '../plugin/scripts/kb-copy-proof.mjs';
+import { confirm, formatBytes, formatConfirmation, writeSignatureRecord } from '../plugin/scripts/brain-confirmation.mjs';
 import {
   requiredEmbedderModels,
   missingEmbedderModels,
@@ -146,6 +149,8 @@ const FLAG_WHATS_NEW = argv.includes('--whats-new'); // show curated major-relea
 // --move-brain --back brings it home (scripts/move-brain.mjs).
 const FLAG_MOVE_BRAIN = argv.includes('--move-brain');
 const MOVE_BRAIN_TO = (() => { const i = argv.indexOf('--move-brain'); const v = i === -1 ? null : argv[i + 1]; return v && !v.startsWith('-') ? v : null; })();
+const FLAG_CLEAN = argv.includes('--clean'); // enforce the footprint guarantee now (ADR-0098), then confirm
+const FLAG_JSON = argv.includes('--json'); // with --doctor / --clean: machine-readable confirmation only
 // ── onboarding-experience flags (all optional; every offer is safe to decline) ──
 const FLAG_YES = argv.includes('--yes') || argv.includes('-y'); // accept every optional offer non-interactively
 const FLAG_PLAN = argv.includes('--plan') || argv.includes('--dry-run'); // show the interactive checklist, then exit — install NOTHING
@@ -829,13 +834,31 @@ export async function unzipInto(zipPath, cacheDir, sourceDir = null, { releaseTa
       hadPrior ? 'the prior brain generation was not moved' : 'no prior brain generation existed'}`,
     `Candidate retained for inspection at ${stageDir}.`);
   }
-  if (hadPrior) warn(`PRESERVED_UNCLASSIFIED: prior generation retained at ${preservedDir}. ` +
-    'The updater (kb/forge-update.mjs) releases it only once every byte is proven to survive in the live brain; ' +
-    'until then it stays, and repeated installs can grow disk usage.');
+  // THE CREATOR NO LONGER LEAVES A SECOND KB BEHIND (ADR-0098). The new generation just passed landed
+  // coverage validation, so the prior one is released the moment kbCopyProof shows nothing in it is
+  // unique: every private-store file byte-identical in the live brain, every store the live brain lacks
+  // of public provenance. A copy holding anything else is KEPT and its files are named. Measured
+  // 2026-10-01: two install-preserved copies (~2.4 GB) had outlived every proof that could release them.
+  let priorGeneration = null;
+  if (hadPrior) {
+    const proof = kbCopyProof({ copyDir: preservedDir, liveDir: cacheDir });
+    if (proof.disposable) {
+      try {
+        fs.rmSync(preservedDir, { recursive: true, force: true });
+        ok(`released the prior generation (${proof.reason})`);
+        priorGeneration = { status: 'RELEASED', path: preservedDir, reason: proof.reason };
+      } catch (error) {
+        warn(`prior generation could not be removed (${error.message}); the next update or  npx ruvnet-brain --clean  retries`);
+        priorGeneration = { status: 'PRESERVED_UNCLASSIFIED', path: preservedDir, automaticCleanupEligible: true };
+      }
+    } else {
+      warn(`KEPT the prior generation at ${preservedDir}: ${proof.reason}`);
+      for (const { file, why } of proof.unique.slice(0, 10)) info(c.dim(`  ${file} — ${why}`));
+      priorGeneration = { status: 'PRESERVED_UNIQUE', path: preservedDir, unique: proof.unique, automaticCleanupEligible: false };
+    }
+  }
   ok(`brain unpacked to ${cacheDir}`);
-  return { status: 'ACTIVATED', priorGeneration: hadPrior
-    ? { status: 'PRESERVED_UNCLASSIFIED', path: preservedDir, automaticCleanupEligible: false }
-    : null };
+  return { status: 'ACTIVATED', priorGeneration };
 }
 
 /** Stage and validate a bundle for forge-update's private-overlay recovery rail
@@ -3107,7 +3130,12 @@ async function doctor() {
   const codexTrustBypassed = process.env.RUVNET_CODEX_HOOK_TRUST_MODE === 'bypass';
   const codexWiringFailed = Boolean(cx.host && !cx.wired);
   const codexReadinessFailed = Boolean(codexMcp?.blocking);
-  const failed = (hookResult ? hookResult.exitCode !== 0 : !allGreen)
+  // ADR-0098 positive confirmation. Read-only here (`--clean` enforces). Its footprint lines — exactly one
+  // KB copy, nothing that must not exist, within budget — are part of the verdict; currency lines inform.
+  const confirmation = await printConfirmation();
+  const footprintFailed = confirmation.lines.some((l) => l.state === 'fail' && ['cruft', 'footprint'].includes(l.id))
+    || confirmation.footprint.kbCopies !== 1;
+  const failed = footprintFailed || (hookResult ? hookResult.exitCode !== 0 : !allGreen)
     || !installedIdentity.healthy
     || smoke.grounded !== true
     || groundingUnprovenPersisted
@@ -3700,8 +3728,17 @@ export function openSessionsNotice(hosts, version) {
   return `new ${names} sessions use ${version}; already-open windows keep the old hook definitions until they are reopened`;
 }
 
+/** A moved brain whose disk is unplugged (plugin/scripts/brain-location.mjs state 'unmounted') is never
+ * reinstalled, updated or cleaned beside the dead link (ADR-098): stop with that module's one line. */
+function refuseUnmountedBrain() {
+  const roots = footprintRoots();
+  if (!roots.dangling) return;
+  die(roots.location.message, 'Nothing was installed, updated or removed.');
+}
+
 async function runUpdate() {
   printBanner('update');
+  refuseUnmountedBrain();
   const kbDir = resolvedKbDir();
   const brainHome = process.env.RUVNET_BRAIN_HOME || path.dirname(kbDir);
   if (FLAG_HOST_SYNC_ONLY) {
@@ -3817,6 +3854,12 @@ async function runUpdate() {
   } catch (error) {
     warn(`could not place the trusted coverage validator (${error.message}); the updater will report what it finds`);
   }
+  // ADR-0098: release every KB copy that is PROVEN disposable before the updater looks. Its preflight
+  // refuses ("unresolved rollback state exists") while a full copy it cannot account for sits beside the
+  // live KB, and its own redundancy proof can never account for an older generation — measured
+  // 2026-10-01: three copies (3.6 GB) kept every later update from running at all. This runs under the
+  // refresh lock this process already holds; private-unique copies stay and are named.
+  enforceFootprint({ holdingRefreshLock: true, quiet: true });
   info(c.dim("running the bundle's own self-updater (backs up first, re-verifies, never half-applies)…\n"));
   // Relative filename + matching cwd — same launch convention as smokeQuery(); stdio:'inherit'
   // streams the updater's narration live and unedited.
@@ -3917,6 +3960,15 @@ async function runUpdate() {
     return;
   }
   if (cleanupPending) updateStatus = 0;
+  // The updater refuses unsigned or mis-signed bundles (exit 3/4), so an applied result names bytes whose
+  // signature verified. Record it bound to the live COVERAGE.json (ADR-0098 positive confirmation).
+  if (updaterResult?.terminalVerdict === 'applied' && updaterResult.bundleSha256) {
+    try {
+      const corpusTag = JSON.parse(fs.readFileSync(path.join(kbDir, 'SOURCE.json'), 'utf8')).corpusReleaseTag || null;
+      writeSignatureRecord({ brainHome: footprintRoots().brainHome, kbDir, bundleSha256: updaterResult.bundleSha256,
+        releaseTag: corpusTag, source: 'update', now: footprintNow() });
+    } catch (error) { warn(`signature verification could not be recorded (${error.message})`); }
+  }
   let phaseEvidence = updaterResult?.phaseEvidence || null;
   if (!phaseEvidence) {
     const installed = validateCoverageDirectory(kbDir, { expectedVersion: PACKAGE_VERSION });
@@ -4004,12 +4056,24 @@ async function runUpdate() {
     execution: { kind: 'executed', runId: refreshReceipt.runId },
     required: cleanupFailed || updateStatus === 0,
   });
+  // ADR-0098: after the swap, enforce the footprint (the updater just released its own rollback; this
+  // releases everything else that must not exist) and record the result on the receipt as an advisory —
+  // a footprint problem is reported, it never fails an otherwise-good update.
+  const footprint = enforceFootprint({ holdingRefreshLock: true });
+  try {
+    const after = footprint?.after;
+    recordRefreshAdvisory(refreshReceipt, 'footprint', after && after.kbCopies === 1 && !after.cruft.length && after.withinBudget ? 'PASS' : 'FAIL', {
+      kbCopies: after?.kbCopies ?? null, cruft: after?.cruft.length ?? null, totalBytes: after?.totalBytes ?? null,
+      budgetBytes: after?.budgetBytes ?? null, removed: footprint?.removed.length ?? 0, freedBytes: footprint?.freedBytes ?? 0,
+    });
+  } catch { /* the advisory never blocks settlement */ }
   settleRefresh(cleanupPending ? 12 : (retentionFailed ? 1 : updateStatus), {
     phase: cleanupFailed ? 'cleanup' : (updateStatus === 0 ? 'complete' : 'failed'),
     terminalVerdict: cleanupPending ? 'cleanup-pending' : retentionFailed ? 'recovery-required'
       : (outcome.verdict === 'noop' ? 'noop' : 'applied'),
     storageDelta: updaterResult?.storageDelta || null, lifecycleRetention: retention });
   process.removeListener('exit', exitGuard);
+  await printConfirmation({ footprint: footprint?.after || null });
 }
 
 function enableNightly() {
@@ -4186,6 +4250,61 @@ const upgradeNoticeStatePath = () =>
 // they want none of this on their machine.
 const brainOffSentinelPath = () =>
   path.join(process.env.RUVNET_BRAIN_STATE_DIR || path.join(os.homedir(), '.config', 'ruvnet-brain'), 'brain-off');
+
+// ── ADR-0098: THE FOOTPRINT GUARANTEE — one KB, current, in use, nothing building up ─────────────
+// The classifier and sweep live in plugin/scripts/brain-footprint.mjs (shared with SessionStart's
+// detached sweep); this file supplies the two collectors only it may run: the lease-aware plugin
+// generation collector and the lifecycle-evidence pruner. Test seams (RUVNET_BRAIN_TEST=1 only):
+// RUVNET_BRAIN_TEST_NPM_LATEST pins the registry answer, RUVNET_BRAIN_TEST_NOW the clock.
+const footprintNow = () => (process.env.RUVNET_BRAIN_TEST === '1' && Date.parse(process.env.RUVNET_BRAIN_TEST_NOW || ''))
+  || Date.now();
+async function npmLatestVersion() {
+  if (process.env.RUVNET_BRAIN_TEST === '1' && process.env.RUVNET_BRAIN_TEST_NPM_LATEST) {
+    return { version: process.env.RUVNET_BRAIN_TEST_NPM_LATEST, checkedAt: footprintNow(), source: 'test registry seam' };
+  }
+  try {
+    const response = await fetch('https://registry.npmjs.org/ruvnet-brain/latest', { signal: AbortSignal.timeout(3_000) });
+    const metadata = response.ok ? await response.json() : null;
+    return typeof metadata?.version === 'string' ? { version: metadata.version, checkedAt: Date.now(), source: 'npm registry, live' } : null;
+  } catch { return null; }
+}
+function footprintEvidence() {
+  const { brainHome, kbDir } = footprintRoots();
+  try { return assessLifecycleEvidence({ brainHome, kbDir }); } catch { return null; }
+}
+
+/** Enforce the footprint now: remove what must not exist (proof-gated), rotate over-cap logs, collect
+ * lease-free plugin generations. Narrates every removal and every refusal; never throws. */
+export function enforceFootprint({ holdingRefreshLock = false, pruneEvidence = false, quiet = false } = {}) {
+  let result;
+  try {
+    result = sweepFootprint({ apply: true, holdingRefreshLock, now: footprintNow(), evidence: footprintEvidence(),
+      collectPluginGenerations: ({ registryPath, apply }) => prunePluginGenerations({ registryPath, apply }),
+      pruneEvidence: pruneEvidence ? (args) => pruneLifecycleEvidence(args) : null });
+  } catch (error) {
+    warn(`footprint sweep could not run (${error.message}); nothing was removed`);
+    return null;
+  }
+  if (result.removed.length) ok(`footprint: removed ${result.removed.length} item(s) that must not exist, freed ${formatBytes(result.freedBytes)}`);
+  for (const r of quiet ? [] : result.removed) info(c.dim(`  removed ${r.path.replace(os.homedir(), '~')} — ${r.reason}`));
+  if (result.rotated.length) ok(`footprint: rotated ${result.rotated.length} log(s) past their size cap`);
+  if (result.plugins?.removed?.length) ok(`footprint: collected plugin generation(s) ${result.plugins.removed.join(', ')}`);
+  for (const k of result.kept.filter((item) => /^KEPT/.test(item.reason) || item.unique)) {
+    warn(`footprint: ${k.path.replace(os.homedir(), '~')} ${k.reason}`);
+    for (const { file, why } of (k.unique || []).slice(0, 5)) info(c.dim(`  ${file} — ${why}`));
+  }
+  return result;
+}
+
+/** Print (or emit as JSON) the positive-confirmation block for the machine as it is right now. */
+async function printConfirmation({ footprint = null, json = false } = {}) {
+  const now = footprintNow();
+  const fp = footprint || sweepFootprint({ apply: false, now, evidence: footprintEvidence() }).before;
+  const result = confirm({ footprint: fp, npmLatest: await npmLatestVersion(), installedVersion: PACKAGE_VERSION, now });
+  if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  else console.log(`\n${formatConfirmation(result, { color: c })}`);
+  return result;
+}
 
 /**
  * Everything this installer can leave on a machine, DERIVED from disk — never asserted.
@@ -5571,7 +5690,11 @@ nothing; re-run later, or pick a release yourself with  --version <tag>.
 Usage:
   npx ruvnet-brain                         Install the brain + Claude Code plugin (recommended, npm)
   npx github:stuinfla/ruvnet-brain         Same, but from the bleeding-edge GitHub commit
-  npx ruvnet-brain --doctor   Health-check an existing install (green/red per part).
+  npx ruvnet-brain --doctor   Health-check an existing install (green/red per part), ending with the
+                              positive confirmation: latest software, ONE current signed KB in use,
+                              footprint within budget, no cruft. --doctor --json prints only that, as JSON.
+  npx ruvnet-brain --clean    Remove everything that must not exist (old KB copies — never one holding
+                              private files the live brain lacks — old installers, over-cap logs), then confirm.
                               EXITS NON-ZERO when the install is genuinely broken, so it can gate a
                               script:  npx ruvnet-brain --doctor && ./deploy.sh
   npx ruvnet-brain --doctor --hooks
@@ -5667,7 +5790,19 @@ the installer reports that boot-level declarations changed.
   // `process.exitCode`, not `return` — doctor()'s verdict is the whole point of running it in a
   // script. A bare `return await doctor()` discarded the number, which is how "! Needs attention"
   // and `echo $?` → 0 coexisted for so long.
+  // `--doctor --json`: the positive-confirmation object ONLY (no narration), exit 0 iff every line that
+  // can be proven here is green — for scripts, CI, and agents (ADR-0098).
+  if (FLAG_DOCTOR && FLAG_JSON) { process.exitCode = (await printConfirmation({ json: true })).ok ? 0 : 1; return; }
   if (FLAG_DOCTOR) { process.exitCode = await doctor(); return; }
+  // `--clean`: enforce the footprint guarantee now, then confirm. Exit 0 only when exactly one KB copy
+  // remains and nothing that must not exist is left (a private-unique copy kept for safety is a 1).
+  if (FLAG_CLEAN) {
+    if (!FLAG_JSON) printBanner('clean');
+    const swept = enforceFootprint({ pruneEvidence: true, quiet: FLAG_JSON });
+    const result = await printConfirmation({ footprint: swept?.after || null, json: FLAG_JSON });
+    process.exitCode = swept && result.footprint.kbCopies === 1 && result.footprint.cruft.length === 0 ? 0 : 1;
+    return;
+  }
   if (FLAG_DEMO) return runDemo();
   if (FLAG_FEEDBACK) return runFeedback();
   if (FLAG_UPDATE) return runUpdate();
@@ -5705,6 +5840,7 @@ the installer reports that boot-level declarations changed.
   }
 
   await printPlanAndConfirm();
+  refuseUnmountedBrain();
 
   const { cacheDir, isCustom } = resolveCacheDir();
 
@@ -5810,6 +5946,7 @@ the installer reports that boot-level declarations changed.
     // fired, because no signature was ever obtained. Now a missing signature fails closed like an
     // invalid one, and --no-verify remains the single explicit, user-chosen override.
     const SIGNING_REQUIRED = true;
+    let signedBundleSha256 = null; // set only when THIS run verified the bundle's Ed25519 signature
     if (downloaded && !FLAG_NO_VERIFY) {
       const sigPath = `${zipPath}.sig`;
       const hasSig = fs.existsSync(sigPath);
@@ -5826,6 +5963,7 @@ the installer reports that boot-level declarations changed.
               `Refusing to extract an unverified bundle. Re-run to fetch a fresh copy; if it persists, the\nrelease may be tampered — report it. (Override at your own risk with ${c.bold('--no-verify')}.)`);
         }
         ok(reason);
+        signedBundleSha256 = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
       }
     }
     // The tag is only carried when it came from a genuine `latest` resolution — a pinned/offline
@@ -5834,6 +5972,12 @@ the installer reports that boot-level declarations changed.
     await unzipInto(zipPath, cacheDir, sourceDir, {
       releaseTag: release && release.source === 'latest' ? (release.tag_name || release.tag || null) : null,
     });
+    if (signedBundleSha256) {
+      try {
+        writeSignatureRecord({ brainHome: footprintRoots().brainHome, kbDir: cacheDir, bundleSha256: signedBundleSha256,
+          releaseTag: release?.tag_name || release?.tag || null, source: 'install', now: footprintNow() });
+      } catch (error) { warn(`signature verification could not be recorded (${error.message})`); }
+    }
     const brainProfile = readBrainProfile();
     if (brainProfile !== 'complete') {
       const scoped = applyBrainProfile(cacheDir, brainProfile);
@@ -5914,6 +6058,11 @@ the installer reports that boot-level declarations changed.
   // out what we did — which is precisely the position the 2026-07-20 corporate-machine reporter was
   // left in. Derived from disk, so it can only ever describe what is actually there.
   try { printFootprint(); } catch { /* a summary must never break a finished install */ }
+  // ADR-0098: enforce the footprint the install just produced, then prove it in one block.
+  try {
+    const swept = enforceFootprint({ pruneEvidence: true, quiet: true });
+    await printConfirmation({ footprint: swept?.after || null });
+  } catch (error) { warn(`positive confirmation could not run (${error.message})`); }
 
   // ── SCOPE + UPGRADE, on the path a real user actually takes ─────────────────────────────────
   //
