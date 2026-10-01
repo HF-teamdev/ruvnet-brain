@@ -114,7 +114,10 @@ describe('the installer doctor wiring', () => {
     expect(smoke).toMatch(/const cold = coldModels\(cacheDir, modelCache\);\s*if \(cold\.length\) \{/);
     expect(smoke.indexOf('MODEL_WARMUP_SCRIPT')).toBeGreaterThan(smoke.indexOf('if (cold.length)'));
     expect(smoke.indexOf('MODEL_WARMUP_SCRIPT')).toBeLessThan(smoke.indexOf('doctorSmokeArgs(cacheDir)'));
-    expect(smoke).toContain("reason: `model-warmup-failed: ${why}`");
+    // A warm-up that ran out of time is named as a timeout (advisory); any other failure stays a failure;
+    // missing reader modules are named before any warm-up is attempted (behaviour: install-smoke.mjs).
+    expect(smoke).toContain("reason: `model-warmup-${timedOut ? 'timeout' : 'failed'}: ${why}`");
+    expect(smoke.indexOf('reader-incomplete')).toBeLessThan(smoke.indexOf('MODEL_WARMUP_SCRIPT'));
   });
 
   it('classifies a failed question and marks the slow case for its own advice', () => {
