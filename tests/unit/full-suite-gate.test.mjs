@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { evaluateFullSuite, globToRegExp, listTestFiles } from '../../scripts/full-suite-gate.mjs';
+import { evaluateFullSuite, globToRegExp, listTestFiles, redFiles } from '../../scripts/full-suite-gate.mjs';
 import config from '../../vitest.config.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -35,6 +35,19 @@ describe('full-suite gate', () => {
     const quarantine = { tests: [entry(files[1], 'b works')], excludedFiles: [] };
     expect(run(report, quarantine)).toMatchObject({ verdict: 'PASS', counts: { quarantinedRed: 1 } });
     expect(run(green(), quarantine).problems).toEqual([`stale quarantine (now passes, remove it): ${files[1]} :: b works`]);
+  });
+
+  it('a red that passes its one isolated retry is FLAKY (listed, not blocking); red in both runs stays RED', () => {
+    const report = green();
+    report.testResults[1] = result(files[1], [['b works', 'failed']]);
+    expect(redFiles(report, { tests: [] }, ROOT)).toEqual([files[1]]);
+    const passedAlone = { testResults: [result(files[1], [['b works', 'passed']])] };
+    expect(evaluateFullSuite({ report, quarantine: { tests: [] }, files, include, root: ROOT, retry: passedAlone }))
+      .toMatchObject({ verdict: 'PASS', flaky: [`${files[1]} :: b works`] });
+    const redAgain = { testResults: [result(files[1], [['b works', 'failed']])] };
+    expect(evaluateFullSuite({ report, quarantine: { tests: [] }, files, include, root: ROOT, retry: redAgain }).verdict).toBe('FAIL');
+    // A retry that did not run the test at all cannot launder it.
+    expect(evaluateFullSuite({ report, quarantine: { tests: [] }, files, include, root: ROOT, retry: { testResults: [] } }).verdict).toBe('FAIL');
   });
 
   it('rejects a quarantine entry without class, reason and owner', () => {

@@ -35,9 +35,23 @@ export function globToRegExp(glob) {
   return new RegExp(`^${body}$`);
 }
 
-export function evaluateFullSuite({ report, quarantine, files, include, root = ROOT }) {
+/** Unquarantined failing test files in a report — the only files the single isolated retry reruns. */
+export function redFiles(report, quarantine, root = ROOT) {
+  const rel = (name) => path.relative(root, name).split(path.sep).join('/');
+  const known = new Set((quarantine.tests || []).map((entry) => key(entry.file, entry.test)));
+  return [...new Set((report?.testResults || []).filter((file) => (file.assertionResults || [])
+    .some((test) => test.status === 'failed' && !known.has(key(rel(file.name), test.fullName)))).map((file) => rel(file.name)))];
+}
+
+export function evaluateFullSuite({ report, quarantine, files, include, root = ROOT, retry = null }) {
   const problems = [];
   const rel = (name) => path.relative(root, name).split(path.sep).join('/');
+  // One isolated retry of the red files: a test red in the full run but green alone is FLAKY (listed in
+  // the verdict, never hidden). Measured 2026-10-01: four budget/latency tests went red in a full run at
+  // load ~100-150 and passed alone. A test red in BOTH runs, or absent from the retry, stays RED.
+  const retried = new Map();
+  for (const file of retry?.testResults || []) for (const test of file.assertionResults || []) retried.set(key(rel(file.name), test.fullName), test.status);
+  const flaky = [];
   const tests = quarantine.tests || [];
   const known = new Map(tests.map((entry) => [key(entry.file, entry.test), entry]));
   if (known.size !== tests.length) problems.push('tests/known-red.json lists a test twice');
@@ -70,30 +84,40 @@ export function evaluateFullSuite({ report, quarantine, files, include, root = R
       } else if (test.status === 'failed') {
         counts.failed += 1;
         if (entry) counts.quarantinedRed += 1;
+        else if (retried.get(id) === 'passed') flaky.push(id);
         else problems.push(`RED: ${id}: ${String((test.failureMessages || [''])[0]).split('\n')[0].slice(0, 240)}`);
       } else if (test.status === 'todo') counts.todo += 1;
       else counts.skipped += 1;
     }
   }
   const unobserved = [...known.keys()].filter((id) => !seen.has(id));
-  return { verdict: problems.length ? 'FAIL' : 'PASS', problems, counts, unobserved };
+  return { verdict: problems.length ? 'FAIL' : 'PASS', problems, counts, flaky, unobserved };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const value = (flag) => { const i = args.indexOf(flag); return i < 0 ? null : args[i + 1]; };
   const out = value('--report') || path.join(os.tmpdir(), `full-suite-${process.pid}.json`);
-  if (!value('--from-report')) {
-    const run = spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', '--reporter=json',
-      `--outputFile.json=${out}`], { cwd: ROOT, stdio: 'inherit', env: { ...process.env, RUVNET_TURN_CAPTURE: 'off' } });
+  const vitest = (files, file) => {
+    const run = spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', ...files, '--reporter=dot', '--reporter=json',
+      `--outputFile.json=${file}`], { cwd: ROOT, stdio: 'inherit', env: { ...process.env, RUVNET_TURN_CAPTURE: 'off' } });
     if (run.error) { console.error(run.error.message); process.exit(1); }
-  }
+  };
+  if (!value('--from-report')) vitest([], out);
   // --root judges a report produced in another checkout of the same tree (its paths, its file list).
   const root = path.resolve(value('--root') || ROOT);
   const report = JSON.parse(fs.readFileSync(value('--from-report') || out, 'utf8'));
   const quarantine = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/known-red.json'), 'utf8'));
   const { default: config } = await import(path.join(ROOT, 'vitest.config.mjs'));
-  const result = evaluateFullSuite({ report, quarantine, files: listTestFiles(root), include: config.test.include, root });
+  let retry = value('--retry-report') ? JSON.parse(fs.readFileSync(value('--retry-report'), 'utf8')) : null;
+  const reds = redFiles(report, quarantine, root);
+  if (reds.length && !value('--from-report')) {
+    const retryOut = `${out}.retry.json`;
+    console.log(`retrying ${reds.length} red file(s) once, in isolation: ${reds.join(' ')}`);
+    vitest(reds, retryOut);
+    retry = JSON.parse(fs.readFileSync(retryOut, 'utf8'));
+  }
+  const result = evaluateFullSuite({ report, quarantine, files: listTestFiles(root), include: config.test.include, root, retry });
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.verdict === 'PASS' ? 0 : 1;
 }
