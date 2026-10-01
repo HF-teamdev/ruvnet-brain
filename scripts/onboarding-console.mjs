@@ -2870,6 +2870,10 @@ function undo(undoToken) {
   if (!fs.existsSync(UNDO_JOURNAL)) return { ok: false, log: 'no undo history' };
   const journal = readUndoJournal();
   const entry = journal.find((e) => e.token === undoToken);
+  // "Saved again after this point" is decided by POSITION in the append-only journal, never by the `at`
+  // stamp: it has millisecond resolution and two saves do land in the same millisecond (a Linux runner,
+  // 2026-10-01), which made the later save invisible and let a stale undo wipe it.
+  const savedLater = (kind) => journal.slice(journal.indexOf(entry) + 1).some((e) => e.kind === kind && e.token && e.token !== undoToken);
   if (!entry) return { ok: false, log: 'that undo token was not found' };
 
   // ONE UNDO, ONCE. The token was never consumed, so the same button replayed forever: clicking it
@@ -2890,7 +2894,7 @@ function undo(undoToken) {
     // An undo can only speak for the last write. If something was written after it, the honest answer
     // is to refuse and say so — restoring anyway would be destroying newer data while claiming to
     // protect older data.
-    const laterSave = journal.some((e) => e.kind === 'restore-config' && e.at > entry.at && e.token !== undoToken);
+    const laterSave = savedLater('restore-config');
     if (laterSave) {
       return { ok: false, log: 'your settings were saved again after this point, so this undo would wipe out that newer save — nothing was changed. Use the undo from the most recent save, or restore a backup by hand.' };
     }
@@ -2933,7 +2937,7 @@ function undo(undoToken) {
   if (entry.kind === 'restore-user-settings') {
     // Same "an undo speaks only for the last write" rule as restore-config: a later save through this
     // form would be wiped out by restoring an older backup.
-    const laterSave = journal.some((e) => e.kind === 'restore-user-settings' && e.at > entry.at && e.token !== undoToken);
+    const laterSave = savedLater('restore-user-settings');
     if (laterSave) {
       return { ok: false, log: 'your settings were saved again after this point, so this undo would wipe out that newer save — nothing was changed. Use the undo from the most recent save.' };
     }
