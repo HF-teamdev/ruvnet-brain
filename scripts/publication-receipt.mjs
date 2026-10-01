@@ -54,6 +54,9 @@ export async function runMeasuredHostSearches(hosts, search, { warmup, after } =
 // 45s (run 36877770786: all three started within 0.25s) while the same probe alone is far inside
 // its deadline. A customer runs one doctor, so the concurrency was the harness's, not the product's.
 // Every host still runs, so one slow lane cannot hide another's result; the failure names them all.
+// And this settles only after the LAST doctor exits: under Promise.all the first exit 1 rejected the
+// lane, whose finally deleted the install temp while the third doctor was still reading it — the
+// "bundle predates the citation verifier" and six plugin-manifest ENOENT lines in that same run.
 export async function runHostDoctors(hosts, doctor) {
   const failures = [];
   for (const host of hosts) {

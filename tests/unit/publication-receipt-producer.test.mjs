@@ -197,6 +197,27 @@ describe('publication receipt producer', () => {
     expect(ran).toEqual(['claudeOnly', 'codexOnly', 'dual']);
   });
 
+  it('teardown cannot delete the install while a later doctor is still reading it', async () => {
+    // 4.4.1 run 36877770786: Promise.all rejected on the first doctor's exit 1, the lane's finally
+    // ran adapter.dispose() (rmSync of the install temp), and the third doctor — still running —
+    // reported verify-citation.mjs and six plugin manifests missing under the deleted package.
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-teardown-'));
+    const manifest = path.join(temp, 'package', 'plugin', 'host-adapters', 'claude.json');
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, '{}');
+    const seen = [];
+    const hosts = [{ mode: 'claudeOnly' }, { mode: 'codexOnly' }, { mode: 'dual' }];
+    try {
+      await runHostDoctors(hosts, async (host) => {
+        if (host.mode === 'claudeOnly') throw new Error('doctor exit 1');
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        seen.push(`${host.mode}:${fs.existsSync(manifest) ? 'present' : 'ENOENT'}`);
+      });
+    } catch { /* the lane rejects; what matters is what the later doctors saw first */ }
+    finally { fs.rmSync(temp, { recursive: true, force: true }); }
+    expect(seen).toEqual(['codexOnly:present', 'dual:present']);
+  });
+
   it('the producer runs its doctors through the serial runner, not Promise.all', () => {
     const producer = fs.readFileSync(new URL('../../scripts/publication-receipt.mjs', import.meta.url), 'utf8');
     expect(producer).toMatch(/await runHostDoctors\(hostResults, async \(\{ context, installer \}\) => \{\s*await commandAsync\(process\.execPath, \[installer, '--doctor', '--hooks'\]/);
