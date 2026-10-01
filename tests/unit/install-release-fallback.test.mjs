@@ -41,8 +41,36 @@ describe('install.mjs RELEASE_VERSION — the offline safety net', () => {
     expect(releaseVersion()).not.toBe(`v${PKG_VERSION}`);
   });
 
-  it('is used for --pin and for the GitHub-unreachable fallback, via fallbackUrl()', () => {
+  it('is used for --pin, via fallbackUrl()', () => {
     expect(SRC).toMatch(/fallbackUrl\(RELEASE_VERSION\)/);
     expect(SRC).toMatch(/const fallbackUrl = \(tag\) =>/);
+  });
+
+  it('is NOT a silent fallback for a failed lookup: that bundle predates COVERAGE.json and failed two steps later', () => {
+    const resolve = SRC.slice(SRC.indexOf('async function resolveRelease()'), SRC.indexOf('export function releaseLookupFailure'));
+    const failurePath = resolve.slice(resolve.indexOf('} catch (e) {')).split('\n')
+      .filter((line) => !line.trim().startsWith('//')).join('\n');
+    expect(failurePath).not.toMatch(/RELEASE_VERSION|safe and complete/);
+    expect(failurePath).toMatch(/throw /);
+  });
+});
+
+process.env.RUVNET_BRAIN_IMPORT_ONLY = '1';
+const { releaseLookupFailure } = await import('../../bin/install.mjs');
+
+describe('releaseLookupFailure — the failed lookup says what happened and what to do', () => {
+  it('keeps the HTTP status and the reset time, and explains the anonymous rate limit', () => {
+    const failure = releaseLookupFailure(new Error('GitHub API returned HTTP 403 (anonymous rate limit used up; it resets at 2026-09-30T23:59:00.000Z)'));
+    expect(failure.message).toMatch(/HTTP 403/);
+    expect(failure.message).toMatch(/2026-09-30T23:59:00\.000Z/);
+    expect(failure.hint).toMatch(/anonymous release checks per hour/);
+    expect(failure.hint).toMatch(/--version <tag>/);
+  });
+
+  it('keeps a network error verbatim and gives a connection hint, never a rate-limit one', () => {
+    const failure = releaseLookupFailure(new Error('getaddrinfo ENOTFOUND api.github.com'));
+    expect(failure.message).toMatch(/ENOTFOUND api\.github\.com/);
+    expect(failure.hint).toMatch(/Check your connection/);
+    expect(failure.hint).not.toMatch(/per hour/);
   });
 });
