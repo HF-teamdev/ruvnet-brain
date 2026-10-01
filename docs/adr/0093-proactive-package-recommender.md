@@ -31,20 +31,35 @@ Revision 2 (same day, below) adds the warm semantic lane; rev 1's lexical lane i
    `data/registry.tiers.json` (496 cards; a pre-existing repo rule, not chosen against the eval) with
    the corpus's own bge-base passage config, twice when the package directory has a README (manifest
    line = what it is; README excerpt = what it is for). `package-cards.rvf.meta.json` binds the vectors
-   to the exact card bytes (sha256); a mismatched pair is refused, never mis-mapped.
+   to the exact card bytes AND the exact `.rvf` bytes (sha256 each); a mismatch is refused before the
+   native reader opens anything, never mis-mapped.
 2. **Endpoint.** `kb/recommend-endpoint.mjs`, started by the worker's `brain/warmup` ONLY when
    `RUVNET_PACKAGE_RECOMMENDER` is on. Unix socket (named pipe on Windows) in a 0700 `run/` dir under the
    Brain cache, a 0600 descriptor with a random token every request must carry, 8 KiB request cap, k ≤ 10.
-   Dead workers' descriptors are swept; SIGTERM cleans up.
+   Dead workers' descriptors are swept; SIGTERM cleans up. The worker opens only a directory that looks
+   like the plugin's card snapshot, holds one index at a time, never caches a failed open, and compares
+   the token in constant time. Endpoint traffic does NOT reset the worker's idle-exit clock (#122): when
+   the worker retires (15 min without a search, or the shell's 30-min idle kill) the hook falls back to
+   the lexical lane. The hook trusts a descriptor only when `run/` and the file are private to the user,
+   the schema and pid match, the pid is ours and alive, and the socket lies inside `run/` (POSIX; on
+   Windows the per-process token is the only guard).
 3. **The hook does not pick; the model does.** On a design/diagnosis prompt the catalogue did not
-   match, the hook asks the warm worker (250 ms budget) for the 4 nearest cards and injects them with
+   match, the hook asks the warm worker (250 ms budget, counted from the hook's own start, env override
+   clamped to 1 s) for the 4 nearest cards and, if the nearest clears cosine **0.532** (the 5th percentile
+   of top-1 similarity among correct self-set hits — chosen on the self set only), injects them with
    one instruction: mention at most ONE, only if it materially fits, else say nothing. Measured below:
    the embedding finds candidates (blind recall@4 well above recall@1) and the model judges fit far
    better than any similarity threshold did.
 4. **Cold fallback.** No live endpoint, a refused connection, or no answer inside the budget → rev 1's
    lexical lane (fast, 0 blind false firings) or silence. Never slower than the budget.
-5. **Session policy.** A candidate set may be injected up to 3 times per session; a package offered or
-   dismissed is dropped from later sets; "use <any offered name>" / "no <name>" resolve the offer.
+5. **Session policy.** ONE candidate set per session until a real host run shows the model stays quiet
+   on negatives. A package offered or dismissed is dropped from later sets. A set resolves only when the
+   user names a full package id or a distinctive short name — never on a bare "ok"/"no", never on a
+   common word (`memory`, `router`, `server`…). The ledger row is the set's top id: APPLIED means the
+   user took one of the set.
+7. **Default-off costs nothing.** With the flag off the route does not import the matcher, the card
+   reader or the socket client (they are dynamically imported only when the flag is on), reads no
+   state file for a prompt no lane wants, and the worker starts no endpoint.
 6. **Freshness.** Cards and their RVF ship as a snapshot. `node scripts/package-cards.mjs --check`
    detects drift against an installed corpus; `--max-age-days 14` fails a stale snapshot at release.
 
@@ -70,6 +85,12 @@ injected hint decided what it would say; `scripts/recommendation-judge-score.mjs
 | Blind-1 | 14/24 = 58.3% [38.8–75.5] | 14/16 = 87.5% | 0/16 | 2 |
 | Blind-2 | 13/28 = 46.4% [29.5–64.2] | 13/15 = 86.7% | 0/20 | 2 |
 | Self (tuning set) | 34/47 = 72.3% | 34/34 = 100% | 0/26 | 0 |
+| **Blinds 1+2 with the shipped 0.532 floor** | **22/52 = 42.3% [29.9–55.8]** | **22/25 = 88.0% [70.0–95.8]** | **0/36** | 3 |
+
+The floor row applies the frozen floor to the same judged run (a prompt whose nearest card is below
+the floor gets no hint, so the judge's pick for it is void): it cuts hints injected on blind NEGATIVE
+prompts from 16/36 [29.5–60.4%] to 4/36 [4.4–25.3%] — less context noise on prompts that need nothing —
+at a cost of 5 correct recommendations. `semantic-quality/similarity-floor-0.532.txt`.
 
 Of the 4 blind "wrong packages", 3 name the same product as an accepted id under a different package
 (`@ruvnet/ruview` for a RuView presence need labelled with two RuView crates; `@claude-flow/cli` for a
@@ -78,17 +99,33 @@ swarm need labelled `ruflo`/`claude-flow`; `aidefence-core` for a prompt-leak ne
 the headline; the labels were not changed.
 
 **Added prompt latency** (paired cold hook runs, flag off vs on, warm worker, default 250 ms budget,
-161 prompts; `evals/runs/2026-10-01-recommender-4.6/semantic-latency/`): see the run files — every
-run records its load average because this machine carried 45–180 load during the day.
+161 prompts each; `semantic-latency/`). The machine never held load < 60 for a whole run (other agents):
+
+| Run | Load (1-min) | Added p50 | Added p90 | Added max | Semantic answers inside budget |
+|---|---|---|---|---|---|
+| 1 | 153 at end | 72.3 ms | 255.5 ms | 1,027 ms | 102 of 111 (9 fell back) |
+| 2 | < 60 at start, 192 at end | 58.3 ms | 243.1 ms | 2,642 ms | 103 of 111 |
+
+p90 ≤ 300 ms held in both. The max is a scheduler stall at load ~190 (flag-off runs stalled too: flag-off
+p90 519 ms in run 2), not the socket wait, which the budget bounds. These runs predate the fixes that start
+the budget at the hook's own start and stop loading the matcher when the flag is off; they were not re-run.
 
 ### Verdict against the bar (recall ≥ 50%, false firing ≤ 5%, precision ≥ 90%, added p90 ≤ 300 ms)
 
-- False firing: **met** (0/36, upper bound 9.6%).
-- Recall: **met on the pooled blinds at the point estimate (51.9%)**, not on blind-2 alone (46.4%);
-  the interval spans 38.7–64.9, so "≥ 50%" is not established.
-- Precision: **not met strictly** (87.1%); met only under the same-product adjudication above.
-- Latency: see the run files; the budget makes the lane silent rather than slow by construction.
-- The judge is a model standing in for the host; a real host session was not run.
+- False firing (what the model SAID on negatives): **met** — 0/36 with or without the floor.
+- Recall ≥ 50%: **met only without the floor** (51.9% pooled point estimate; blind-2 alone 46.4%; the
+  interval 38.7–64.9 does not establish it). **With the shipped floor: 42.3% — not met.**
+- Precision ≥ 90%: **not met strictly** (87.1% / 88.0%); met only under the same-product adjudication.
+- Added p90 ≤ 300 ms: **met** in both runs (243–256 ms), at load far above 60.
+- The judge is an Opus agent standing in for the host; no real Claude Code or Codex session was run.
+- Adversarial Opus review of the full diff (2026-10-01): two High (no similarity floor; candidate sets
+  corrupting the ledger) and four Medium findings — all fixed above, each with a red/green test.
+
+**Recommendation: keep the flag default OFF for 4.5.0; offer it as an opt-in.** The bar is not met
+strictly. Defaulting on needs (1) one real-host run of the blind sets, (2) a product-family map so
+`aidefence-core`/`@claude-flow/aidefence` or `@claude-flow/cli`/`claude-flow` count as one product, which
+would lift precision past 90% on these runs, and (3) agenticow promoted into T0/T1 in
+`data/registry.tiers.json` (two blind needs were unreachable because it is T2).
 
 ## Owner requirement
 
@@ -216,7 +253,7 @@ generator filter. Four carded packages trail npm (`@ruvector/core` 0.1.17 vs 0.1
 version, never claim "latest". Closing the 16 is a P2 question: card from registry metadata
 (description/keywords, cited to the registry) where the corpus has no manifest.
 
-## Recommendation: do NOT default it on yet
+## Recommendation (rev 1, lexical lane only — superseded by the rev 2 verdict above): do NOT default it on yet
 
 Precision and false firings meet the bar (0 false firings on 16 blind negatives, upper bound 19.4%;
 100% precision on blind firings, n=4–5). Recall does not: **about one in five real needs** on the

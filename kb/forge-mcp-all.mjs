@@ -310,7 +310,9 @@ async function handle(msg) {
       // private local endpoint. ONLY when the recommender flag is an explicit opt-in; default off
       // starts nothing. A failure here never fails warmup — the hook falls back to its lexical lane.
       if (recommenderFlagOn() && !recommendEndpoint) {
-        recommendEndpoint = startRecommendEndpoint({ brainHome: brainHomeFromEnv(), onActivity: () => noteActivity() })
+        // Endpoint traffic does NOT reset the idle-exit clock (#122): typing must not pin a multi-GB
+        // worker resident. When the worker retires, the hook falls back to its lexical lane.
+        recommendEndpoint = startRecommendEndpoint({ brainHome: brainHomeFromEnv() })
           .catch(() => null);
       }
       return ok(id, { ready: true });

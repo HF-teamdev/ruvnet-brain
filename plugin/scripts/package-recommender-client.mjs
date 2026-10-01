@@ -22,20 +22,39 @@ export function brainHomeFromEnv(env = process.env) {
   return path.join(env.HOME || env.USERPROFILE || '', '.cache', 'ruvnet-brain');
 }
 
-const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; }
-};
+// ESRCH = gone. EPERM = a process we may not signal, i.e. NOT ours — never a worker we should trust.
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const SCHEMA = 'ruvnet-brain.recommend-endpoint/1';
+const uid = typeof process.getuid === 'function' ? process.getuid() : null;
 
-/** Live endpoint descriptors, newest first. Stale ones (dead pid) are skipped, never deleted here. */
+/** A file or dir we would trust: owned by this user and not group/world-writable/readable (POSIX). */
+function privateToUser(p) {
+  if (uid === null) return true;   // Windows: no POSIX modes; the per-process token is the guard (ADR-093)
+  try { const st = fs.statSync(p); return st.uid === uid && (st.mode & 0o077) === 0; } catch { return false; }
+}
+
+/**
+ * Live endpoint descriptors, newest first. A descriptor is trusted only when the run/ dir and the file
+ * are private to this user, its schema matches, its pid is alive and ours, and (POSIX) its socket lies
+ * inside run/ — so a planted descriptor cannot route the user's prompt text to someone else's socket
+ * (adversarial review M3). Stale ones are skipped here, swept by the next endpoint.
+ */
 export function liveEndpoints(env = process.env) {
   const dir = path.join(brainHomeFromEnv(env), 'run');
+  if (!privateToUser(dir)) return [];
   let names = [];
   try { names = fs.readdirSync(dir).filter((n) => /^recommend-\d+\.json$/.test(n)); } catch { return []; }
   const out = [];
   for (const n of names) {
     try {
-      const d = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'));
-      if (Number.isInteger(d?.pid) && typeof d.socket === 'string' && typeof d.token === 'string' && alive(d.pid)) out.push(d);
+      const file = path.join(dir, n);
+      if (!privateToUser(file)) continue;
+      const d = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const sockOk = process.platform === 'win32'
+        ? /^\\\\\.\\pipe\\ruvnet-brain-recommend-\d+$/.test(String(d?.socket))
+        : path.dirname(path.resolve(String(d?.socket))) === path.resolve(dir);
+      if (d?.schema === SCHEMA && Number.isInteger(d.pid) && n === `recommend-${d.pid}.json` && sockOk
+        && typeof d.token === 'string' && d.token.length >= 32 && alive(d.pid)) out.push(d);
     } catch { /* torn or foreign file */ }
   }
   return out.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
@@ -90,9 +109,14 @@ export async function askWarmWorker({ prompt, k = 4, cardsDir = CARDS_DIR, budge
  * on, the closed catalogue did not match, and the prompt is design/diagnosis-shaped — so a chore,
  * a status question, or a default-off install never touches a socket.
  */
-export async function semanticFor(prompt, { catalogueMatched = false, env = process.env } = {}) {
+export const MAX_BUDGET_MS = 1000;   // never more than this, whatever the env asks (route's own budget is 1500)
+
+export async function semanticFor(prompt, { catalogueMatched = false, env = process.env, startedAt = Date.now() } = {}) {
   if (!packageRecommenderEnabled(env) || catalogueMatched || !isDesignOrDiagnosis(prompt)) return null;
-  try {
-    return await askWarmWorker({ prompt, budgetMs: Number(env.RUVNET_PACKAGE_RECOMMENDER_BUDGET_MS) || DEFAULT_BUDGET_MS, env });
-  } catch { return null; }
+  // The budget runs from the HOOK PROCESS START the caller passes in, so module load and descriptor
+  // reads count against it too (adversarial review M4); an env override is clamped, never trusted.
+  const asked = Number(env.RUVNET_PACKAGE_RECOMMENDER_BUDGET_MS) || DEFAULT_BUDGET_MS;
+  const budgetMs = Math.min(asked, MAX_BUDGET_MS) - (Date.now() - startedAt);
+  if (budgetMs <= 0) return { candidates: null, reason: 'budget-spent' };
+  try { return await askWarmWorker({ prompt, budgetMs, env }); } catch { return null; }
 }

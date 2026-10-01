@@ -76,7 +76,7 @@ export async function buildCardIndex(dir, { log = () => {}, tiers = DEFAULT_TIER
     log(`[package-cards-index] ${Math.min(i + BATCH, cards.length)}/${cards.length}`);
   }
   await db.close();
-  fs.writeFileSync(`${out}.meta.json`, `${JSON.stringify({ tiers, vectors: accepted, embed: EMBED_CFG, cards: CARDS_JSON, cardsSha256: sha256(raw) })}\n`);
+  fs.writeFileSync(`${out}.meta.json`, `${JSON.stringify({ tiers, vectors: accepted, embed: EMBED_CFG, cards: CARDS_JSON, cardsSha256: sha256(raw), rvfSha256: sha256(fs.readFileSync(out)) })}\n`);
   if (accepted !== expected) throw new Error(`package-cards.rvf holds ${accepted} of ${expected} vectors`);
   return { vectors: accepted, rvf: out };
 }
@@ -95,6 +95,8 @@ export async function openCardIndex(dir) {
   let meta = null;
   try { meta = JSON.parse(fs.readFileSync(`${rvfFile}.meta.json`, 'utf8')); } catch { return null; }
   if (meta?.cardsSha256 !== sha256(raw) || meta?.embed?.model !== EMBED_CFG.model) return null;
+  // A torn or swapped .rvf must never reach the native reader inside the process that serves search.
+  if (meta?.rvfSha256 !== sha256(fs.readFileSync(rvfFile))) return null;
   const cards = JSON.parse(raw.toString('utf8')).cards || [];
   const { RvfDatabase } = loadRvf().mod;
   const db = await RvfDatabase.openReadonly(rvfFile);

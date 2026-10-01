@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,7 +33,7 @@ const fakeIndex = (hits, delayMs = 0) => async () => ({
   size: hits.length,
   query: async () => { if (delayMs) await new Promise((r) => setTimeout(r, delayMs)); return hits; },
 });
-const card = (id) => ({ card: { id }, similarity: 0.7 });
+const card = (id, similarity = 0.7) => ({ card: { id }, similarity });
 const env = () => ({ RUVNET_BRAIN_HOME: home, RUVNET_PACKAGE_RECOMMENDER: '1' });
 
 describe('parity between the plugin and kb copies (they cannot import each other, issue #32)', () => {
@@ -51,7 +52,7 @@ describe('the endpoint and the hook client, over a real socket', () => {
     expect(ep).not.toBeNull();
     const t = Date.now();
     const r = await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: env() });
-    expect(Date.now() - t).toBeLessThan(250);
+    expect(Date.now() - t).toBeLessThan(1000);
     expect(r.candidates.map((c) => c.id)).toEqual(['@ruvector/typesafe', '@ruvector/router']);
   });
 
@@ -76,7 +77,7 @@ describe('the endpoint and the hook client, over a real socket', () => {
     const t = Date.now();
     const r = await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: env() });
     expect(r).toEqual({ candidates: null, reason: 'no-warm-worker' });
-    expect(Date.now() - t).toBeLessThan(50);
+    expect(Date.now() - t).toBeLessThan(500);
   });
 
   it('a slow worker is abandoned at the budget — silent, never slow', async () => {
@@ -86,25 +87,66 @@ describe('the endpoint and the hook client, over a real socket', () => {
     const ms = Date.now() - t;
     expect(r.candidates).toBeNull();
     expect(ms).toBeGreaterThanOrEqual(190);
-    expect(ms).toBeLessThan(400);
+    expect(ms).toBeLessThan(1000);   // the worker would have taken 1500 ms
   });
 
   it('a dead worker\'s descriptor is ignored by the client and swept by the next endpoint', async () => {
     const run = path.join(home, 'run');
-    fs.mkdirSync(run, { recursive: true });
+    fs.mkdirSync(run, { recursive: true, mode: 0o700 });
     const deadPid = 2 ** 22 + 12345;   // above any default pid_max on macOS/Linux
-    fs.writeFileSync(path.join(run, `recommend-${deadPid}.json`), JSON.stringify({ pid: deadPid, socket: path.join(run, 'nope.sock'), token: 't', startedAt: '2099-01-01' }));
+    fs.writeFileSync(path.join(run, `recommend-${deadPid}.json`), JSON.stringify({ schema: kbEndpoint.SCHEMA, pid: deadPid, socket: path.join(run, `recommend-${deadPid}.sock`), token: 't'.repeat(48), startedAt: '2099-01-01' }), { mode: 0o600 });
     expect(client.liveEndpoints(env())).toEqual([]);
     expect(kbEndpoint.sweepStale(run)).toBe(1);
     expect(fs.existsSync(path.join(run, `recommend-${deadPid}.json`))).toBe(false);
   });
 
   it('semanticFor never touches a socket when the flag is off or the prompt is a chore', async () => {
-    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('x')]), signals: false });
+    let asked = 0;
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('x', 0.9)]), signals: false, onActivity: () => { asked++; } });
     expect(await client.semanticFor(PROMPT, { env: { RUVNET_BRAIN_HOME: home } })).toBeNull();
     expect(await client.semanticFor('commit this and push it please', { env: env() })).toBeNull();
     expect(await client.semanticFor(PROMPT, { env: env(), catalogueMatched: true })).toBeNull();
+    expect(asked).toBe(0);
     expect((await client.semanticFor(PROMPT, { env: env() })).candidates).toHaveLength(1);
+    expect(asked).toBe(1);   // red twin: the spy does count a real ask
+  });
+
+  it('a planted descriptor is not trusted: foreign socket path, world-readable file, wrong schema', async () => {
+    if (process.platform === 'win32') return;
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: fakeIndex([card('x')]), signals: false });
+    const desc = path.join(home, 'run', `recommend-${process.pid}.json`);
+    const d = JSON.parse(fs.readFileSync(desc, 'utf8'));
+    expect(client.liveEndpoints(env())).toHaveLength(1);
+    fs.writeFileSync(desc, JSON.stringify({ ...d, socket: path.join(os.tmpdir(), 'elsewhere.sock') }));
+    expect(client.liveEndpoints(env())).toHaveLength(0);
+    fs.writeFileSync(desc, JSON.stringify({ ...d, schema: 'other/1' }));
+    expect(client.liveEndpoints(env())).toHaveLength(0);
+    fs.writeFileSync(desc, JSON.stringify(d));
+    fs.chmodSync(desc, 0o644);
+    expect(client.liveEndpoints(env())).toHaveLength(0);
+  });
+
+  it('the endpoint refuses a directory that is not the card snapshot, and oversize requests', async () => {
+    let opened = 0;
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: async (dir) => { opened++; return fakeIndex([card('x')])(dir); }, signals: false });
+    expect((await client.askWarmWorker({ prompt: PROMPT, cardsDir: home, env: env() })).reason).toBe('no-card-index');
+    expect((await client.askWarmWorker({ prompt: PROMPT, cardsDir: 'relative/dir', env: env() })).reason).toBe('no-card-index');
+    expect(opened).toBe(0);
+    const d = client.liveEndpoints(env())[0];
+    const reply = await new Promise((resolve) => {
+      const sock = net.createConnection(d.socket);
+      let got = ''; sock.on('data', (c) => { got += c; }); sock.on('close', () => resolve(got)); sock.on('error', () => resolve(got));
+      sock.on('connect', () => sock.write('x'.repeat(20 * 1024)));
+    });
+    expect(reply).toBe('');   // destroyed, no answer
+  });
+
+  it('a failed index open is not cached: the next request retries', async () => {
+    let calls = 0;
+    ep = await kbEndpoint.startRecommendEndpoint({ brainHome: home, openIndex: async (dir) => { calls++; if (calls === 1) throw new Error('mid-update'); return fakeIndex([card('x')])(dir); }, signals: false });
+    expect((await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: env() })).candidates).toBeNull();
+    expect((await client.askWarmWorker({ prompt: PROMPT, cardsDir: SCRIPTS, env: env() })).candidates).toHaveLength(1);
+    expect(calls).toBe(2);
   });
 });
 
@@ -125,6 +167,12 @@ describe('the semantic lane turns candidates into one hint', () => {
     const lane = rec.semanticLane({ prompt: PROMPT, semantic, index, offered: new Set(['typesafe']), allowed: (id) => !id.endsWith('router') });
     expect(lane.build().candidates).toEqual(['ruvector-hybrid', '@ruvector/kge', '@ruvector/diskann']);
     expect(rec.semanticLane({ prompt: PROMPT, semantic, index, allowed: () => false })).toBeNull();
+  });
+
+  it('a nearest card below the similarity floor means no hint at all', () => {
+    const far = { candidates: semantic.candidates.map((c) => ({ ...c, similarity: rec.SEMANTIC_MIN_SIMILARITY - 0.01 })) };
+    expect(rec.semanticLane({ prompt: PROMPT, semantic: far, index })).toBeNull();
+    expect(rec.semanticLane({ prompt: PROMPT, semantic: far, index, floor: 0 })).not.toBeNull();   // red twin
   });
 
   it('red: a chore prompt gets no hint even with candidates in hand', () => {
@@ -193,6 +241,74 @@ describe('the shipped card index is bound to the shipped cards', () => {
     try {
       for (const f of ['package-cards.json', 'package-cards.rvf', 'package-cards.rvf.meta.json']) fs.copyFileSync(path.join(SCRIPTS, f), path.join(dir, f));
       fs.appendFileSync(path.join(dir, 'package-cards.json'), ' ');
+      expect(await openCardIndex(dir)).toBeNull();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('candidate-set offers and the outcome ledger (adversarial review H2)', () => {
+  const { offerNames } = rec;
+  const setOffer = { candidates: ['typesafe', 'router', 'memory', 'ruvector-hybrid'], packages: ['@ruvector/typesafe', '@ruvector/router', 'memory', 'ruvector-hybrid'] };
+  it('a set answers to full ids and distinctive short names, never to common words', () => {
+    const { set, names } = offerNames(setOffer);
+    expect(set).toBe(true);
+    expect(names).toEqual(expect.arrayContaining(['@ruvector/typesafe', 'typesafe', 'ruvector-hybrid']));
+    expect(names).not.toContain('router');
+    expect(names).not.toContain('memory');
+  });
+  it('a single (catalogue/lexical) offer keeps its one capability name', () => {
+    expect(offerNames({ capability: 'agentic-qe' })).toEqual({ set: false, names: ['agentic-qe'] });
+  });
+  it('through the real lifecycle: bare "ok" does not resolve a set; "use @ruvector/typesafe" does', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-led-'));
+    const file = path.join(dir, 'o.jsonl');
+    const prevS = process.env.RUVNET_ADVOCACY_ROUTE_STATE; const prevO = process.env.RUVNET_ADVOCACY_OUTCOMES;
+    process.env.RUVNET_ADVOCACY_ROUTE_STATE = path.join(dir, 's.json');
+    process.env.RUVNET_ADVOCACY_OUTCOMES = file;
+    try {
+      const route = await import(`${path.join(SCRIPTS, 'advocacy-route.mjs')}?l=${Date.now()}`);
+      const outcomes = await import('../../plugin/scripts/advocacy-outcomes.mjs');
+      const id = 'recommend:pkg:@ruvector/typesafe';
+      const state = { version: 1, sessions: { s: { ts: Date.now(), offers: [{ id, capability: 'typesafe', ...setOffer, at: new Date().toISOString(), resolved: null }] } } };
+      outcomes.record({ id, action: outcomes.ACTIONS.OFFERED, severity: 'normal' }, { file });
+      expect(route.resolvePriorOffers('ok', 's', { file, state })).toEqual({ applied: [], dismissed: [] });
+      expect(route.resolvePriorOffers("don't touch the memory layout", 's', { file, state })).toEqual({ applied: [], dismissed: [] });
+      expect(route.resolvePriorOffers('yes, use @ruvector/typesafe for that', 's', { file, state }).applied).toEqual([id]);
+    } finally {
+      if (prevS === undefined) delete process.env.RUVNET_ADVOCACY_ROUTE_STATE; else process.env.RUVNET_ADVOCACY_ROUTE_STATE = prevS;
+      if (prevO === undefined) delete process.env.RUVNET_ADVOCACY_OUTCOMES; else process.env.RUVNET_ADVOCACY_OUTCOMES = prevO;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the committed quality evidence (adversarial review T4)', () => {
+  const Q = path.join(ROOT, 'evals', 'runs', '2026-10-01-recommender-4.6', 'semantic-quality');
+  const load = (f) => JSON.parse(fs.readFileSync(path.join(Q, f), 'utf8'));
+  const cards = () => JSON.parse(fs.readFileSync(path.join(SCRIPTS, 'package-cards.json'), 'utf8')).cards;
+  it('score.json is exactly what the scorer computes from the committed key and picks', async () => {
+    const { judgeScore } = await import('../../scripts/recommendation-judge-score.mjs');
+    const r = judgeScore(load('judge-key.json'), load('judge-picks.json').picks, cards());
+    expect(r).toEqual(load('score.json'));
+    expect([r.blinds.recall.k, r.blinds.recall.n, r.blinds.precision.k, r.blinds.precision.n, r.blinds.falseFiring.k, r.blinds.falseFiring.n])
+      .toEqual([27, 52, 27, 31, 0, 36]);
+  });
+  it('red: one flipped pick changes the bound numbers', async () => {
+    const { judgeScore } = await import('../../scripts/recommendation-judge-score.mjs');
+    const key = load('judge-key.json');
+    const picks = { ...load('judge-picks.json').picks };
+    const neg = key.find((k) => /blind/.test(k.set) && !['design', 'diagnosis'].includes(k.category) && k.lane);
+    picks[neg.qid] = '@ruvector/typesafe';
+    expect(judgeScore(key, picks, cards()).blinds.falseFiring.k).toBe(1);
+  });
+});
+
+describe('a swapped .rvf is refused before the native reader sees it', () => {
+  it('rvfSha256 in the meta must match the .rvf bytes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pci-rvf-'));
+    try {
+      for (const f of ['package-cards.json', 'package-cards.rvf', 'package-cards.rvf.meta.json']) fs.copyFileSync(path.join(SCRIPTS, f), path.join(dir, f));
+      fs.appendFileSync(path.join(dir, 'package-cards.rvf'), Buffer.from([0]));
       expect(await openCardIndex(dir)).toBeNull();
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });

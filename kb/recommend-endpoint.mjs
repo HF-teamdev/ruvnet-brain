@@ -45,6 +45,17 @@ function socketPath(brainHome, pid) {
     : path.join(runDir(brainHome), `recommend-${pid}.sock`);
 }
 
+/** A directory that looks like the plugin's card snapshot, not an arbitrary path a client named. */
+export function isCardsDir(dir) {
+  return ['package-cards.json', 'package-cards.rvf', 'package-cards.rvf.meta.json', 'package-recommender.mjs']
+    .every((f) => { try { return fs.statSync(path.join(dir, f)).isFile(); } catch { return false; } });
+}
+
+function tokenMatches(got, want) {
+  if (typeof got !== 'string' || got.length !== want.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want));
+}
+
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; } };
 
 /** Remove descriptors and sockets left by workers that died without cleanup (SIGKILL, crash). */
@@ -61,8 +72,9 @@ export function sweepStale(dir) {
 }
 
 /**
- * Start the endpoint. `cardsDirs` are tried in order for package-cards.json + package-cards.rvf;
- * a request may also name a directory (the plugin's own snapshot), checked the same way.
+ * Start the endpoint. A request names the plugin directory holding package-cards.{json,rvf}; it is
+ * accepted only if it looks like one (isCardsDir), and only ONE index is held at a time (a plugin update
+ * moves the dir: the old index is closed, not leaked). A failed open is not cached.
  * Returns { close(), descriptor } or null when it could not start (never throws).
  */
 export async function startRecommendEndpoint({ brainHome, onActivity = () => {}, log = () => {}, openIndex = openCardIndex, signals = true }) {
@@ -74,16 +86,19 @@ export async function startRecommendEndpoint({ brainHome, onActivity = () => {},
     const sock = socketPath(brainHome, process.pid);
     if (process.platform !== 'win32') fs.rmSync(sock, { force: true });
     const token = crypto.randomBytes(24).toString('hex');
-    const indexes = new Map(); // cardsDir -> Promise<index|null>
+    let held = null; // { key, promise }
 
-    const indexFor = (cardsDir) => {
+    const indexFor = async (cardsDir) => {
       const key = path.resolve(cardsDir);
-      let p = indexes.get(key);
-      if (!p) {
-        p = Promise.resolve().then(() => openIndex(key)).catch(() => null);
-        indexes.set(key, p);
+      if (!isCardsDir(key)) return null;
+      if (held?.key !== key) {
+        const prev = held;
+        held = { key, promise: Promise.resolve().then(() => openIndex(key)).catch(() => null) };
+        prev?.promise.then((ix) => ix?.close?.()).catch(() => {});
       }
-      return p;
+      const ix = await held.promise;
+      if (!ix && held?.key === key) held = null;   // never cache a failure: the next request retries
+      return ix;
     };
 
     const server = net.createServer((conn) => {
@@ -99,7 +114,7 @@ export async function startRecommendEndpoint({ brainHome, onActivity = () => {},
         buf = '';
         let req;
         try { req = JSON.parse(line); } catch { conn.end('{"error":"bad-json"}\n'); return; }
-        if (!req || req.token !== token) { conn.end('{"error":"unauthorized"}\n'); return; }
+        if (!req || !tokenMatches(req.token, token)) { conn.end('{"error":"unauthorized"}\n'); return; }
         onActivity();
         const started = Date.now();
         try {

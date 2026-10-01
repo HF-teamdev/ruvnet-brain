@@ -265,10 +265,7 @@ export function recommend(prompt, { index } = {}) {
   } catch { return null; }
 }
 
-/** THE FLAG, DEFAULT OFF (ADR-093): only an explicit opt-in is on. Read per call, never cached. */
-export function packageRecommenderEnabled(env = process.env) {
-  return ['1', 'on', 'true', 'yes'].includes(String(env.RUVNET_PACKAGE_RECOMMENDER || '').trim().toLowerCase());
-}
+export { packageRecommenderEnabled, offerNames } from './package-recommender-flag.mjs';
 
 /** The short name a user says back ("use typesafe"): the package id without its scope. */
 export function shortName(card) {
@@ -311,7 +308,17 @@ export function buildPackageCandidate({ prompt, pick, findingPrefix = 'recommend
 // sets with a model standing in for the host (evals/runs/2026-10-01-recommender-4.6/): the embedding is
 // the better finder of candidates, the model the better judge of fit.
 export const SEMANTIC_K = 4;
-export const SEMANTIC_MAX_PER_SESSION = 3;
+// ONE candidate set per session until a real host run shows the model stays quiet on negatives
+// (adversarial review H1, 2026-10-01). Raise only on that evidence.
+export const SEMANTIC_MAX_PER_SESSION = 1;
+// Inject only when the NEAREST card clears this cosine similarity. Chosen on the self-authored set only
+// (5th percentile of top-1 similarity among judge-correct hits = 0.532), then frozen; on the blinds it
+// cut injections on negative prompts from 16/36 to 4/36 at a measured recall cost (ADR-093 rev 2).
+export const SEMANTIC_MIN_SIMILARITY = 0.532;
+export function semanticFloor(env = process.env) {
+  const v = Number(env.RUVNET_PACKAGE_RECOMMENDER_MIN_SIMILARITY);
+  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : SEMANTIC_MIN_SIMILARITY;
+}
 
 /** The advocacy candidate carrying a candidate SET, phrased exactly as the measured instruction. */
 export function buildCandidateSetCandidate({ prompt, picks, findingPrefix = 'recommend:pkg:' }) {
@@ -342,8 +349,9 @@ export function buildCandidateSetCandidate({ prompt, picks, findingPrefix = 'rec
  * this session; `allowed(findingId)` = the DismissalLedger's verdict. A dismissed or already-offered
  * package is dropped from the set, never re-shown.
  */
-export function semanticLane({ prompt, semantic, offered = new Set(), allowed = () => true, index, findingPrefix = 'recommend:pkg:' }) {
+export function semanticLane({ prompt, semantic, offered = new Set(), allowed = () => true, index, findingPrefix = 'recommend:pkg:', floor = semanticFloor() }) {
   if (!Array.isArray(semantic?.candidates) || !semantic.candidates.length) return null;
+  if (!(semantic.candidates[0].similarity >= floor)) return null;   // nearest card too far: no hint at all
   if (!isDesignOrDiagnosis(prompt)) return null;
   const idx = index === undefined ? loadIndex() : index;
   if (!idx) return null;
