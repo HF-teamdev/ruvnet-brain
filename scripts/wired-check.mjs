@@ -75,7 +75,8 @@ const STANDALONE = [
     + 'producer exists, and Step 15 owns any prepareCorpusCandidate wiring. The three modules it drives (source-units, '
     + 'produce-questions, validate-labels) are each wired to a real caller; this driver is the human entry point.'],
   ['gate', 'retired automatic-hook helper and manual benchmark retained for explicit human use; no workflow or scheduler invokes this expensive command'],
-  ['dream-issue-gate', 'pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
+  ['route-gold-rank', 'human-run measurement harness: routes question sets through kb/forge-ask-all.mjs planSourceRoute (no model) and reports where the gold store lands, with Wilson intervals; nothing to schedule'],
+  ['dream-issue-gate','pure Dream Cycle disposition policy; invoked by the external issue adapter, never a GitHub writer'],
   ['sync-census', 'explicit maintainer census writer; a destructive source-to-surface refresh is never scheduled'],
   ['customer-state-matrix', 'human-run release-qualification harness (2026-09-30): applies ONE published release through the real '
     + 'customer door to a COPY of a real install in one customer state at a time; it downloads releases and writes multi-GB '
