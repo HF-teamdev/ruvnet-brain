@@ -2767,7 +2767,14 @@ async function smokeQuery(cacheDir) {
     return { ran: true, grounded: null, reason: 'verifier-missing' };
   }
 
-  const v = await verifier.verifyGrounding(out, cacheDir);
+  // A verifier that throws when CALLED is as broken as one that will not load: a named ✗, never a crash that
+  // leaves --doctor --json with nothing to parse (re-review a6 SF4).
+  let v;
+  try { v = await verifier.verifyGrounding(out, cacheDir); } catch (error) {
+    const why = String(error?.message || error).slice(0, 200);
+    warn(`the installed citation verifier failed while checking the answer (${why}) — reinstall to repair it`);
+    return { ran: true, grounded: false, reason: `reader-broken: verify-citation.mjs threw (${why})` };
+  }
   const evidence = classifySmokeEvidence(v, out);
   if (v.grounded && !evidence.usable) {
     warn(`the citation resolves, but the question was not answered with sufficient evidence (${evidence.reason})`);
@@ -2967,7 +2974,6 @@ async function doctorRun({ json }) {
   }
   const present = fs.existsSync(path.join(cacheDir, 'forge-mcp-all.mjs'));
   if (!present) {
-    warn('brain not found here — run the installer first:  npx ruvnet-brain');
     // "not installed" is a FAILING doctor, not a neutral one — and the same verdict in both outputs. An
     // interrupted --move-brain may have left the ONLY copy at <home>.old-<pid>: its Move line names the `mv`
     // back (a fresh install over it would build a second, public-only Brain).
@@ -2976,6 +2982,10 @@ async function doctorRun({ json }) {
       moveLines = confirm({ footprint: inventoryFootprint({ now: footprintNow(), measure: false }), installedVersion: PACKAGE_VERSION, now: footprintNow() })
         .lines.filter((l) => l.id === 'move-leftover');
     } catch { /* the install line stands */ }
+    // A Brain an interrupted move set aside is RESTORED, never reinstalled over (re-review a6 SHOULD-FIX 1).
+    const restore = moveLines.find((l) => l.state === 'fail');
+    if (restore) warn(`the Brain is not at its path, but an interrupted move left it here — restore it, do NOT reinstall:  ${restore.fix}`);
+    else warn('brain not found here — run the installer first:  npx ruvnet-brain');
     const verdict = doctorVerdict({ schemaVersion: 1, kind: 'ruvnet-brain-confirmation', lines: moveLines },
       [{ id: 'install', label: 'Install', state: 'fail', detail: `brain not found at ${cacheDir}`,
         fix: moveLines.find((l) => l.state === 'fail')?.fix || 'npx ruvnet-brain' }]);
@@ -5374,7 +5384,10 @@ export function groundingCheckLine({ smoke = {}, persisted = null, coverageSha25
       : line('fail', `not verifiable live (${smoke.reason || 'no verifier'}) and never proven for these bytes`, 'npx ruvnet-brain');
   }
   if (smoke.warmupTimeout) return line('warn', `not proven in time (${smoke.reason || 'slow'})`, 'npx ruvnet-brain --doctor (again, when the machine is less busy)');
-  return line('fail', `not proven (${smoke.reason || (smoke.ran === false ? 'the live question did not run' : 'unknown')})`, 'npx ruvnet-brain');
+  // The reader's own deadline ("slow on this machine, not broken") is ✗, but its fix is to run it again: a
+  // reinstall does not make a machine faster (and the narration says so).
+  return line('fail', `not proven (${smoke.reason || (smoke.ran === false ? 'the live question did not run' : 'unknown')})`,
+    smoke.slow ? 'npx ruvnet-brain --doctor (again, when the machine is less busy)' : 'npx ruvnet-brain');
 }
 
 /** THE Ruflo line of the doctor's one verdict: derived only from the probe result, for text and --json alike. */

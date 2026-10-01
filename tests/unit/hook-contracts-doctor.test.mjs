@@ -235,9 +235,13 @@ describe('the doctor names an interrupted move\'s set-aside Brain', () => {
       const text = b.doctor([], { extraEnv });
       const json = JSON.parse(b.doctor(['--json'], { extraEnv }).stdout);
       const move = json.lines.find((l) => l.id === 'move-leftover');
-      expect(move).toMatchObject({ state: 'fail', fix: `mv ${old} ${brainHome}` });
+      const restore = `mv -- '${old}' '${brainHome}'`;
+      expect(move).toMatchObject({ state: 'fail', fix: restore });
       expect(text.text).toMatch(new RegExp(`✗ Move\\s+the original Brain set aside by an interrupted move — the ONLY copy of the Brain: ${old.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
-      expect(text.text).toContain(`fix: mv ${old} ${brainHome}`);
+      expect(text.text).toContain(`fix: ${restore}`);
+      // Never "run the installer": a fresh install there would build a second, public-only Brain.
+      expect(text.text).not.toMatch(/run the installer first|npx ruvnet-brain\s*$/m);
+      expect(json.lines.find((l) => l.id === 'install').fix).toBe(restore);
       expect(json.failing).toEqual(expect.arrayContaining(['install', 'move-leftover']));
       expect(text.status).toBe(1);
       expect(fs.existsSync(path.join(old, 'kb', 'SOURCE.json'))).toBe(true); // reported, never touched
@@ -245,7 +249,7 @@ describe('the doctor names an interrupted move\'s set-aside Brain', () => {
   }, 120_000);
 });
 
-// Re-review S2: "AgentDB: recording ✗" was printed as narration but was not a line of the ONE verdict, so
+// Re-review S2: "AgentDB: recording stuck" was printed as narration but was not a line of the ONE verdict, so
 // it vanished from --doctor --json. It is now a verdict line (advisory '!': recording is a project's
 // opt-in memory, not the Brain's health), identical in text and JSON. Built with the REAL journal.
 describe('AgentDB recording is a line of the one verdict', () => {
@@ -267,8 +271,8 @@ describe('AgentDB recording is a line of the one verdict', () => {
       const text = b.doctor([], { extraEnv });
       const json = JSON.parse(b.doctor(['--json'], { extraEnv }).stdout);
       const line = json.lines.find((l) => l.id === 'agentdb');
-      expect(line).toMatchObject({ state: 'warn', detail: expect.stringMatching(/recording ✗ — 1 event\(s\) pending/) });
-      expect(text.text).toMatch(/^\s+! AgentDB\s+recording ✗ — 1 event\(s\) pending/m);
+      expect(line).toMatchObject({ state: 'warn', detail: expect.stringMatching(/recording stuck — 1 event\(s\) pending/) });
+      expect(text.text).toMatch(/^\s+! AgentDB\s+recording stuck — 1 event\(s\) pending/m);
       expect(json.advisories).toContain('agentdb');
       expect(json.failing).not.toContain('agentdb');
     } finally { b.cleanup(); }

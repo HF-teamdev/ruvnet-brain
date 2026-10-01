@@ -38,4 +38,4 @@ outbox and will commit at the next capture boundary — say exactly that, not "s
 
 - Do not summarize the history from memory or from the conversation instead of running the command.
 - Do not hand-write rows into `.swarm/memory.db` or call `ruflo memory store` for these yourself.
-- If the last line says `AgentDB: recording ✗`, tell the user that line verbatim before anything else.
+- If the last line says `AgentDB: recording stuck`, tell the user that line verbatim before anything else.

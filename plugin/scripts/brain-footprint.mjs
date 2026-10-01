@@ -25,7 +25,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isKbTree, kbCopyProof } from './kb-copy-proof.mjs';
 import { brainLocation } from './brain-location.mjs';
-import { cachedKept, cmpVersion, findMoveLeftovers, isVolumeMetadata, keptCopyFix, physical, pidAlive, readProofCache, rememberKept, removeWithin, rotate,
+import { assessMoveLeftovers, cachedKept, cmpVersion, isVolumeMetadata, keptCopyFix, physical, pidAlive, readProofCache, rememberKept, removeWithin, rotate,
   treeBytes, truncateToTail } from './footprint-io.mjs';
 
 export { cmpVersion, physical, treeBytes } from './footprint-io.mjs';
@@ -132,7 +132,7 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   // A plain `npx ruvnet-brain` install holds no refresh lock (review S6). It is IN PROGRESS while its activation
   // marker, its young stage, or a kb.install-prior-<ts>-<pid> rollback copy names a live pid: nothing beside the KB moves.
   // Proof of life is bounded by TIME too (re-review S5): an old marker or a reused / EPERM pid no longer freezes it.
-  const young = (at) => Number.isFinite(at) && now - at <= policy.staleStageMs;
+  const young = (at) => Number.isFinite(at) && now - at >= -60_000 && now - at <= policy.staleStageMs; // a FUTURE stamp is stale
   const priorParts = (name) => name.slice(`${base}.install-prior-`.length).split('-').map(Number);
   const installing = (() => {
     const marker = readJson(path.join(roots.kbParent, `.${base}.install-activation.lock`));
@@ -227,12 +227,9 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   }
   // Interrupted `--move-brain` leftovers (dead pid only; none while a refresh lock may mean a move is running):
   // REPORTED with the exact next step, never removed. The set-aside original is the ONLY copy if the Brain is gone.
-  if (!lockHeld) for (const lo of findMoveLeftovers({ brainHome: roots.location.path, location: roots.location, isAlive: pidAlive })) {
-    const link = Boolean(lstat(lo.path)?.isSymbolicLink());
-    const onlyCopy = lo.what === 'old' && !lstat(roots.location.path);
-    add({ id: 'move-leftover', path: lo.path, class: 'unowned', kind: 'move-leftover', action: 'report', what: lo.what, onlyCopy,
-      bytes: link ? 0 : bytes(lo.path), copies: !link && (isKbTree(path.join(lo.path, 'kb')) || isKbTree(lo.path)) ? 1 : 0,
-      fix: onlyCopy ? `mv ${lo.path} ${roots.location.path}` : link ? `rm ${lo.path}` : `rm -rf ${lo.path}`, reason: lo.reason });
+  if (!lockHeld) for (const lo of assessMoveLeftovers({ brainHome: roots.location.path, location: roots.location, isAlive: pidAlive })) {
+    add({ id: 'move-leftover', path: lo.path, class: 'unowned', kind: 'move-leftover', action: 'report', what: lo.what, onlyCopy: lo.onlyCopy,
+      bytes: lo.link ? 0 : bytes(lo.path), copies: !lo.link && (isKbTree(path.join(lo.path, 'kb')) || isKbTree(lo.path)) ? 1 : 0, fix: lo.fix, reason: lo.reason });
   }
 
   // ── brain home state ────────────────────────────────────────────────────────────────────────

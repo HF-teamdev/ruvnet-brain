@@ -61,13 +61,53 @@ export function findMoveLeftovers({ brainHome, location = null, isAlive = pidAli
       const m = re.exec(name);
       if (!m || isAlive(Number(m.at(-1)))) continue;
       const what = m.length > 2 ? m[1] : 'moving';
-      found.set(path.join(dir, name), { path: path.join(dir, name), what, pid: Number(m.at(-1)), reason: WHAT[what] });
+      found.set(path.join(dir, name), { path: path.join(dir, name), dir, what, pid: Number(m.at(-1)), reason: WHAT[what] });
     }
   };
   scan(path.dirname(brainHome), new RegExp(`^${escapeRe(base)}\\.(old|link-old|link)-(\\d+)$`));
   scan(path.dirname(brainHome), new RegExp(`^\\.${escapeRe(base)}\\.moving-(\\d+)$`));
   if (location?.state === 'linked' && location.real) scan(path.dirname(location.real), new RegExp(`^\\.${escapeRe(path.basename(location.real))}\\.moving-(\\d+)$`));
   return [...found.values()];
+}
+
+// ── the advice for each leftover: commands SAFE TO PASTE (re-review a6) ─────────────────────────
+// An unquoted `rm -rf ${path}` on a volume named 'Backup 1' ran `rm -rf …/Backup` — another drive. Every path is
+// quoted (POSIX single quotes; cmd double quotes on Windows), every command ends option parsing (`--`), and a
+// destructive command is emitted only for a path whose real parent is the directory it was found in and which
+// has no control character (or, on Windows, no double quote); otherwise the advice is to inspect it by hand.
+const shQuote = (p) => `'${String(p).replace(/'/g, `'\\''`)}'`;
+const COMMANDS = {
+  posix: { rmTree: (p) => `rm -rf -- ${shQuote(p)}`, rmLink: (p) => `rm -- ${shQuote(p)}`, mv: (a, b) => `mv -- ${shQuote(a)} ${shQuote(b)}` },
+  win32: { rmTree: (p) => `rmdir /s /q "${p}"`, rmLink: (p) => `rmdir "${p}"`, mv: (a, b) => `move "${a}" "${b}"` },
+};
+const holdsBrain = (dir) => ['SOURCE.json', path.join('kb', 'SOURCE.json')].some((f) => Boolean(lstat(path.join(dir, f))));
+
+/**
+ * Assess every interrupted-move leftover. With the Brain's own path MISSING, each one is checked for a Brain it
+ * holds (old-N, moving-N) or points at (link-old-N, link-N with a live target): the first such, in that order
+ * of trust, is the one to RESTORE at the Brain path (✗, `mv`), and nothing else gets a delete — following an
+ * rm or a fresh install there would orphan the private Brain (re-review a6 SHOULD-FIX 1).
+ */
+export function assessMoveLeftovers({ brainHome, location = null, isAlive = pidAlive, platform = process.platform }) {
+  const cmd = COMMANDS[platform === 'win32' ? 'win32' : 'posix'];
+  const safe = (p, dir) => physical(path.dirname(p)) === physical(dir) && !/[\u0000-\u001f\u007f]/.test(p)
+    && !(platform === 'win32' && p.includes('"')) && !/[\u0000-\u001f\u007f]/.test(brainHome);
+  const inspect = (p) => `inspect it by hand: ${JSON.stringify(p)} (no command is suggested for this path)`;
+  const homeMissing = !lstat(brainHome);
+  const found = findMoveLeftovers({ brainHome, location, isAlive }).map((lo) => {
+    const link = Boolean(lstat(lo.path)?.isSymbolicLink());
+    let target = null;
+    if (link) { try { target = fs.realpathSync(lo.path); } catch { /* dangling */ } }
+    return { ...lo, link, brain: link ? Boolean(target && holdsBrain(target)) : holdsBrain(lo.path) };
+  });
+  const order = ['old', 'link-old', 'link', 'moving'];
+  const restore = homeMissing ? found.filter((f) => f.brain).sort((a, b) => order.indexOf(a.what) - order.indexOf(b.what))[0] : null;
+  return found.map((f) => {
+    const ok = safe(f.path, f.dir);
+    if (f === restore) return { ...f, onlyCopy: true, fix: ok ? cmd.mv(f.path, brainHome) : inspect(f.path) };
+    if (restore) return { ...f, onlyCopy: false, fix: `keep it until the Brain is restored at ${JSON.stringify(brainHome)} and --doctor is green` };
+    return { ...f, onlyCopy: false, fix: ok ? (f.link ? cmd.rmLink(f.path) : cmd.rmTree(f.path)) : inspect(f.path) };
+  });
 }
 
 /** Bytes under a path, never following a link (a link counts as itself). */

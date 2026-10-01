@@ -289,8 +289,8 @@ commits and tags from git, test/check/release gate outcomes, agent findings, dec
 (explicit, or detected and marked non-authoritative), each fsynced to `.swarm/continuity-events-outbox.jsonl`
 before a detached drainer stores it (`ruflo memory store --no-upsert --path`, namespace `continuity-events`)
 and reads it back by exact key; a refused write (WAL contention) stays pending and is retried at every
-boundary, and a stuck one is shown (`AgentDB: recording ✗ …`) at Stop (Claude, once per session per
-condition), at SessionStart and in `--doctor`. No initialized store or no ruflo reads `recording n/a`, never ✗,
+boundary, and a stuck one is shown (`AgentDB: recording stuck …`, an advisory `!`) at Stop (Claude, once per
+session per condition), at SessionStart and in `--doctor`. No initialized store or no ruflo reads `recording n/a`,
 and launches no drainer; a quarantined key or corrupt line is reported for 7 days or until
 `continuity-brief.mjs --clear`; failures are one record per event and the outbox is compacted (committed
 events leave after 7 days, hard cap 2000 events). SessionStart prints a bounded `[RuvNet Brain — COME UP TO SPEED …]` brief before the progression

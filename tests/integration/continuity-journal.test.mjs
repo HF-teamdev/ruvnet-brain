@@ -93,7 +93,7 @@ describe('1. contention → outbox → eventual commit', () => {
     const status = journal.status();
     expect(status.quarantined).toEqual([rec.key]);
     expect(status.stuck).toBe(true);
-    expect(recordingLine(status)).toMatch(/recording ✗ .*quarantined/);
+    expect(recordingLine(status)).toMatch(/recording stuck .*quarantined/);
   });
 });
 
@@ -114,7 +114,7 @@ describe('2. never silent', () => {
     journal.record([lesson('Stuck event.', old)]);
     const status = new ContinuityJournal({ projectRoot: p.dir, ruflo: fakeRuflo().bin }).status();
     expect(status.stuck).toBe(true);
-    expect(recordingLine(status)).toMatch(/^AgentDB: recording ✗ — 1 event\(s\) pending for \d+m/);
+    expect(recordingLine(status)).toMatch(/^AgentDB: recording stuck — 1 event\(s\) pending for \d+m/);
     const ruflo = fakeRuflo({ refusals: 99 });
     const fire = (host) => spawnSync(process.execPath, [HOOK, 'Stop'], {
       cwd: p.dir,
@@ -125,7 +125,7 @@ describe('2. never silent', () => {
     const claude = fire('claude');
     expect(claude.status, claude.stderr).toBe(0);
     expect(claude.stdout, claude.stderr).not.toBe('');
-    expect(JSON.parse(claude.stdout).systemMessage).toMatch(/\[RuvNet Brain\] AgentDB: recording ✗/);
+    expect(JSON.parse(claude.stdout).systemMessage).toMatch(/\[RuvNet Brain\] AgentDB: recording stuck/);
     const again = fire('claude'); // same session, same condition: shown once, not at every turn (review S3)
     expect(again.status).toBe(0);
     expect(again.stdout).toBe('');
