@@ -222,7 +222,13 @@ const RUV_SUBJECT = String.raw`(?<![\w/.@-])${RUV_PRODUCT}(?![\w-]|[./][\w])(?:(
 // Not \b at the end: `support-ticket` is no verb.
 const PLURAL_NOUN = 'tools|packages|crates|plugins|libraries|hooks|agents|skills|servers|workers|daemons|commands|apis|clis|sdks|bindings|routers|gates|controllers';
 const VERBS = 'support|provide|expose|ship|offer|export|implement|include|allow|enable|accept|return|store|require|need|handle|route|record|persist|index|cache|spawn|create|generate|compute|sort|classif|scan|detect|block|prevent|replace|wrap|call|launch|keep|clamp|turn|give|make|run|use|take|let|write';
-const CAPABILITY_VERB = String.raw`(?:(?:won't|won’t|will\s+not)\s+\w+|can(?:not|'t|’t)?\s+\w+|does(?:n't|n’t|\s+not)\s+\w+|do(?:n't|n’t|\s+not)\s+\w+|has(?:n't|n’t|\s+not)\s+\w+|has\s+(?:a|an|no|its|built-in|native)\b|(?:is|are)\s+(?:able|unable|capable|designed|built|meant|backed|limited|not\s+(?:able|available|supported))\b|only\s+(?:supports?|works|runs|accepts)|comes\s+with|works\s+(?:with|by|on|only)|(?:${VERBS})(?:e?s|ies)|(?<=\b(?:${PLURAL_NOUN})\s+)(?:${VERBS}))(?![\w-])`;
+// "will not" is a capability claim only with a capability verb: "AgentDB will not open X" is, while
+// "Ruflo will not be touched by this patch" / "will not need a rebuild" report OUR change (4.4.0 nit).
+const WILL_NOT_VERBS = 'run|work|support|open|load|accept|start|install|handle|read|write|store|return|expose|allow|connect|recogni[sz]e|parse|build|compile|sync|scale|persist|import|export';
+// "now" makes a recency claim only with a capability verb ("Ruflo now supports X"); "AgentDB now records
+// every turn" describes behaviour this repo just wired, and is not a claim about the product.
+const NOW_VERBS = /\bnow\s+(?:supports|ships|works|exposes|provides|includes|offers|accepts|allows|enables|runs|requires|has|handles|can(?:not|'t|’t)?|does(?:n't|n’t|\s+not)?)\b/i;
+const CAPABILITY_VERB = String.raw`(?:(?:won't|won’t|will\s+not)\s+(?:${WILL_NOT_VERBS})\b|can(?:not|'t|’t)?\s+\w+|does(?:n't|n’t|\s+not)\s+\w+|do(?:n't|n’t|\s+not)\s+\w+|has(?:n't|n’t|\s+not)\s+\w+|has\s+(?:a|an|no|its|built-in|native)\b|(?:is|are)\s+(?:able|unable|capable|designed|built|meant|backed|limited|not\s+(?:able|available|supported))\b|only\s+(?:supports?|works|runs|accepts)|comes\s+with|works\s+(?:with|by|on|only)|(?:${VERBS})(?:e?s|ies)|(?<=\b(?:${PLURAL_NOUN})\s+)(?:${VERBS}))(?![\w-])`;
 // What rUv's own docs/research/source SAY is a capability claim too, in any tense.
 const DOC_VERB = String.raw`(?:says?|said|found|finds|shows?|showed|marks?|marked|documents?|documented|recommends?|prescribes?|states?|reports?|measured|took|warns?)\b`;
 const DOC_NOUN = String.raw`(?:research|benchmark|readme|docs?|documentation|release\s+notes|notes|code|source|adr|guidance|skill|campaign|issue|gist)`;
@@ -231,7 +237,7 @@ const RUV_DOC_CLAIM = new RegExp(`(?<![\\w/.@-])${RUV_PRODUCT}(?:(?:'|’)s)?(?:
 // "Ruflo is the orchestration layer and it has no hooks API": the pronoun refers back, in the same
 // sentence — only to a product that OPENS the sentence as its subject (a product inside a list or a
 // parenthetical is not what "they" means: "N-API builds (ruvector, rvf, …), so they don't depend…").
-const RUV_COREF_CLAIM = new RegExp(`^(?:the\\s+)?(${RUV_PRODUCT})(?![\\w-]|[./][\\w])(?:(?:'|’)s)?\\s+(?:is|are|was|has|provides?|ships?)\\b[^.;!?()]{0,80}?\\b(?:and|but|so|which|because)\\s+(?:it|they)\\s+(?:also\\s+|now\\s+|still\\s+|only\\s+)?${CAPABILITY_VERB}`, 'gi');
+const RUV_COREF_CLAIM = new RegExp(`^(?:the\\s+)?(${RUV_PRODUCT})(?![\\w-]|[./][\\w])(?:(?:'|’)s)?\\s+(?:(?:is|are)\\s+(?:a|an|the)\\b|has\\b|provides?\\b|ships?\\b)[^.;!?()]{0,80}?\\b(?:and|but|so|which|because)\\s+(?:it|they)\\s+(?:also\\s+|now\\s+|still\\s+|only\\s+)?${CAPABILITY_VERB}`, 'gi');
 // Not an assertion: a question, a hedge, a plan or hypothetical. Narrower than HEDGE above on purpose,
 // and narrower still since the 4.4.0 review (S2): "now", "if" and "will not" no longer silence a whole
 // sentence — "Ruflo now supports Windows natively", "RuVector cannot run on Windows, so if you need it
@@ -251,6 +257,7 @@ function isAssertion(s, m) {
   // "now" is a recency claim about the product — unless it reports OUR change ("AgentDB now records
   // every turn … with no reliance on me remembering", a measured false alarm).
   if (/\bnow\b/i.test(s) && FIRST_PERSON.test(s)) return false;
+  if (/\bnow\s+\w/i.test(m[0]) && !NOW_VERBS.test(m[0])) return false;
   // "returns 10 results", "takes about 3 s": a measurement this turn, not a capability.
   return !/^\s*(?:about\s+|around\s+|only\s+|~|≈)?\d/.test(s.slice(m.index + m[0].length));
 }

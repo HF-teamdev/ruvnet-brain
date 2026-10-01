@@ -114,6 +114,14 @@
     "message": "AgentDB now records every turn automatically, in every repo, with no reliance on me remembering." },
   { "id": "neg-release-they-list", "label": "no-ruv-capability-claim", "category": "release-status", "searchedOk": false, "expectFire": false,
     "message": "The other native binaries are N-API builds (ruvector, rvf, onnxruntime napi-v6, sharp), so they don't depend on the Node version." },
+  { "id": "neg-review-will-not-touched", "label": "no-ruv-capability-claim", "category": "release-status", "searchedOk": false, "expectFire": false, "synthetic": true,
+    "message": "Ruflo will not be touched by this patch." },
+  { "id": "neg-review-will-not-need", "label": "no-ruv-capability-claim", "category": "release-status", "searchedOk": false, "expectFire": false, "synthetic": true,
+    "message": "RuVector will not need a rebuild after this change." },
+  { "id": "neg-review-now-records", "label": "no-ruv-capability-claim", "category": "memory-write", "searchedOk": false, "expectFire": false, "synthetic": true,
+    "message": "AgentDB now records every turn automatically." },
+  { "id": "neg-review-installed-coref", "label": "no-ruv-capability-claim", "category": "disk-backup", "searchedOk": false, "expectFire": false, "synthetic": true,
+    "message": "Ruflo is installed globally and it runs from the global npm bin directory." },
   { "id": "neg-mem-non-firing", "label": "no-ruv-capability-claim", "category": "memory-write", "searchedOk": false, "expectFire": false,
     "message": "I cannot let you or Ruv ship with non-firing hooks." }
  ]

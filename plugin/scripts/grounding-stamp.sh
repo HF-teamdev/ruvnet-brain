@@ -58,8 +58,11 @@ INPUT="${INPUT:0:2097152}"
 # brain's own header; an oversize notice counts only as the host's whole response, pointing at the
 # host's own saved file, written during this call. No node, an unparseable payload, or any other
 # shape ⇒ nothing mints: a stamp that cannot be proven is not minted.
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || exit 0
-NODE_BIN="$(command -v node 2>/dev/null)" || NODE_BIN=""
+HERE="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd)" || exit 0   # builtin expansion: no dirname on a bare PATH
+# hook-shim.mjs passes the node that is running it (RUVNET_NODE_BIN); PATH is only the fallback, since a
+# host may hand its hooks a PATH with no node on it.
+NODE_BIN="${RUVNET_NODE_BIN:-}"
+[ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ] || NODE_BIN="$(command -v node 2>/dev/null)" || NODE_BIN=""
 [ -n "$NODE_BIN" ] && [ -f "$HERE/grounding-answer.mjs" ] || exit 0
 VERDICT="$(printf '%s' "$INPUT" | "$NODE_BIN" "$HERE/grounding-answer.mjs" 2>/dev/null)" || VERDICT=""
 [ "$VERDICT" = "answered" ] || exit 0

@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { renderCardHit } from '../../kb/card-lane.mjs';
 import { brainAnswered } from '../../plugin/scripts/grounding-turn-evidence.mjs';
 import { describeSearchOutcome } from '../../kb/search-outcome.mjs';
+import { resolveBash } from '../../plugin/scripts/hook-shim-bash.mjs';
 import { groundedToolResult } from '../../kb/grounded-response.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -200,6 +201,29 @@ describe.skipIf(!hasBash || process.platform === 'win32')('B1: a query echoed in
       stamp(w, payload('ruflo memory', shape(real)));
       expect(minted(w)).toEqual(expect.arrayContaining(['.any-search', 'ruflo']));
     }
+  });
+});
+
+describe.skipIf(!hasBash || process.platform === 'win32')('4.4.0 re-review nits 4 and 5', () => {
+  it('NIT 4: a degraded answer whose quoted repo error spans lines is still an answer (it used to fail closed)', () => {
+    const answer = '⚠ DEGRADED SEARCH: 1/2 repos failed (x) — first error: ERR: boom\n    at reader (x.mjs:1)\n'
+      + 'Results below cover only the healthy repos. Mention this degradation to the user.\n\n' + BANNERED;
+    const w = world();
+    expect(brainAnswered(JSON.stringify({ answer }), { home: w.home })).toBe(true);
+    stamp(w, payload('ruflo', JSON.stringify({ answer })));
+    expect(minted(w)).toEqual(expect.arrayContaining(['.any-search', 'ruflo']));
+  });
+  it('NIT 5: through the REAL hook-shim, the stamp uses the shim\'s own node when PATH has none', () => {
+    const w = world();
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'plugin', 'scripts', 'hook-shim.mjs'), 'grounding-stamp'], {
+      input: JSON.stringify(payload('ruflo memory', JSON.stringify({ answer: BANNERED }))),
+      env: { HOME: w.home, USERPROFILE: w.home, PATH: '/bin', CLAUDE_PLUGIN_ROOT: path.join(ROOT, 'plugin'),
+        RUVNET_BRAIN_STATE_DIR: path.join(w.home, 'state') },
+      encoding: 'utf8', timeout: 20_000,
+    });
+    expect(r.status).toBe(0);
+    expect(spawnSync(resolveBash(), ['-c', 'command -v node'], { env: { PATH: '/bin' } }).status, 'precondition: no node on this PATH').not.toBe(0);
+    expect(minted(w)).toEqual(expect.arrayContaining(['.any-search', 'ruflo']));
   });
 });
 

@@ -122,6 +122,12 @@ describe('ruvCapabilityClaims: each rule, with the claim it must still catch', (
     expect(claims('AgentDB will not open a store written by a newer release.')).toEqual(['agentdb']);
     expect(claims('The builds (ruvector, rvf) are native, so they don\'t depend on Node.')).toEqual([]);
   });
+  it('4.4.0 re-review nit: OUR changes phrased with "will not" / "now" / a pronoun are not product claims', () => {
+    expect(claims('Ruflo will not be touched by this patch.')).toEqual([]);
+    expect(claims('RuVector will not need a rebuild after this change.')).toEqual([]);
+    expect(claims('AgentDB now records every turn automatically.')).toEqual([]);
+    expect(claims('Ruflo is installed globally and it runs from ~/.npm-global/bin.')).toEqual([]);
+  });
   it('this product and paths are not rUv products', () => {
     expect(claims('RuvNet Brain supports private overlays.')).toEqual([]);
     expect(claims('ruvnet-brain supports private overlays.')).toEqual([]);

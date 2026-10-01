@@ -25,7 +25,9 @@ import { fileURLToPath } from 'node:url';
 
 const BANNER = /^Searched \d+ RuvNet repos \(/;
 const CARD = /^⚡ FAST LANE — [^\n]*\n#1  repo=\S+  evidence=curated-capability-card\n/;
-const DEGRADED = /^⚠ DEGRADED SEARCH: [^\n]*\nResults below cover only the healthy repos\. Mention this degradation to the user\.\n\n/;
+// The first failed repo's error is quoted inside this paragraph and can itself contain newlines, so the
+// paragraph is matched up to its fixed closing sentence, bounded, not up to the first newline.
+const DEGRADED = /^⚠ DEGRADED SEARCH: [\s\S]{0,4000}?\nResults below cover only the healthy repos\. Mention this degradation to the user\.\n\n/;
 const EMPTY = '(no results — the search ran';
 const OVERSIZE = /^Error: result \([\d,]+ characters\) exceeds maximum allowed tokens\. Output has been saved to (\S+?\.txt)\./;
 const PERSISTED = /^<persisted-output>\nOutput too large \([^)]*\)\. Full output saved to: (\S+?\.txt)\n/;
