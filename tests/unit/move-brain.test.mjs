@@ -153,12 +153,34 @@ describe('--move-brain onto a disk that adds its own metadata (exFAT/FAT/NTFS)',
     expect(fs.readdirSync(disk)).toEqual([]);
   });
 
-  it('red: a ._ file that IS part of the Brain is still compared (only destination-only metadata is ignored)', () => {
+  // Final Opus re-review of a0074096: --back from exFAT brought the disk's ._ruvector.rvf etc. home, where every
+  // reader read them as a fake `._ruvector` store and nothing ever removed them. Volume metadata is the
+  // volume's, on EITHER side: never copied, never compared, never required.
+  it('--back from an exFAT-like disk leaves its ._ files and volume metadata behind; the home Brain has none', () => {
     const { home, brain } = installedBrain();
-    fs.writeFileSync(path.join(brain, 'kb', '._mine'), 'real data');
-    const message = refusalOf(() => moveBrain({ home, to: path.join(temp('move-exfat-'), 'b'),
-      ops: { copyTree: (src, dest, filter) => { defaultOps.copyTree(src, dest, filter); fs.writeFileSync(path.join(dest, 'kb', '._mine'), 'changed!!'); } } }));
-    expect(message).toMatch(/kb[\\/]\._mine differs/);
+    const disk = path.join(temp('move-exfat-'), 'ruvnet-brain');
+    moveBrain({ home, to: disk, ops: { copyTree: exfatLikeCopy() } }); // the disk copy now carries ._* twins
+    expect(fs.existsSync(path.join(disk, 'kb', '._store.rvf'))).toBe(true);
+    fs.writeFileSync(path.join(disk, 'kb', '.DS_Store'), 'finder');
+    const moved = moveBrain({ home, back: true });
+    expect(moved.to).toBe(brain);
+    expect(fs.lstatSync(brain).isSymbolicLink()).toBe(false);
+    const all = [];
+    const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { all.push(e.name); if (e.isDirectory()) walk(path.join(dir, e.name)); } };
+    walk(brain);
+    expect(all.filter((n) => /^\._|^\.DS_Store$|^\.fseventsd$/.test(n))).toEqual([]);
+    expect(fs.readFileSync(path.join(brain, 'kb', 'store.rvf'))).toEqual(Buffer.alloc(4096, 7)); // the real bytes, verified
+    expect(fs.existsSync(disk)).toBe(false);
+  });
+
+  it('red: metadata exemption is by name only — a REAL file that differs still refuses on the way back', () => {
+    const { home } = installedBrain();
+    const disk = path.join(temp('move-exfat-'), 'ruvnet-brain');
+    moveBrain({ home, to: disk, ops: { copyTree: exfatLikeCopy() } });
+    const message = refusalOf(() => moveBrain({ home, back: true, ops: { copyTree: (src, dest, filter) => {
+      defaultOps.copyTree(src, dest, filter); fs.writeFileSync(path.join(dest, 'kb', 'SOURCE.json'), '{"tampered":1}');
+    } } }));
+    expect(message).toMatch(/kb[\\/]SOURCE\.json differs/);
   });
 
   it.runIf(process.platform === 'darwin')('a real exFAT disk image: the move succeeds, and a disk root is refused as a target', (ctx) => {
@@ -178,6 +200,15 @@ describe('--move-brain onto a disk that adds its own metadata (exFAT/FAT/NTFS)',
       moveBrain({ home, to: dest, available });
       expect(fs.realpathSync(brain)).toBe(fs.realpathSync(dest));
       expect(fs.statSync(measured.at(-1)).dev).toBe(fs.statSync(mount).dev); // space measured on the target disk
+      expect(fs.readFileSync(path.join(brain, 'kb', 'store.rvf'))).toEqual(Buffer.alloc(4096, 7));
+      expect(fs.readdirSync(path.join(dest, 'kb')).some((n) => n.startsWith('._'))).toBe(true); // the volume did write them
+      // ...and --back from the real exFAT disk brings none of them home.
+      moveBrain({ home, back: true, available });
+      expect(fs.lstatSync(brain).isSymbolicLink()).toBe(false);
+      const names = [];
+      const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { names.push(e.name); if (e.isDirectory()) walk(path.join(dir, e.name)); } };
+      walk(brain);
+      expect(names.filter((n) => n.startsWith('._') || n === '.DS_Store')).toEqual([]);
       expect(fs.readFileSync(path.join(brain, 'kb', 'store.rvf'))).toEqual(Buffer.alloc(4096, 7));
     } finally {
       spawnSync('hdiutil', ['detach', mount, '-force', '-quiet']);

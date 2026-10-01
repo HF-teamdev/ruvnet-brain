@@ -40,7 +40,8 @@ export const health = (home, off) => {
   if (unmounted) return { problem: unmounted, absentByChoice: false };
   const kb = path.join(home, '.cache', 'ruvnet-brain', 'kb');
   let rvf = false;
-  try { rvf = fs.readdirSync(kb).some((name) => name.endsWith('.rvf') && exists(path.join(kb, name))); }
+  // `._x.rvf` is macOS AppleDouble from an exFAT/FAT volume, not a store.
+  try { rvf = fs.readdirSync(kb).some((name) => name.endsWith('.rvf') && !name.startsWith('._') && exists(path.join(kb, name))); }
   catch { /* absent */ }
   const absentByChoice = off && (!exists(kb) || !rvf);
   if (absentByChoice) return { problem: '', absentByChoice };
