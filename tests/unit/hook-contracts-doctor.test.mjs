@@ -134,11 +134,14 @@ describe('--doctor emits exactly one verdict', () => {
   it('names the real cause of a smoke failure instead of guessing a reassuring one', () => {
     expect(INSTALL, 'the unconditional "first-run model download" excuse is back')
       .not.toMatch(/no answer came back \(first-run model download/);
+    // The classifier moved to scripts/installed-brain-health.mjs: assert its BEHAVIOUR, not where the text lives.
+    const HEALTH = fs.readFileSync(path.join(ROOT, 'scripts', 'installed-brain-health.mjs'), 'utf8');
+    expect(INSTALL, 'the doctor no longer routes its smoke failure through the classifier').toMatch(/classifySmokeFailure/);
     for (const cause of [
       'could not launch the reader',
       'timed out after',
       'was killed by',
       'exited 0 after',
-    ]) expect(INSTALL, `smoke failure cause "${cause}" is not reported`).toContain(cause);
+    ]) expect(HEALTH, `smoke failure cause "${cause}" is not reported`).toContain(cause);
   });
 });

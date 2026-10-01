@@ -5832,7 +5832,7 @@ the installer reports that boot-level declarations changed.
   {
     const where = brainLocation();
     if (where.state === 'unmounted' && !FLAG_MOVE_BRAIN) {
-      if (FLAG_DOCTOR) { printBanner('doctor'); warn(where.message); console.log(`\n  ${c.red('✗ FAILING')} — the Brain's disk is not mounted.`); process.exitCode = 1; return; }
+      if (FLAG_DOCTOR) { printBanner('doctor'); warn(where.message); console.log(`\n  ${c.red('✗ BRAIN DISK NOT MOUNTED')} — nothing was checked or changed; this is not a health verdict.`); process.exitCode = 1; return; }
       die(where.message, 'Plug the disk in (or mount it), then run the same command again.');
     }
   }
