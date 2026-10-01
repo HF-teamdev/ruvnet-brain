@@ -23,13 +23,10 @@
 #     Measured on the pre-fix tree, in tests/unit/brain-off.test.mjs's recorded red run: five
 #     distinct non-answers, five valid stamps.
 #
-# The success signal is the one line kb/forge-mcp-all.mjs prints on every genuinely-executed search
-# and on nothing else — `Searched <n> RuvNet repos (...)` — with the four known non-answers refused
-# explicitly first. Cheapest reliable signal in the payload: no JSON parsing, plain substring
-# matching over the tool_response portion of stdin ONLY (never the model-written query — step 0),
-# all of it bash builtins. The refusal markers are quote-free
-# on purpose: a PostToolUse payload JSON-encodes the tool response, so anything containing a double
-# quote would arrive as \" and never match.
+# The success signal is the header the brain prints at the START of a genuine answer and nowhere
+# else — `Searched <n> RuvNet repos (...)` or the fast-lane card header. Since 4.4.0 it is decided by
+# grounding-answer.mjs on the PARSED answer text (substring matching over the raw payload was forged
+# twice: first by the query in tool_input, then by the same query echoed in retrieval.query).
 #
 # CONTRACT: PostToolUse is non-blocking — always exit 0, swallow every failure.
 
@@ -45,71 +42,27 @@ INPUT=""
 _l=""   # set -u: a read that times out before any byte leaves _l unset ("unbound variable" on stderr)
 while IFS= read -r -t 2 _l; do
   INPUT+="$_l"
-  [ ${#INPUT} -ge 65536 ] && break
+  [ ${#INPUT} -ge 2097152 ] && break
 done
 [ -n "$_l" ] && INPUT+="$_l"
-INPUT="${INPUT:0:65536}"
+# 2 MiB, not 64 KiB (4.4.0): the verdict below PARSES the payload, and a payload cut mid-JSON parses as
+# nothing — too small a cap would silently mint nothing for a large genuine answer.
+INPUT="${INPUT:0:2097152}"
 [ -n "$INPUT" ] || exit 0
 
-# ── 0. READ ONLY WHAT THE TOOL SAID (4.3.40 adversarial review, CRITICAL). Every success marker and
-# every refusal below is matched against tool_response ONLY. tool_input.query is text the MODEL
-# writes: matching the whole payload let a query that merely CONTAINED `Searched 37 RuvNet repos`,
-# `evidence=curated-capability-card`, `#1  repo=` or a host "saved to" sentence turn an empty,
-# refused or failed response into a 24-hour stamp (tests/unit/grounding-stamp-forgery.test.mjs).
-# Both hosts (Claude, Codex — tests/fixtures/hook-payloads/*/PostToolUse-*.json) name the key
-# `tool_response`. A raw `"tool_response"` cannot come from inside a JSON string (its quotes arrive
-# escaped as \"), so the first raw one is the key. Key order is not guaranteed, so a `tool_input`
-# that FOLLOWS the response is cut off too. No key ⇒ RESP stays empty ⇒ nothing mints.
-# Matching is case-SENSITIVE: the producers print these exact strings.
-RESP=""
-case "$INPUT" in *'"tool_response"'*) RESP="${INPUT#*\"tool_response\"}" ;; esac
-case "$RESP" in *'"tool_input"'*) RESP="${RESP%%\"tool_input\"*}" ;; esac
-# An empty or null response is not an answer.
-_r="${RESP//[[:space:]:,\}\]\[\{\"]/}"
-case "$_r" in ''|null) exit 0 ;; esac
-
-# The two answer shapes the brain prints itself (kb/forge-mcp-all.mjs heavy-lane banner;
-# kb/card-lane.mjs renderCardHit fast-lane card). grounding-turn-evidence.mjs brainAnswered()
-# applies the same predicate at Stop; keep them in step.
-answered() {
-  [[ $1 =~ Searched\ [0-9]+\ RuvNet\ repos ]] && return 0
-  case "$1" in *"evidence=curated-capability-card"*) return 0 ;; esac
-  return 1
-}
-# A refusal counts when the tool spoke it BEFORE any answer — a refused result never mints, even if
-# an answer marker follows it. A real answer whose retrieved document QUOTES one of these phrases
-# (the corpus holds this repo's own docs) has the banner or card first, so it is still an answer.
-refused() {
-  local s="$1" p before
-  for p in "RuvNet Brain is disabled" "RUVNET BRAIN IS DOWN" "search_ruvnet error:"; do
-    case "$s" in *"$p"*) before="${s%%"$p"*}"; answered "$before" || return 0 ;; esac
-  done
-  # The search ran and matched nothing: the brain showed the model no source. A genuine result
-  # carries a `#1  repo=` block before any quoted "(no results"; the empty answer never does.
-  case "$s" in *"(no results"*)
-    before="${s%%"(no results"*}"
-    case "$before" in *"#1  repo="*) ;; *) return 0 ;; esac ;;
-  esac
-  return 1
-}
-
-# ── 1. REFUSE the known non-answers first, independent of any marker. ──────────────────────────
-refused "$RESP" && exit 0
-
-# ── 2. REQUIRE an answer: in the response itself, or — when the HOST replaced an oversized result
-# with "exceeds maximum allowed tokens. Output has been saved to <file>" — in that file, read
-# bounded, and only when it lives in the host's own $HOME/.claude/projects/*/tool-results/
-# directory, is a regular file (not a link) and itself holds an answer and no leading refusal.
-if ! answered "$RESP"; then
-  saved_re='exceeds maximum allowed tokens\. Output has been saved to ([^[:space:]\\"]+/tool-results/[^[:space:]\\"]+\.txt)'
-  [[ $RESP =~ $saved_re ]] || exit 0
-  saved="${BASH_REMATCH[1]}"
-  case "$saved" in *..*) exit 0 ;; "$HOME/.claude/projects/"*"/tool-results/"*) ;; *) exit 0 ;; esac
-  [ -f "$saved" ] && [ ! -L "$saved" ] || exit 0
-  head=$(head -c 16384 "$saved" 2>/dev/null) || exit 0
-  refused "$head" && exit 0
-  answered "$head" || exit 0
-fi
+# ── 0-2. DID THE BRAIN ANSWER? ONE predicate, plugin/scripts/grounding-answer.mjs, shared with Stop. ──
+# 4.4.0 adversarial review, BLOCKER B1: matching markers anywhere in tool_response still minted from
+# the MODEL's query, because every lane echoes it back at structuredContent.retrieval.query — the
+# router-decline lane ("NO SEARCH WAS RUN") and source discovery included. The predicate now PARSES
+# the response and reads the ANSWER TEXT only (answer / content[].text), which must BEGIN with the
+# brain's own header; an oversize notice counts only as the host's whole response, pointing at the
+# host's own saved file, written during this call. No node, an unparseable payload, or any other
+# shape ⇒ nothing mints: a stamp that cannot be proven is not minted.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || exit 0
+NODE_BIN="$(command -v node 2>/dev/null)" || NODE_BIN=""
+[ -n "$NODE_BIN" ] && [ -f "$HERE/grounding-answer.mjs" ] || exit 0
+VERDICT="$(printf '%s' "$INPUT" | "$NODE_BIN" "$HERE/grounding-answer.mjs" 2>/dev/null)" || VERDICT=""
+[ "$VERDICT" = "answered" ] || exit 0
 
 DIR="$HOME/.cache/ruvnet-brain/grounded"
 mkdir -p "$DIR" 2>/dev/null || exit 0

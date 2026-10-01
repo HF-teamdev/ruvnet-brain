@@ -8,6 +8,7 @@ import { resolveProjectStore } from '../../plugin/scripts/project-store-resolver
 import {
   ProjectProgressionStore,
   projectResumePayloadToBound,
+  rufloCwdFor,
 } from '../../plugin/scripts/project-progression-store.mjs';
 import { resolveRuflo } from '../../plugin/scripts/ruflo-bin.mjs';
 import { getVersion } from '../../scripts/version.mjs';
@@ -401,5 +402,39 @@ describe('managed ProjectProgression append and readback', () => {
     // ruflo creates `<cwd>/.swarm/` on every call; run from inside `.swarm` it left an unused nested
     // store in every customer project (measured 2026-10-01, ruflo 3.49.0).
     expect(fs.existsSync(path.join(projectRoot, '.swarm', '.swarm'))).toBe(false);
+  }, 180_000);
+
+  // The resolver pins the store to <projectRoot>/.swarm/memory.db (a foreign --path is rejected), but the
+  // cwd rule must hold for ANY store path: ruflo creates <cwd>/.swarm on every call.
+  it('chooses a ruflo cwd that never creates a store beside or inside a store', () => {
+    const projectRoot = temporaryProject();
+    expect(rufloCwdFor(path.join(projectRoot, '.swarm', 'memory.db'))).toBe(projectRoot);
+    expect(rufloCwdFor(path.join(projectRoot, 'other', '.swarm', 'memory.db'))).toBe(path.join(projectRoot, 'other'));
+    const scratchRoot = temporaryProject();
+    const cwd = rufloCwdFor(path.join(projectRoot, 'stores', 'memory.db'), { scratchRoot });
+    expect(path.dirname(cwd)).toBe(scratchRoot);
+    expect(fs.statSync(cwd).isDirectory()).toBe(true);
+    expect(() => resolveProjectStore({ projectDir: projectRoot, requestedStorePath: path.join(projectRoot, 'stores', 'memory.db') }))
+      .toThrow(/foreign store root rejected/);
+  });
+
+  realRufloIt('real ruflo with a non-default --path leaves no .swarm next to the store or in the project', () => {
+    const projectRoot = temporaryProject();
+    const storeDir = path.join(projectRoot, 'stores');
+    fs.mkdirSync(storeDir);
+    const store = path.join(storeDir, 'memory.db');
+    const scratchRoot = temporaryProject();
+    const cwd = rufloCwdFor(store, { scratchRoot });
+    const env = { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' };
+    const call = (args) => spawnSync(ruflo, args, { cwd, env, encoding: 'utf8', timeout: 120_000 });
+    const init = call(['memory', 'init', '--backend', 'agentdb', '--path', store]);
+    expect(init.status, init.stderr || init.stdout).toBe(0);
+    const stored = call(['memory', 'store', '--key', 'n3-probe', '--value', '{"ok":true}', '--namespace', 'n3', '--path', store]);
+    expect(stored.status, stored.stderr || stored.stdout).toBe(0);
+    const read = call(['memory', 'retrieve', '--key', 'n3-probe', '--namespace', 'n3', '--value-only', '--path', store]);
+    expect(read.status, read.stderr || read.stdout).toBe(0);
+    expect(JSON.parse(read.stdout)).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(storeDir, '.swarm'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.swarm'))).toBe(false);
   }, 180_000);
 });

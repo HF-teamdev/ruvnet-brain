@@ -15,6 +15,9 @@ const sleepSync = (ms) => { if (ms > 0) Atomics.wait(new Int32Array(new SharedAr
 // CLIs this process has seen working. Only a CLI that was here (or whose PATH link still exists)
 // can be "transiently" missing; one that was never installed fails at once, with no 20s wait.
 const SEEN = new Set();
+// CLIs that stayed missing through one full wait: gone for this process. A permanently dangling link
+// must not cost ~20s on EVERY later call — one bounded wait per process, then fail at once.
+const GONE = new Set();
 
 /** The binary's real path, or null when it is not on PATH or its link points at nothing. */
 export function resolveHostCli(cmd, { spawn = spawnSync } = {}) {
@@ -44,15 +47,17 @@ export function hostCliOnPath(cmd, { env = process.env } = {}) {
  */
 export function waitForHostCli(cmd, { delays = HOST_CLI_RETRY_DELAYS_MS, sleep = sleepSync, resolve = resolveHostCli,
   onPath = hostCliOnPath } = {}) {
-  if (resolve(cmd)) return { present: true, waited: false };
+  if (resolve(cmd)) { GONE.delete(cmd); return { present: true, waited: false }; }
   if (!onPath(cmd)) return { present: false, waited: false };
+  const waited = Math.round(delays.reduce((sum, ms) => sum + ms, 0) / 1000);
+  const message = `the \`${cmd}\` command is on PATH but points at nothing (checked for ${waited}s — it may be updating itself)`;
+  if (GONE.has(cmd)) return { present: false, waited: false, message };
   for (const ms of delays) {
     sleep(ms);
     if (resolve(cmd)) return { present: true, waited: true };
   }
-  const waited = Math.round(delays.reduce((sum, ms) => sum + ms, 0) / 1000);
-  return { present: false, waited: true,
-    message: `the \`${cmd}\` command is on PATH but points at nothing (checked for ${waited}s — it may be updating itself)` };
+  GONE.add(cmd);
+  return { present: false, waited: true, message };
 }
 
 const MISSING_TEXT = /(?:No such file or directory|command not found|ENOENT|is not recognized as an internal or external command)/i;
@@ -61,7 +66,9 @@ const MISSING_TEXT = /(?:No such file or directory|command not found|ENOENT|is n
 export function missingBinaryAttempt(result, cmd, { resolve = resolveHostCli } = {}) {
   if (result?.error?.code === 'ENOENT') return true;
   if (result?.error || result?.status === 0) return false;
-  if (result?.status === 127) return true;
+  // 127 is the shell's "could not execute" — but only when the binary really is gone; a CLI that
+  // resolves and itself exits 127 ran, and its failure is its own.
+  if (result?.status === 127) return !resolve(cmd);
   // A run that started and failed for its own reasons is not "missing"; only a failure whose text
   // says a file was missing AND whose binary no longer resolves is.
   return MISSING_TEXT.test(String(result?.stderr || '')) && !resolve(cmd);
@@ -80,11 +87,12 @@ export function runHostCli(cmd, args, {
   const spawnOpts = { shell: IS_WIN, ...opts, stdio: inherit ? ['inherit', 'inherit', 'pipe'] : stdio };
   if (inherit && !spawnOpts.encoding) spawnOpts.encoding = 'utf8';
   let result;
+  if (GONE.has(cmd)) delays = []; // already waited once this process: one attempt, no backoff
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
     if (attempt > 0) sleep(delays[attempt - 1]);
     result = spawn(cmd, args, spawnOpts);
     const missing = missingBinaryAttempt(result, cmd, { resolve });
-    if (!missing) SEEN.add(cmd);
+    if (!missing) { SEEN.add(cmd); GONE.delete(cmd); }
     // Never installed (not seen this run, no PATH entry at all): the caller's own "not found"
     // handling applies at once, exactly as before.
     if (!missing || (attempt === 0 && !SEEN.has(cmd) && !onPath(cmd))) {
@@ -93,12 +101,15 @@ export function runHostCli(cmd, args, {
     }
   }
   const waited = Math.round(delays.reduce((sum, ms) => sum + ms, 0) / 1000);
+  GONE.add(cmd);
   return Object.assign(result ?? {}, {
     attempts: delays.length + 1,
     missingBinary: true,
-    message: `the \`${cmd}\` command was not available (tried ${delays.length + 1} times over ${waited}s — it may be updating itself); skipped \`${cmd} ${args.join(' ')}\``,
+    message: delays.length
+      ? `the \`${cmd}\` command was not available (tried ${delays.length + 1} times over ${waited}s — it may be updating itself); skipped \`${cmd} ${args.join(' ')}\``
+      : `the \`${cmd}\` command is still not available (it already stayed missing through a wait earlier in this run); skipped \`${cmd} ${args.join(' ')}\``,
   });
 }
 
 /** Test seam: forget which CLIs this process has seen. */
-export function resetSeenHostClis() { SEEN.clear(); }
+export function resetSeenHostClis() { SEEN.clear(); GONE.clear(); }

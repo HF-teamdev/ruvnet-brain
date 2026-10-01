@@ -32,6 +32,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUVNET_GATE1_TERMS } from './ruvnet-gate1-pattern.mjs';
+import { brainAnsweredResponse } from './grounding-answer.mjs';
 import { extractClaims } from './capability-claim-evidence.mjs';
 import { currentTurnRecords, strippedProse } from './completion-claim-evidence.mjs';
 
@@ -134,48 +135,22 @@ const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c)
 const NOT_A_SOURCE = /^(?:Edit|Write|MultiEdit|NotebookEdit|TodoWrite|ToolSearch|AskUserQuestion|ExitPlanMode|SendMessage|TaskStop|Monitor|Skill|Artifact.*|EnterWorktree|ExitWorktree)$/;
 const MCP_MUTATING = /__(?:create|update|delete|remove|publish|deploy|push|write|send|set|merge|upload|patch|put|post|add|rename|move|approve|promote|rollback|cancel|buy|store|edit|import|reset|stop|terminate|spawn|execute)[a-z_-]*$/i;
 
-/** One tool call as evidence: what it looked at (`text`, used for binding) and how much to trust it. */
-const SEARCH_BANNER = /Searched \d+ RuvNet repos/;
-// kb/card-lane.mjs renderCardHit — the FAST LANE first responder never prints the banner.
-const SEARCH_CARD = /evidence=curated-capability-card/;
-const SEARCH_OVERSIZE = /exceeds maximum allowed tokens\. Output has been saved to (\S+?[\\/]tool-results[\\/]\S+?\.txt)/;
-
 /**
- * Did the brain actually answer? Three real shapes (tests/unit/grounding-success-shapes.test.mjs;
- * 22 of 240 real results were wrongly failed by the banner-only rule): the heavy lane's banner, the
- * fast lane's curated card, and a result the HOST swapped for an "exceeds maximum allowed tokens"
- * error — whose saved file (only from the host's own tool-results directory) holds the answer.
- * grounding-stamp.sh applies the same predicate at PostToolUse; keep them in step.
+ * Did the brain actually answer? The ONE predicate (grounding-answer.mjs), shared with
+ * grounding-stamp.sh: the ANSWER TEXT (never the echoed retrieval.query) must begin with the brain's
+ * own header — heavy-lane banner, fast-lane card, optionally after the degraded paragraph — or the
+ * response is the host's oversize notice for its own saved file. `notAfterMs`: the transcript time of
+ * this tool result; a saved file modified later is not the tool's output.
  */
-const REFUSALS = ['RuvNet Brain is disabled', 'RUVNET BRAIN IS DOWN', 'search_ruvnet error:'];
-const answers = (s) => SEARCH_BANNER.test(s) || SEARCH_CARD.test(s);
-/** A refusal the tool spoke BEFORE any answer marker (same rule as grounding-stamp.sh refused()). */
-const refusedFirst = (s) => REFUSALS.some((p) => { const i = s.indexOf(p); return i >= 0 && !answers(s.slice(0, i)); });
-export function brainAnswered(r, { home = os.homedir() } = {}) {
-  if (answers(r)) return true;
-  const m = SEARCH_OVERSIZE.exec(r);
-  if (!m || m[1].includes('..')) return false;
-  // Only the HOST's own saved-result directory, as grounding-stamp.sh requires: any other path in the
-  // result text is text, and a file elsewhere (or a link to one) is not the host's record.
-  const projects = path.join(home, '.claude', 'projects') + path.sep;
-  if (!m[1].startsWith(projects) || !/^[^\\/].*[\\/]tool-results[\\/][^\\/]+$/.test(m[1].slice(projects.length))) return false;
-  try {
-    const st = fs.lstatSync(m[1]);
-    if (!st.isFile() || st.isSymbolicLink()) return false;
-    const fd = fs.openSync(m[1], 'r');
-    try {
-      const buf = Buffer.alloc(16384);
-      const head = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString('utf8');
-      return answers(head) && !refusedFirst(head);
-    } finally { fs.closeSync(fd); }
-  } catch { return false; }
+export function brainAnswered(r, { home = os.homedir(), notAfterMs = null } = {}) {
+  return brainAnsweredResponse(r, { home, notAfterMs });
 }
 
-export function sourceOf(name, input = {}, result = '') {
+export function sourceOf(name, input = {}, result = '', { resultAtMs = null } = {}) {
   const n = String(name || '');
   const r = String(result || '');
   if (/(?:^|__)search_ruvnet$/.test(n)) {
-    const ok = brainAnswered(r) && !/^\s*(?:search_ruvnet error:|.{0,200}RUVNET BRAIN IS DOWN|.{0,200}RuvNet Brain is disabled)/s.test(r);
+    const ok = brainAnswered(r, { notAfterMs: resultAtMs == null ? null : resultAtMs + 5000 });
     const paths = [...r.matchAll(/^path : (\S+)/gm)].map((m) => m[1]).slice(0, 20);
     return { kind: 'search_ruvnet', ref: String(input.query || ''), strength: ok ? 'strong' : 'failed', ok, text: [input.query, ...paths].join(' ') };
   }
@@ -207,7 +182,8 @@ export function turnSources(lines) {
   const results = new Map();
   for (const o of recs) {
     const c = o?.message?.content;
-    if (Array.isArray(c)) for (const r of c) if (r?.type === 'tool_result' && r.tool_use_id) results.set(r.tool_use_id, textOf(r.content));
+    const at = Date.parse(o?.timestamp || '');
+    if (Array.isArray(c)) for (const r of c) if (r?.type === 'tool_result' && r.tool_use_id) results.set(r.tool_use_id, { text: textOf(r.content), at: Number.isFinite(at) ? at : null });
   }
   const sources = [];
   for (const o of recs) {
@@ -215,7 +191,8 @@ export function turnSources(lines) {
     if (o?.type !== 'assistant' || !Array.isArray(c)) continue;
     for (const u of c) {
       if (u?.type !== 'tool_use') continue;
-      const s = sourceOf(u.name, u.input || {}, results.get(u.id) || '');
+      const res = results.get(u.id) || { text: '', at: null };
+      const s = sourceOf(u.name, u.input || {}, res.text, { resultAtMs: res.at });
       if (s) sources.push({ ...s, order: sources.length });
     }
   }
@@ -245,20 +222,35 @@ const RUV_SUBJECT = String.raw`(?<![\w/.@-])${RUV_PRODUCT}(?![\w-]|[./][\w])(?:(
 // Not \b at the end: `support-ticket` is no verb.
 const PLURAL_NOUN = 'tools|packages|crates|plugins|libraries|hooks|agents|skills|servers|workers|daemons|commands|apis|clis|sdks|bindings|routers|gates|controllers';
 const VERBS = 'support|provide|expose|ship|offer|export|implement|include|allow|enable|accept|return|store|require|need|handle|route|record|persist|index|cache|spawn|create|generate|compute|sort|classif|scan|detect|block|prevent|replace|wrap|call|launch|keep|clamp|turn|give|make|run|use|take|let|write';
-const CAPABILITY_VERB = String.raw`(?:can(?:not|'t|’t)?\s+\w+|does(?:n't|n’t|\s+not)\s+\w+|do(?:n't|n’t|\s+not)\s+\w+|has(?:n't|n’t|\s+not)\s+\w+|has\s+(?:a|an|no|its|built-in|native)\b|(?:is|are)\s+(?:able|unable|capable|designed|built|meant|backed|limited|not\s+(?:able|available|supported))\b|only\s+(?:supports?|works|runs|accepts)|comes\s+with|works\s+(?:with|by|on|only)|(?:${VERBS})(?:e?s|ies)|(?<=\b(?:${PLURAL_NOUN})\s+)(?:${VERBS}))(?![\w-])`;
+const CAPABILITY_VERB = String.raw`(?:(?:won't|won’t|will\s+not)\s+\w+|can(?:not|'t|’t)?\s+\w+|does(?:n't|n’t|\s+not)\s+\w+|do(?:n't|n’t|\s+not)\s+\w+|has(?:n't|n’t|\s+not)\s+\w+|has\s+(?:a|an|no|its|built-in|native)\b|(?:is|are)\s+(?:able|unable|capable|designed|built|meant|backed|limited|not\s+(?:able|available|supported))\b|only\s+(?:supports?|works|runs|accepts)|comes\s+with|works\s+(?:with|by|on|only)|(?:${VERBS})(?:e?s|ies)|(?<=\b(?:${PLURAL_NOUN})\s+)(?:${VERBS}))(?![\w-])`;
 // What rUv's own docs/research/source SAY is a capability claim too, in any tense.
 const DOC_VERB = String.raw`(?:says?|said|found|finds|shows?|showed|marks?|marked|documents?|documented|recommends?|prescribes?|states?|reports?|measured|took|warns?)\b`;
 const DOC_NOUN = String.raw`(?:research|benchmark|readme|docs?|documentation|release\s+notes|notes|code|source|adr|guidance|skill|campaign|issue|gist)`;
-const RUV_CLAIM = new RegExp(`(${RUV_SUBJECT})\\s+(?:\\([^)]{0,80}\\)\\s+)?(?:also\\s+|already\\s+|actually\\s+|really\\s+|still\\s+|always\\s+|never\\s+|only\\s+)?${CAPABILITY_VERB}`, 'gi');
+const RUV_CLAIM = new RegExp(`(${RUV_SUBJECT})\\s+(?:\\([^)]{0,80}\\)\\s+)?(?:now\\s+|also\\s+|already\\s+|actually\\s+|really\\s+|still\\s+|always\\s+|never\\s+|only\\s+)?${CAPABILITY_VERB}`, 'gi');
 const RUV_DOC_CLAIM = new RegExp(`(?<![\\w/.@-])${RUV_PRODUCT}(?:(?:'|’)s)?(?:\\s+own)?(?:\\s+[\\w.@/-]+){0,3}?\\s+${DOC_NOUN}\\b[^.;]{0,40}?\\b${DOC_VERB}`, 'gi');
-// Not an assertion: a question, a hedge, a plan or hypothetical, or a change report ("X now does")
-// about this repo's own work — the measured false-alarm shapes. Narrower than HEDGE above on purpose:
-// "if"/"when" clauses about a rUv tool still assert what it does.
-const NOT_RUV_ASSERTION = /\?|\b(?:might|may|maybe|perhaps|probably|possibly|potentially|likely|unlikely|apparently|seems?|i\s+think|i\s+believe|i\s+suspect|not\s+sure|unsure|unverified|unconfirmed|not\s+verified|would|could|should|i(?:'ll|’ll)|we(?:'ll|’ll)|will|plan(?:ned)?\s+to|going\s+to|once|now|if|unless)\b/i;
+// "Ruflo is the orchestration layer and it has no hooks API": the pronoun refers back, in the same
+// sentence — only to a product that OPENS the sentence as its subject (a product inside a list or a
+// parenthetical is not what "they" means: "N-API builds (ruvector, rvf, …), so they don't depend…").
+const RUV_COREF_CLAIM = new RegExp(`^(?:the\\s+)?(${RUV_PRODUCT})(?![\\w-]|[./][\\w])(?:(?:'|’)s)?\\s+(?:is|are|was|has|provides?|ships?)\\b[^.;!?()]{0,80}?\\b(?:and|but|so|which|because)\\s+(?:it|they)\\s+(?:also\\s+|now\\s+|still\\s+|only\\s+)?${CAPABILITY_VERB}`, 'gi');
+// Not an assertion: a question, a hedge, a plan or hypothetical. Narrower than HEDGE above on purpose,
+// and narrower still since the 4.4.0 review (S2): "now", "if" and "will not" no longer silence a whole
+// sentence — "Ruflo now supports Windows natively", "RuVector cannot run on Windows, so if you need it
+// use WSL" and "X will not run on Y" are claims. They are judged per claim in isAssertion instead.
+const NOT_RUV_ASSERTION = /\?|\b(?:might|may|maybe|perhaps|probably|possibly|potentially|likely|unlikely|apparently|seems?|i\s+think|i\s+believe|i\s+suspect|not\s+sure|unsure|unverified|unconfirmed|not\s+verified|would|could|should|i(?:'ll|’ll)|we(?:'ll|’ll)|will(?!\s+not\b)|plan(?:ned)?\s+to|going\s+to|once)\b/i;
+const FIRST_PERSON = /\b(?:I|we|me|my|our|us)\b/;
 
 function isAssertion(s, m) {
   // "what rUv already ships" / "whether ruflo supports X" is a noun clause, not an assertion.
   if (/\b(?:what|whatever|whether)\b[^.,;:!?]{0,40}$/i.test(s.slice(0, m.index))) return false;
+  // A condition in the claim's OWN clause makes it hypothetical ("Ruv can't use Brain if every update
+  // breaks"); a condition in a later clause does not ("cannot run on Windows, so if you need it…").
+  const start = Math.max(0, ...[...s.slice(0, m.index).matchAll(/[,;:—–]|\b(?:so|but)\b/g)].map((x) => x.index + x[0].length));
+  const after = s.slice(m.index + m[0].length);
+  const stop = after.search(/[,;:—–]|\b(?:so|but)\b/);
+  if (/\b(?:if|unless)\b/i.test(s.slice(start, m.index + m[0].length + (stop < 0 ? after.length : stop)))) return false;
+  // "now" is a recency claim about the product — unless it reports OUR change ("AgentDB now records
+  // every turn … with no reliance on me remembering", a measured false alarm).
+  if (/\bnow\b/i.test(s) && FIRST_PERSON.test(s)) return false;
   // "returns 10 results", "takes about 3 s": a measurement this turn, not a capability.
   return !/^\s*(?:about\s+|around\s+|only\s+|~|≈)?\d/.test(s.slice(m.index + m[0].length));
 }
@@ -277,7 +269,7 @@ export function ruvCapabilityClaims(rawMessage) {
   for (const raw of text.split(/(?<=[.!?;])\s+|\n+|\s+[—–]\s+/)) {
     const s = raw.replace(/^[\s\-*•#>\d.)]+/, '').trim();
     if (!s || s.length > 400 || NOT_RUV_ASSERTION.test(s)) continue;
-    const m = [...s.matchAll(RUV_CLAIM), ...s.matchAll(RUV_DOC_CLAIM)].find((x) => isAssertion(s, x));
+    const m = [...s.matchAll(RUV_CLAIM), ...s.matchAll(RUV_DOC_CLAIM), ...s.matchAll(RUV_COREF_CLAIM)].find((x) => isAssertion(s, x));
     if (m) out.push({ text: s, match: m[0], subject: (m[1] || m[0]).trim().split(/\s+/)[0].replace(/(?:'|’)s$/, '').toLowerCase() });
     if (out.length >= 8) break;
   }
