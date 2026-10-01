@@ -63,7 +63,7 @@ export function loadVocabulary({ env = process.env } = {}) {
       // Installed store names — but a plain single word ("support", "concepts", "marketing") is an
       // English word far more often than a product; measured, it produced "doesn't support" claims.
       for (const name of fs.readdirSync(dir)) {
-        if (!name.endsWith('.meta.json')) continue;
+        if (!name.endsWith('.meta.json') || name.startsWith('._')) continue; // ._: AppleDouble, not a store
         const store = name.slice(0, -'.meta.json'.length);
         if (/[-_.0-9]/.test(store) || /^(?:ru|rv|agentic|cognitum)/i.test(store)) out.add(store);
       }

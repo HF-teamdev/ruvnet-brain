@@ -215,3 +215,49 @@ describe('S4: the outbox stays bounded', () => {
     expect(journal.pending().map((r) => r.event.summary)).toEqual(expect.arrayContaining(['Before compaction.', 'Landed mid-compaction.']));
   });
 });
+
+// Re-review BLOCKER 2: on a read-only .swarm the `wx` lock create failed with EACCES, the follow-up stat
+// threw ENOENT, and the catch `continue`d BEFORE the deadline check — a 100% CPU spin that hung Stop,
+// PreCompact and SessionEnd. Run in a CHILD with a hard timeout, so a regression fails instead of hanging.
+const JOURNAL = path.resolve(import.meta.dirname, '../../plugin/scripts/continuity-journal.mjs');
+const HOOK = path.resolve(import.meta.dirname, '../../plugin/scripts/session-snapshot-hook.mjs');
+const canChmod = process.platform !== 'win32' && process.getuid?.() !== 0; // root ignores the mode bits
+describe.skipIf(!canChmod)('a read-only .swarm never hangs a capture boundary (re-review B2)', () => {
+  const readOnlyProject = () => {
+    const p = adoptedProject();
+    commit(p.dir, p.env, 'a.txt', 'feat: a change');
+    fs.chmodSync(path.join(p.dir, '.swarm'), 0o555);
+    return p;
+  };
+  const restore = (p) => fs.chmodSync(path.join(p.dir, '.swarm'), 0o755);
+
+  it('appendRecords throws the real error promptly (EACCES), it does not spin', () => {
+    const p = readOnlyProject();
+    try {
+      const started = Date.now();
+      const r = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        const { ContinuityJournal } = await import(${JSON.stringify(`file://${JOURNAL}`)});
+        const j = new ContinuityJournal({ projectRoot: ${JSON.stringify(p.dir)}, ruflo: null });
+        try { j.appendRecords([{ type: 'event', key: 'k', digest: 'd', event: {} }]); console.log('APPENDED'); }
+        catch (e) { console.log('THREW ' + e.code); }`], { encoding: 'utf8', timeout: 8_000 });
+      expect(r.signal, 'killed by the timeout: the lock loop spun').toBeNull();
+      expect(r.stdout.trim()).toBe('THREW EACCES');
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally { restore(p); }
+  });
+
+  it('the Claude Stop hook returns promptly (exit 0) with a read-only .swarm', () => {
+    const p = readOnlyProject();
+    try {
+      const started = Date.now();
+      const r = spawnSync(process.execPath, [HOOK, 'Stop'], { cwd: p.dir, encoding: 'utf8', timeout: 15_000,
+        input: JSON.stringify({ session_id: 'ro-1', hook_event_name: 'Stop', cwd: p.dir }),
+        env: { ...p.env, CLAUDE_PROJECT_DIR: p.dir, RUVNET_HOOK_HOST: 'claude', RUFLO_BIN: fakeRuflo().bin, RUVNET_BRAIN_HOME: tmp('cont-brain-'),
+          RUVNET_RUFLO_CWD_ROOT: process.env.RUVNET_RUFLO_CWD_ROOT, RUVNET_TURN_CAPTURE: 'off',
+          RUVNET_CONTINUITY_CAPTURE: '' } }); // vitest.config turns capture off; this test needs it ON
+      expect(r.signal, 'the hook hung until killed').toBeNull();
+      expect(r.status).toBe(0);
+      expect(Date.now() - started).toBeLessThan(5_000); // < 3 s of capture work plus process start-up
+    } finally { restore(p); }
+  });
+});

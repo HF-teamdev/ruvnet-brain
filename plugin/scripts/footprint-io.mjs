@@ -27,6 +27,49 @@ export function physical(dir) {
   try { return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved)); } catch { return resolved; }
 }
 
+/** A process is gone only when the OS says so (ESRCH); anything else counts as alive. */
+export const pidAlive = (pid) => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error?.code !== 'ESRCH'; }
+};
+const semver = (v) => String(v || '').replace(/^v/, '').split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+export const cmpVersion = (a, b) => {
+  const A = semver(a); const B = semver(b);
+  for (let i = 0; i < Math.max(A.length, B.length); i += 1) {
+    const x = A[i] ?? 0; const y = B[i] ?? 0;
+    if (x === y) continue;
+    if (typeof x === 'number' && typeof y === 'number') return x - y;
+    return String(x) < String(y) ? -1 : 1;
+  }
+  return 0;
+};
+
+/**
+ * Leftovers of an INTERRUPTED `--move-brain`, by the names scripts/move-brain.mjs gives them: the original set
+ * aside mid-swap (`<home>.old-<pid>`), staging copies (`.<name>.moving-<pid>` beside the home, or beside the
+ * linked target on its disk) and links (`<home>.link-<pid>`, `<home>.link-old-<pid>`). Only a DEAD pid's — a
+ * live one is a move still running.
+ */
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const WHAT = { old: 'the original Brain set aside by an interrupted move', 'link-old': 'a link left by an interrupted move',
+  link: 'a link left by an interrupted move', moving: 'the staging copy of an interrupted move' };
+export function findMoveLeftovers({ brainHome, location = null, isAlive = pidAlive }) {
+  const base = path.basename(brainHome);
+  const found = new Map();
+  const scan = (dir, re) => {
+    for (const name of names(dir)) {
+      const m = re.exec(name);
+      if (!m || isAlive(Number(m.at(-1)))) continue;
+      const what = m.length > 2 ? m[1] : 'moving';
+      found.set(path.join(dir, name), { path: path.join(dir, name), what, pid: Number(m.at(-1)), reason: WHAT[what] });
+    }
+  };
+  scan(path.dirname(brainHome), new RegExp(`^${escapeRe(base)}\\.(old|link-old|link)-(\\d+)$`));
+  scan(path.dirname(brainHome), new RegExp(`^\\.${escapeRe(base)}\\.moving-(\\d+)$`));
+  if (location?.state === 'linked' && location.real) scan(path.dirname(location.real), new RegExp(`^\\.${escapeRe(path.basename(location.real))}\\.moving-(\\d+)$`));
+  return [...found.values()];
+}
+
 /** Bytes under a path, never following a link (a link counts as itself). */
 export function treeBytes(target) {
   const st = lstat(target);

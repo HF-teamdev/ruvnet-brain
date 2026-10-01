@@ -6,8 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  classifySmokeFailure, coldModels, MODEL_WARMUP_SCRIPT,
+  classifySmokeFailure, classifyWarmupFailure, coldModels, MODEL_WARMUP_SCRIPT,
 } from '../../scripts/installed-brain-health.mjs';
+import { completeBrain } from '../helpers/doctor-brain-fixture.mjs';
 import { BGE_MODEL, RERANKER_MODEL, modelPath } from '../../kb/model-requirements.mjs';
 import { QueryDeadlineExceeded, describeDeadline, DEADLINE_EXIT_CODE } from '../../kb/query-deadline.mjs';
 
@@ -106,24 +107,67 @@ describe('MODEL_WARMUP_SCRIPT (run for real against a stand-in KB)', () => {
   });
 });
 
-describe('the installer doctor wiring', () => {
-  const src = fs.readFileSync(new URL('../../bin/install.mjs', import.meta.url), 'utf8');
-  const smoke = src.slice(src.indexOf('async function smokeQuery('), src.indexOf('// ── `--demo`'));
-
-  it('warms only a cold cache, and before the timed question', () => {
-    expect(smoke).toMatch(/const cold = coldModels\(cacheDir, modelCache\);\s*if \(cold\.length\) \{/);
-    expect(smoke.indexOf('MODEL_WARMUP_SCRIPT')).toBeGreaterThan(smoke.indexOf('if (cold.length)'));
-    expect(smoke.indexOf('MODEL_WARMUP_SCRIPT')).toBeLessThan(smoke.indexOf('doctorSmokeArgs(cacheDir)'));
-    // A warm-up that ran out of time is named as a timeout (advisory); any other failure stays a failure;
-    // missing reader modules are named before any warm-up is attempted (behaviour: install-smoke.mjs).
-    expect(smoke).toContain("reason: `model-warmup-${timedOut ? 'timeout' : 'failed'}: ${why}`");
-    expect(smoke.indexOf('reader-incomplete')).toBeLessThan(smoke.indexOf('MODEL_WARMUP_SCRIPT'));
+// Re-review B1: the warm-up's "timed out" test was `Boolean(w.signal) && !w.error` — backwards. Node's
+// spawnSync timeout delivers signal SIGTERM AND error ETIMEDOUT (so a real timeout read as a failure), while a
+// native crash (SIGABRT / SIGSEGV) has a signal and NO error (so a crash read as an advisory timeout, and a
+// corrupt model runtime plus a persisted 'proven' verdict gave ✓ Healthy). These spawn REAL children.
+const node = (code, opts = {}) => spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', ...opts });
+describe('the warm-up classification, from REAL spawnSync results', () => {
+  it('a real timeout (SIGTERM + ETIMEDOUT) is a timeout, advisory', () => {
+    const w = node('setTimeout(() => {}, 10000)', { timeout: 200 });
+    expect([w.signal, w.error?.code]).toEqual(['SIGTERM', 'ETIMEDOUT']);
+    expect(classifyWarmupFailure({ ...w, secs: '0.2', limitSecs: 0.2 })).toMatchObject({ kind: 'timeout', advisory: true });
   });
-
-  it('classifies a failed question and marks the slow case for its own advice', () => {
-    expect(smoke).toContain('classifySmokeFailure({ error: r.error, signal: r.signal, status: r.status,');
-    expect(smoke).toContain("slow: failure.kind === 'slow'");
-    const verdict = src.slice(src.indexOf("c.yellow('! Grounding NOT proven')"), src.indexOf("c.yellow('! Grounding NOT proven')") + 700);
-    expect(verdict).toMatch(/smoke\.slow\s*\?\s*'    answer inside the limit\. The reader was working, not broken — a reinstall will not help\./);
+  it.skipIf(process.platform === 'win32')('a real native crash (SIGABRT, SIGSEGV) is a crash: a failure with its own cause, never advisory', () => {
+    for (const [code, signal] of [['process.abort()', 'SIGABRT'], ['process.kill(process.pid, "SIGSEGV")', 'SIGSEGV']]) {
+      const w = node(code);
+      expect(w.signal).toBe(signal);
+      expect(w.error).toBeUndefined();
+      const v = classifyWarmupFailure({ ...w, secs: '0.1', limitSecs: 300 });
+      expect(v).toMatchObject({ kind: 'crash', advisory: false });
+      expect(v.cause).toContain(signal);
+    }
   });
+  it('a plain non-zero exit is a failure, not a timeout', () => {
+    expect(classifyWarmupFailure({ ...node('process.exit(1)'), secs: '0.1', limitSecs: 300 })).toMatchObject({ kind: 'exit', advisory: false });
+  });
+  it('the timed QUESTION timing out is named a timeout (not "could not launch"), and stays a failure', () => {
+    const r = node('setTimeout(() => {}, 10000)', { timeout: 200 });
+    expect(classifySmokeFailure({ error: r.error, signal: r.signal, status: r.status, stderr: r.stderr, secs: '0.2', limitSecs: 0.2 }).kind).toBe('timeout');
+  });
+});
+
+// The doctor itself, on a complete hermetic install whose reader files are real executables: what it runs,
+// in what order, and what each outcome does to the ONE verdict.
+describe('the doctor runs the warm-up only for a cold cache, before the timed question', () => {
+  it('cold cache: warm-up, then the question; warm cache: the question only', () => {
+    for (const [modelsReady, expected] of [[false, ['warm', 'ask']], [true, ['ask']]]) {
+      const b = completeBrain({ modelsReady });
+      try {
+        const r = b.doctor();
+        expect(b.calls(), r.text.slice(-2000)).toEqual(expected);
+        expect(r.status).toBe(0);
+      } finally { b.cleanup(); }
+    }
+  }, 120_000);
+
+  it.skipIf(process.platform === 'win32')('a warm-up that CRASHES (SIGABRT) fails the doctor, even with a persisted proven verdict for these bytes', () => {
+    const b = completeBrain({ warm: 'abort' });
+    try {
+      b.persist({ grounding: 'proven', clearedBy: 'search_ruvnet', coverageSha256: b.coverageSha256() });
+      const r = b.doctor();
+      expect(r.status).toBe(1);
+      expect(r.text).toMatch(/✗ Grounding\s+not proven \(model-warmup-crash: .*SIGABRT/);
+      expect(b.calls()).toEqual(['warm']); // the question never ran on a crashed runtime
+    } finally { b.cleanup(); }
+  }, 120_000);
+
+  it('the timed question hitting the reader\'s own deadline is ✗ (only a WARM-UP timeout is advisory)', () => {
+    const b = completeBrain({ ask: 'deadline', modelsReady: true });
+    try {
+      const r = b.doctor();
+      expect(r.status).toBe(1);
+      expect(r.text).toMatch(/✗ Grounding\s+not proven \(no-answer: still answering \(phase "rerank"\)/);
+    } finally { b.cleanup(); }
+  }, 120_000);
 });

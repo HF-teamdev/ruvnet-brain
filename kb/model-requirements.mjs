@@ -74,7 +74,7 @@ export function requiredEmbedderModels(kbDir) {
   const models = new Set();
   try {
     for (const file of fs.readdirSync(kbDir)) {
-      if (!file.endsWith('.rvf.embed.json')) continue;
+      if (!file.endsWith('.rvf.embed.json') || file.startsWith('._')) continue; // ._: AppleDouble, not a sidecar
       const rvf = file.slice(0, -'.embed.json'.length);
       if (!fs.existsSync(path.join(kbDir, rvf))) continue;
       if (!rvf.endsWith('.big.rvf')) {

@@ -17,15 +17,12 @@
  *   3. status(): pending count, oldest pending, last commit, last failure — surfaced by the SessionStart
  *      brief, `--doctor`, and (Claude) a Stop line when recording is stuck. Never swallowed.
  * WHAT "✗" MEANS, AND WHAT KEEPS THE FILE SMALL (independent review S3/S4, 2026-10-01):
- *   • ONE EVENT, ONE KEY. The key ends in a content id, so two lines under one key are the same event
- *     observed twice (two sessions saw one commit; only the observer's session id differs). The first
- *     line wins; it is never a "collision". A stored row under our key is ours when it is the same
- *     kind:id. Only a row that is NOT that event is a conflict, and that key is quarantined.
- *   • NOT APPLICABLE IS NOT A FAILURE. No initialized store (.swarm/memory.db) → nothing is journalled.
- *     No ruflo → events wait in the outbox, no drainer is launched, and the line says "n/a", never ✗.
- *   • A PROBLEM IS REPORTED, THEN CLEARS. A quarantined key or a corrupt line is reported for
- *     QUARANTINE_REPORT_MS and then ages out, or now with `continuity-brief.mjs --clear`. The Stop line
- *     is shown at most once per session per condition (stopNotice).
+ *   • ONE EVENT, ONE KEY: two lines under one key are one event seen twice (first wins); only a stored row
+ *     that is NOT that kind:id is a conflict, and that key is quarantined.
+ *   • NOT APPLICABLE IS NOT A FAILURE: no initialized store → nothing journalled; no ruflo → events wait,
+ *     no drainer, and the line says "n/a", never ✗.
+ *   • A PROBLEM IS REPORTED, THEN CLEARS: quarantine/corrupt lines age out after QUARANTINE_REPORT_MS or
+ *     with `continuity-brief.mjs --clear`; the Stop line shows once per session per condition.
  *   • BOUNDED. A failure is ONE record per event (attempt count, last error), never a line per attempt;
  *     compact() rewrites the file atomically (lock + size re-check, so a concurrent append is never
  *     lost): committed events older than RETAIN_COMMITTED_MS leave (the store keeps them and dedupes),
@@ -57,8 +54,7 @@ export const STUCK_AFTER_MS = 10 * 60_000;
 export const QUARANTINE_REPORT_MS = 7 * 86_400_000;
 export const RETAIN_COMMITTED_MS = 7 * 86_400_000;
 export const MAX_EVENT_RECORDS = 2_000;
-const COMPACT_AT_BYTES = 256 * 1024;
-const [LOCK_STALE_MS, APPEND_LOCK_WAIT_MS, APPEND_LOCK_STALE_MS] = [3 * 60_000, 1_000, 30_000];
+const [COMPACT_AT_BYTES, LOCK_STALE_MS, APPEND_LOCK_WAIT_MS, APPEND_LOCK_STALE_MS] = [256 * 1024, 3 * 60_000, 1_000, 30_000];
 const WAL_REFUSAL = /refusing an unsafe sql\.js|active native WAL|database is locked|SQLITE_BUSY/i;
 export const CLEAR_COMMAND = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'continuity-brief.mjs')}" --clear`;
 
@@ -91,14 +87,19 @@ export class ContinuityJournal {
     const lock = path.join(this.swarm, APPEND_LOCK_NAME);
     const deadline = Date.now() + APPEND_LOCK_WAIT_MS;
     let held = false;
-    while (!held) {
-      try { fs.writeFileSync(lock, `${process.pid} ${Date.now()}\n`, { flag: 'wx', mode: 0o600 }); held = true; } catch {
-        try { if (Date.now() - fs.statSync(lock).mtimeMs > APPEND_LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue; } } catch { continue; }
-        // Waited long enough: append anyway (durability first). The compactor re-checks the file size
-        // before its rename and abandons the rewrite if anything landed, so the append is never lost.
-        if (Date.now() >= deadline) break;
-        pause(5);
+    // Only EEXIST is retried, and every iteration is deadline-bounded: EACCES/EROFS/ENOSPC used to spin at 100% CPU
+    // forever (re-review B2). Any other error is the outbox's own failure: thrown, reported as "outbox write failed".
+    for (;;) {
+      try { fs.writeFileSync(lock, `${process.pid} ${Date.now()}\n`, { flag: 'wx', mode: 0o600 }); held = true; break; } catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
       }
+      let stale = false;
+      try { stale = Date.now() - fs.statSync(lock).mtimeMs > APPEND_LOCK_STALE_MS; } catch { /* vanished: retry once more below */ }
+      if (stale) { try { fs.rmSync(lock, { force: true }); } catch { /* not ours to remove: wait it out */ } }
+      // Waited long enough: append anyway (durability first). The compactor re-checks the file size
+      // before its rename and abandons the rewrite if anything landed, so the append is never lost.
+      if (Date.now() >= deadline) break;
+      if (!stale) pause(5);
     }
     try { return fn(); } finally { if (held) fs.rmSync(lock, { force: true }); }
   }

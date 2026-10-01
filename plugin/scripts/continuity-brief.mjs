@@ -56,11 +56,13 @@ function git(cwd, args) {
 const hhmm = (iso) => String(iso || '').replace(/:\d\d\.\d+Z$|:\d\dZ$/, 'Z');
 /** Data-safe one line: no control or bidi characters, no fence tokens, whitespace collapsed, capped. */
 export const oneLine = (s, n = 180) => {
-  const v = String(s ?? '')
+  const v = String(s ?? '').normalize('NFKC') // fullwidth ＜＜＜ / ＥＮＤ fold to ASCII before the checks below
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, ' ')
     .replace(/<<</g, '‹‹‹').replace(/>>>/g, '›››')
-    .replace(/\s+/g, ' ').trim();
+    .replace(/\s+/g, ' ').trim()
+    // Only the real fence may say END PROJECT RECORD (re-review NIT: look-alike markers).
+    .replace(/END\s*PROJECT\s*RECORD/gi, 'END·PROJECT·RECORD (quoted)');
   return v.length > n ? `${v.slice(0, n - 1)}…` : v;
 };
 

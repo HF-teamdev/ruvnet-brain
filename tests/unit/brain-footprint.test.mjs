@@ -273,7 +273,7 @@ describe('inventory: everything the Brain owns is classified', () => {
       old(path.join(m.home, '.npm', '_npx', hash), days);
     };
     const scenarios = {
-      marker: (m) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: NOW }),
+      marker: (m) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: Date.now() }),
       stage: (m) => fs.mkdirSync(path.join(m.brainHome, '.kb.install-stage-young')), // mtime: now
       prior: () => {},
     };
@@ -281,7 +281,7 @@ describe('inventory: everything the Brain owns is classified', () => {
       const m = machine(); live(m);
       // The window between the renames: the NEW live KB is in place and the prior generation is beside it,
       // named by the installer's pid. Its contents are disposable, so only the in-progress guard keeps it.
-      const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+      const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${Date.now()}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
       const bak = kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
       npxCopy(m, 'old', '4.3.1'); npxCopy(m, 'new', '7.7.0');
       plant(m);
@@ -292,6 +292,25 @@ describe('inventory: everything the Brain owns is classified', () => {
         expect(fs.existsSync(path.join(m.home, '.npm', '_npx', 'old')), `${name}: an npx copy was removed during an install`).toBe(true);
         expect(result.kept.some((k) => /an install is activating/.test(k.reason))).toBe(true);
       }
+    }
+  });
+
+  // Re-review S5: a marker left by a crashed install whose pid was later reused (or a pid owned by another
+  // user: kill(pid, 0) → EPERM, read as alive) froze the sweep forever. Proof of life is bounded by time.
+  it('an activation marker or install-prior older than 2 h no longer freezes the sweep, whatever its pid says', () => {
+    const cases = [
+      ['marker, my pid, 3 h old', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: process.pid, at: now - 3 * 3_600_000 }), false],
+      ['marker, another user\'s pid (EPERM), 3 h old', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 1, at: now - 3 * 3_600_000 }), false],
+      ['marker, another user\'s pid (EPERM), fresh', (m, now) => json(path.join(m.brainHome, '.kb.install-activation.lock'), { pid: 1, at: now }), true],
+      ['install-prior named 3 h ago with my pid', (m, now) => kbTree(path.join(m.brainHome, `kb.install-prior-${now - 3 * 3_600_000}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } }), false],
+    ];
+    for (const [label, plant, blocks] of cases) {
+      const m = machine(); live(m);
+      const now = Date.now();
+      const bak = kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+      plant(m, now);
+      sweepFootprint(opts(m, { apply: true, now }));
+      expect(fs.existsSync(bak), `${label}: ${blocks ? 'must still block' : 'must not block any more'}`).toBe(blocks);
     }
   });
 
@@ -356,6 +375,37 @@ describe('inventory: everything the Brain owns is classified', () => {
     expect(prefixes.length).toBeGreaterThan(3);
     for (const p of prefixes) expect(kbCopyPrefixes('kb')).toContain(p);
   });
+});
+
+// Re-review S4: a DRY RUN wrote — sweepFootprint({ apply:false }) proved copies and cached the KEPT ones into
+// .footprint-proof-cache.json, and --doctor runs exactly that dry run. A read-only check must change nothing.
+const treeState = (dir) => {
+  const out = {};
+  const walk = (d) => { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n); const st = fs.lstatSync(p);
+    if (st.isDirectory()) walk(p); else out[path.relative(dir, p)] = `${st.size}:${st.mtimeMs}:${sha(fs.readFileSync(p))}`; } };
+  walk(dir);
+  return out;
+};
+describe('a dry run writes nothing (re-review S4)', () => {
+  it('sweepFootprint({ apply:false }) leaves the brain home byte-identical, even with a copy it must keep', () => {
+    const m = machine(); live(m);
+    kbTree(path.join(m.brainHome, 'kb.bak-2'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'OLDER-secret' } });
+    const before = treeState(m.brainHome);
+    sweepFootprint(opts(m, { apply: false, now: Date.now() }));
+    expect(treeState(m.brainHome)).toEqual(before);
+  });
+  it('the real `--doctor` leaves the brain home byte-identical', async () => {
+    const { completeBrain } = await import('../helpers/doctor-brain-fixture.mjs');
+    const b = completeBrain({ modelsReady: true });
+    try {
+      // A copy the sweep would have to KEEP (its private store differs from live) beside the live KB.
+      kbTree(path.join(b.parent, 'kb.bak-7'), { publicStores: { alpha: 'a0' }, privateStores: { journal: 'only-here' } });
+      const before = treeState(b.brainHome);
+      const r = b.doctor();
+      expect(r.status, r.text.slice(-1500)).toBe(1); // the second KB copy is a structural ✗
+      expect(treeState(b.brainHome)).toEqual(before);
+    } finally { b.cleanup(); }
+  }, 120_000);
 });
 
 describe('positive confirmation', () => {
@@ -431,7 +481,67 @@ describe('positive confirmation', () => {
   });
 });
 
+// An interrupted `--move-brain` (scripts/move-brain.mjs) leaves full Brain copies and links under names the
+// inventory never looked at, so Knowledge said "1 copy" beside three. They are REPORTED (never removed), each
+// with what it is and the exact next step, and only when their pid is dead (a live move is not flagged).
+describe('interrupted --move-brain leftovers are reported, never removed', () => {
+  const DEAD = 2 ** 30;
+  const brainCopy = (dir) => kbTree(path.join(dir, 'kb'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+  it('a set-aside original, a staging copy and leftover links (dead pid) each get a line with the next step; a live move is not flagged', () => {
+    const m = machine(); live(m);
+    const cache = path.dirname(m.brainHome);
+    const old = path.join(cache, `ruvnet-brain.old-${DEAD}`); brainCopy(old);
+    const staging = path.join(cache, `.ruvnet-brain.moving-${DEAD}`); brainCopy(staging);
+    const link = path.join(cache, `ruvnet-brain.link-${DEAD}`); fs.symlinkSync(m.brainHome, link);
+    const linkOld = path.join(cache, `ruvnet-brain.link-old-${DEAD}`); fs.symlinkSync(m.brainHome, linkOld);
+    const liveMove = path.join(cache, `ruvnet-brain.old-${process.pid}`); brainCopy(liveMove); // a move running now
+    const fp = inventoryFootprint(opts(m, { now: Date.now() }));
+    const leftovers = fp.items.filter((i) => i.kind === 'move-leftover');
+    expect(leftovers.map((i) => i.path).sort()).toEqual([old, staging, link, linkOld].sort());
+    for (const i of leftovers) expect(i).toMatchObject({ class: 'unowned', action: 'report' });
+    expect(item(fp, old).fix).toBe(`rm -rf ${old}`);
+    expect(item(fp, staging).fix).toBe(`rm -rf ${staging}`);
+    expect(item(fp, link).fix).toBe(`rm ${link}`);
+    expect(fp.kbCopies).toBe(1);
+    const r = confirm({ footprint: fp, env: m.env, home: m.home, now: Date.now(), readiness: [] });
+    const move = r.lines.filter((l) => l.id === 'move-leftover');
+    expect(move).toHaveLength(4);
+    for (const l of move) expect(l.state).toBe('warn');
+    expect(r.lines.find((l) => l.id === 'knowledge').detail).toMatch(/not counted: 2 interrupted-move copies \(/);
+    const swept = sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+    for (const p of [old, staging, link, linkOld, liveMove]) expect(fs.existsSync(p) || fs.lstatSync(p, { throwIfNoEntry: false }), p).toBeTruthy();
+    expect(swept.removed.map((x) => x.path)).not.toEqual(expect.arrayContaining([old]));
+  });
+
+  it('with the Brain MISSING, the set-aside original is the only copy: ✗ with the exact mv back', () => {
+    const m = machine(); fs.mkdirSync(path.dirname(m.brainHome), { recursive: true });
+    const old = path.join(path.dirname(m.brainHome), `ruvnet-brain.old-${DEAD}`); brainCopy(old);
+    const fp = inventoryFootprint(opts(m, { now: Date.now() }));
+    expect(item(fp, old)).toMatchObject({ kind: 'move-leftover', onlyCopy: true, fix: `mv ${old} ${m.brainHome}` });
+    const r = confirm({ footprint: fp, env: m.env, home: m.home, now: Date.now(), readiness: [] });
+    expect(r.lines.find((l) => l.id === 'move-leftover')).toMatchObject({ state: 'fail', fix: `mv ${old} ${m.brainHome}` });
+    expect(r.lines.find((l) => l.id === 'knowledge').fix).toBe(`mv ${old} ${m.brainHome}`);
+    expect(r.ok).toBe(false);
+  });
+
+  it('a home Brain\'s own ._* / .DS_Store stay ignored: not counted, not removed', () => {
+    const m = machine(); live(m);
+    for (const p of [path.join(m.brainHome, '._kb'), path.join(m.brainHome, '.DS_Store'), path.join(m.kbDir, '._SOURCE.json')]) write(p, 'meta');
+    const fp = inventoryFootprint(opts(m, { now: Date.now() }));
+    expect(fp.items.filter((i) => /(^|\/)\._|\.DS_Store/.test(i.path))).toEqual([]);
+    sweepFootprint(opts(m, { apply: true, now: Date.now() }));
+    for (const p of [path.join(m.brainHome, '._kb'), path.join(m.brainHome, '.DS_Store'), path.join(m.kbDir, '._SOURCE.json')]) expect(fs.existsSync(p), p).toBe(true);
+  });
+});
+
 describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain is a link)', () => {
+  it('a staging copy left on the TARGET disk by an interrupted move is found next to the linked Brain', () => {
+    const m = moved();
+    const staging = path.join(path.dirname(m.disk), `.ruvnet-brain.moving-${2 ** 30}`);
+    kbTree(path.join(staging, 'kb'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 's' } });
+    const fp = inventoryFootprint({ env: m.env, home: m.home, now: Date.now() });
+    expect(item(fp, staging)).toMatchObject({ kind: 'move-leftover', action: 'report', fix: `rm -rf ${staging}` });
+  });
   function moved() {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-moved-')));
     dirs.push(home);
@@ -665,7 +775,7 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
   it('install-in-progress guard removed -> the rollback copy is deleted between the installer\'s renames', async () => {
     const mod = await mutant([['brain-footprint.mjs', '    : installing ? \'an install is activating', '    : false ? \'an install is activating']]);
     const m = machine(); live(m);
-    const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${NOW}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
+    const prior = kbTree(path.join(m.brainHome, `kb.install-prior-${Date.now()}-${process.pid}`), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
     sweepFootprint(opts(m, { apply: true, now: Date.now() }));
     expect(fs.existsSync(prior)).toBe(true); // real module: kept
     mod.sweepFootprint(opts(m, { apply: true, now: Date.now() }));

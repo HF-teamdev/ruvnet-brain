@@ -40,6 +40,8 @@ export const MODEL_WARMUP_TIMEOUT_MS = 300_000;
 // running, only on that path (that module is not in the npm package, so its text is the contract
 // here). The reader works and was mid-answer — a different fault, with different advice, from a crash.
 export function classifySmokeFailure({ error, signal, status, stderr = '', secs, limitSecs }) {
+  // spawnSync delivers its own timeout as signal SIGTERM AND error ETIMEDOUT: a timeout, not a launch failure.
+  if (error?.code === 'ETIMEDOUT') return { kind: 'timeout', cause: `timed out after ${secs}s (240s limit) with no answer` };
   if (error) return { kind: 'launch', cause: `could not launch the reader: ${error.message}` };
   if (signal === 'SIGTERM') return { kind: 'timeout', cause: `timed out after ${secs}s (240s limit) with no answer` };
   if (signal) return { kind: 'killed', cause: `the reader was killed by ${signal} after ${secs}s` };
@@ -50,6 +52,19 @@ export function classifySmokeFailure({ error, signal, status, stderr = '', secs,
   }
   if (status !== 0) return { kind: 'crash', cause: `the reader exited ${status} after ${secs}s` };
   return { kind: 'empty', cause: `the reader exited 0 after ${secs}s but printed nothing` };
+}
+
+/**
+ * Why the model warm-up did not finish (re-review B1). spawnSync's own timeout is signal SIGTERM WITH error
+ * ETIMEDOUT — a slow machine, advisory. A signal with NO error is the child dying on its own: SIGABRT,
+ * SIGSEGV, an OOM SIGKILL — a broken model runtime or cache, a failure with its own cause. The old test,
+ * `signal && !error`, had both backwards.
+ */
+export function classifyWarmupFailure({ error, signal, status, secs, limitSecs }) {
+  if (error?.code === 'ETIMEDOUT') return { kind: 'timeout', advisory: true, cause: `ran out of time after ${secs}s (${limitSecs}s limit) — slow on this machine, not broken` };
+  if (error) return { kind: 'launch', advisory: false, cause: `could not start: ${error.message}` };
+  if (signal) return { kind: 'crash', advisory: false, cause: `crashed (${signal}) after ${secs}s — the model runtime or its cache is broken` };
+  return { kind: 'exit', advisory: false, cause: `exited ${status} after ${secs}s` };
 }
 
 const version = value => typeof value === 'string' && /^v?\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(value)

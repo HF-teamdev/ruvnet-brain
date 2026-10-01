@@ -10,10 +10,11 @@
 // back step by step, and the message says plainly where the Brain is.
 //
 // What the proof ignores, and why (review S1/S2, reproduced on a real exFAT image 2026-10-01):
-//   - DESTINATION-ONLY volume metadata. macOS writes an AppleDouble `._<name>` beside every copied file
-//     that has extended attributes on exFAT/FAT/NTFS/SMB, and volumes grow .DS_Store/.Spotlight-V100/
-//     .fseventsd/.Trashes. They are the filesystem's, not the Brain's. A source file of the same name is
-//     still compared like any other.
+//   - VOLUME METADATA, on either side. macOS writes an AppleDouble `._<name>` beside every copied file that
+//     has extended attributes on exFAT/FAT/NTFS/SMB, and volumes grow .DS_Store/.Spotlight-V100/.fseventsd/
+//     .Trashes. They are the filesystem's, not the Brain's (no release ships one; coverage-integrity skips
+//     `._*` too). So they are never copied — `--back` from exFAT used to bring `._ruvector.rvf` home, where
+//     every reader saw a fake `._ruvector` store — and never compared or required on either side.
 //   - TRANSIENT IPC in run/. A search worker's recommender socket (run/recommend-<pid>.sock) is a live
 //     endpoint, not data; a SIGKILLed worker leaves it behind. Stale ones are swept exactly as the endpoint
 //     sweeps them on start (kb/recommend-endpoint.mjs sweepStale — not shipped in the npm package, so the
@@ -63,13 +64,13 @@ export function sweepStaleEndpoints(dir) {
  * Walk a Brain tree without following links. Returns Map<relative, {type, size?, target?}> and the list of
  * transient run/ entries (sockets/FIFOs) that are left behind. Any other special file refuses by name.
  */
-function inventory(root, { ignore = () => false, strict = true } = {}) {
+function inventory(root, { strict = true } = {}) {
   const entries = new Map();
   const transient = [];
   const walk = (rel) => {
     for (const name of fs.readdirSync(path.join(root, rel)).sort()) {
       const relative = rel ? path.join(rel, name) : name;
-      if (ignore(name)) continue;
+      if (VOLUME_METADATA.test(name)) continue; // the volume's, not the Brain's (header)
       const stat = fs.lstatSync(path.join(root, relative));
       if (stat.isSymbolicLink()) entries.set(relative, { type: 'symlink', target: fs.readlinkSync(path.join(root, relative)) });
       else if (stat.isDirectory()) { entries.set(relative, { type: 'dir' }); walk(relative); }
@@ -96,7 +97,7 @@ function fileSha256(file) {
 
 /**
  * Every source entry must exist at the copy with the same type, and every file the same bytes; the copy may
- * carry nothing else except the destination filesystem's own metadata. Returns null, or what differs.
+ * carry nothing else. Volume metadata is invisible to both inventories. Returns null, or what differs.
  */
 export function verifyCopy(src, copy, { transient = [] } = {}) {
   const skipped = new Set(transient);
@@ -113,15 +114,8 @@ export function verifyCopy(src, copy, { transient = [] } = {}) {
       problems.push(`${relative} differs (${entry.size} bytes in the original, ${other.size} in the copy)`);
     }
   }
-  // Destination-only metadata: an entry whose name (or an ancestor's, e.g. inside .fseventsd) is volume
-  // metadata that the original does not have.
-  const metadataOnly = (relative) => {
-    const parts = relative.split(path.sep);
-    return parts.some((part, i) => VOLUME_METADATA.test(part) && !source.has(parts.slice(0, i + 1).join(path.sep)));
-  };
   for (const relative of landed.keys()) {
-    if (source.has(relative) || metadataOnly(relative)) continue;
-    problems.push(`${relative} is in the copy but not in the original`);
+    if (!source.has(relative)) problems.push(`${relative} is in the copy but not in the original`);
   }
   return problems.length ? `${problems.slice(0, 3).join('; ')}${problems.length > 3 ? `; and ${problems.length - 3} more` : ''}` : null;
 }
@@ -210,7 +204,7 @@ function moveLocked({ where, brainHome, src, dest, back, available, log, ops }) 
   const skip = new Set(transient.map((relative) => path.join(src, relative)));
   log(`copying ${src} -> ${dest} …`);
   try {
-    try { ops.copyTree(src, staging, (from) => !skip.has(from)); } catch (error) {
+    try { ops.copyTree(src, staging, (from) => !skip.has(from) && (from === src || !VOLUME_METADATA.test(path.basename(from)))); } catch (error) {
       refuse(error?.code === 'ENOSPC'
         ? `${stagingDir} ran out of space while copying. The partial copy was removed and the Brain is unchanged at ${src}.`
         : `copying to ${stagingDir} failed (${describe(error)}). The partial copy was removed and the Brain is unchanged at ${src}.`);
