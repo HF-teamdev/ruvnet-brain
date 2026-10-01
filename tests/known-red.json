@@ -22,13 +22,6 @@
       "class": "real-violation",
       "reason": "tests/unit/install-release-fallback.test.mjs:75 toMatch(/2026-09-30T23:59:00\\.000Z/) restates a timestamp (added in 7a4de1eb). Fix belongs in that file (derive it, or mark sync-version-ignore with a reason).",
       "owner": "robustness-4.4"
-    },
-    {
-      "file": "tests/integration/project-progression-store.test.mjs",
-      "test": "managed ProjectProgression append and readback stores, exact-retrieves, and strictly deduplicates through a temp real AgentDB",
-      "class": "external-dependency",
-      "reason": "Product capture/dedupe/restoreLatest assertions pass; the trailing `ruflo memory export` capability probe (ruflo 3.49.0) returns count 0, not 2. Measured on a disposable store: rows written by `ruflo memory store --path` export 2 from the plain cwd invocation and 0 with the test's CLAUDE_FLOW_DB_PATH/MEMORY_PATH/DISABLE_BRIDGE overrides; rows written by ProjectProgressionStore export 0 either way. Not root-caused. Skips where ruflo is absent (CI).",
-      "owner": "testgates-4.4 (open; needs the continuity owner's call)"
     }
   ],
   "excludedFiles": [
