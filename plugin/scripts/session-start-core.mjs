@@ -137,7 +137,7 @@ export async function runSessionStart({
   const stateDir = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain');
   const hookDir = path.dirname(fileURLToPath(import.meta.url));
   const now = Date.now();
-  const consoleInvoke = env.RUVNET_HOOK_HOST === 'codex' ? '$ruvnet-brain:rvbc' : '/rvbc';
+  const consoleInvoke = env.RUVNET_HOOK_HOST === 'codex' ? '$ruvnet-brain:rnbc' : '/rnbc';
   const brain = brainState(env, home);
   const pluginRoot = env.CLAUDE_PLUGIN_ROOT || path.resolve(hookDir, '..');
   const manifest = json(path.join(pluginRoot, '.claude-plugin', 'plugin.json'), {});

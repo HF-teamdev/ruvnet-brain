@@ -1,5 +1,5 @@
 ---
-description: "RvBC — the older spelling of /rnbc, the RuvNet Brain Console (same console as /rnbc, /rnb, /brain-console and /ruvnet-brain:configure — every spelling works). Your whole RuvNet stack on one page. Read-only until you click."
+description: "RNB — opens the RuvNet Brain Console (same console as /rnbc, /rvbc, /brain-console and /ruvnet-brain:configure — every spelling works). Your whole RuvNet stack on one page. Read-only until you click."
 updated: 2026-10-01
 ---
 
