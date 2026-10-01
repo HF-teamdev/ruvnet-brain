@@ -48,7 +48,7 @@ import { inspectSessionSnapshots } from './session-snapshot-contract.mjs';
 import { learnings } from './learnings.mjs';
 import { gatesSurvey } from './gates.mjs';
 // The write-safety primitives, borrowed rather than re-implemented. See saveConfig for why.
-import { withLock, writeAtomic, LOCK_WAIT_MS, loadSettings, saveSettings, SETTINGS_SCHEMA as USER_SETTINGS_SCHEMA } from './user-settings.mjs';
+import { withLock, writeAtomic, LOCK_WAIT_MS, loadSettings, saveSettings, revertSettings, SETTINGS_SCHEMA as USER_SETTINGS_SCHEMA } from './user-settings.mjs';
 // The brain on/off switch (ADR-054). The sentinel is the enforcement artifact; settings.json holds
 // only a mirror. The console is the ONE surface allowed to flip it — protect-brain-state.sh walls
 // the file off from agent edits — so both halves of the write live here, in saveBrainPower().
@@ -907,8 +907,19 @@ function saveAdvocacy(values) {
   const result = saveSettings(supplied);
   if (!result.ok) return { ok: false, rejected: result.errors || [], log: result.log };
   publishSettingsToCache();
+  // THE SAVE IS REVERSIBLE FROM WHERE IT WAS MADE. The Settings card promises "every save is
+  // reversible", and saveSettings already writes the backup and the existedBefore flag its own
+  // revertSettings() consumes — but this form returned no undo token, so the console showed an Undo
+  // button for config.json and none here (RNBC QA 2026-10-01). Journalled only after the write.
+  const undoToken = journalUndo({
+    kind: 'restore-user-settings',
+    file: result.file,
+    backup: result.backup,
+    existedBefore: result.existedBefore,
+  });
   return {
     ok: true,
+    undoToken,
     backup: result.backup ? result.backup.replace(CONSOLE_ROOT, '~') : null,
     values: Object.fromEntries(LIVE_USER_SETTING_KEYS.map((key) => [key, result.values[key]])),
     log: result.log,
@@ -2906,6 +2917,19 @@ function undo(undoToken) {
     }
     return { ok: false, log: 'no backup available to restore' };
   }
+  if (entry.kind === 'restore-user-settings') {
+    // Same "an undo speaks only for the last write" rule as restore-config: a later save through this
+    // form would be wiped out by restoring an older backup.
+    const laterSave = journal.some((e) => e.kind === 'restore-user-settings' && e.at > entry.at && e.token !== undoToken);
+    if (laterSave) {
+      return { ok: false, log: 'your settings were saved again after this point, so this undo would wipe out that newer save — nothing was changed. Use the undo from the most recent save.' };
+    }
+    const r = revertSettings({ file: entry.file, backup: entry.backup || undefined, existedBefore: entry.existedBefore });
+    if (!r.ok) return { ok: false, log: r.log };
+    markUndoConsumed(undoToken);
+    publishSettingsToCache();
+    return { ok: true, log: entry.backup ? 'restored your previous settings' : 'removed the settings file (there was none before this save)' };
+  }
   // EVERY branch below marks its token consumed on success, for the reason spelled out on the
   // restore-config branch above: these all copy a saved snapshot over a live file, so replaying one
   // re-applies an old state over whatever the user has done since. The replay guard at the top of
@@ -2990,7 +3014,7 @@ function undo(undoToken) {
 // The undo kinds this function actually implements. Exported so the closure test can check the
 // registry against the REAL handler set rather than a hand-copied list that would drift from it.
 export const HANDLED_UNDO_KINDS = Object.freeze([
-  'restore-config', 'reinstall-version', 'restore-backup',
+  'restore-config', 'restore-user-settings', 'reinstall-version', 'restore-backup',
   'restore-memory-backup', 'restore-store-backups', 'restore-project-distill', 'auto-rebuild', 'none',
 ]);
 
