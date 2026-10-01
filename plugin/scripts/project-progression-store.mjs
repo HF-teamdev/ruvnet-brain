@@ -164,8 +164,15 @@ export class ProjectProgressionStore {
   }
 
   run(args) {
+    // ruflo creates `<cwd>/.swarm/` on every invocation even when --path names the store. Run from the
+    // project root when the store is the default `<root>/.swarm/memory.db`, so that directory IS the
+    // store's own; running from inside `.swarm` left an unused nested `.swarm/.swarm/` store in every
+    // project (measured 2026-10-01, ruflo 3.49.0).
+    const defaultStore = path.join(this.resolution.projectRoot, '.swarm', 'memory.db');
+    const cwd = path.resolve(this.resolution.canonicalAgentDbPath) === path.resolve(defaultStore)
+      ? this.resolution.projectRoot : path.dirname(this.resolution.canonicalAgentDbPath);
     return this.runner(this.rufloBinary, args, {
-      cwd: path.dirname(this.resolution.canonicalAgentDbPath),
+      cwd,
       encoding: 'utf8',
       timeout: 120_000,
       env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' },

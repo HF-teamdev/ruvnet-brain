@@ -225,6 +225,8 @@ describe('managed ProjectProgression append and readback', () => {
       },
     ]);
     expect(fake.calls.every((call) => call.options.env.RUFLO_DAEMON_AUTOSTART === '0')).toBe(true);
+    // The default store's directory is ruflo's own `<cwd>/.swarm`, so ruflo runs from the project root.
+    expect(fake.calls.every((call) => call.options.cwd === bridge.resolution.projectRoot)).toBe(true);
     expect(bridge.outbox.pendingSnapshots()).toEqual([]);
   });
 
@@ -396,5 +398,8 @@ describe('managed ProjectProgression append and readback', () => {
     }
     console.info(JSON.stringify({ proof: 'global-ruflo-cli-exact-readback', path: 'canonical --path', elapsedMs: Date.now() - started,
       exactValues: 2 }));
+    // ruflo creates `<cwd>/.swarm/` on every call; run from inside `.swarm` it left an unused nested
+    // store in every customer project (measured 2026-10-01, ruflo 3.49.0).
+    expect(fs.existsSync(path.join(projectRoot, '.swarm', '.swarm'))).toBe(false);
   }, 180_000);
 });
