@@ -16,8 +16,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  CAPTURE_BUDGET_MS, REPLAY_MIN_BUDGET_MS, effectiveBudgetMs, runSessionSnapshotHook,
+  CAPTURE_BUDGET_MS, REPLAY_MIN_BUDGET_MS, effectiveBudgetMs, replayOutboxDetached, runSessionSnapshotHook, takeReplayLock,
 } from '../../plugin/scripts/session-snapshot-hook.mjs';
+import { ProgressionOutbox } from '../../plugin/scripts/project-progression-outbox.mjs';
+import { ProjectProgressionStore } from '../../plugin/scripts/project-progression-store.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const roots = [];
@@ -62,6 +64,66 @@ describe('session-snapshot: the budget it is handed, and what it spends it on fi
     expect(order).toEqual(['produce', 'capture']);
     expect(result).toMatchObject({ progressionCaptured: true, receipt: { eventKey: 'new' }, replayed: 0 });
     expect(result.replaySkipped).toMatch(/outbox replay deferred: budget \d+ms < 4000ms/);
+  });
+});
+
+// 4.4.0 review S1: on Codex no capture boundary ever has REPLAY_MIN_BUDGET_MS (Stop 3700ms effective,
+// SessionEnd 1900ms, no PreCompact), so a deferred snapshot used to wait for a boundary that never
+// came. Now the boundary hands the debt to a detached, bounded, single-instance replayer.
+describe.skipIf(process.platform === 'win32')('Codex-only lifecycle: a deferred snapshot EVENTUALLY reaches AgentDB', () => {
+  function fakeRuflo(dir) {
+    const db = path.join(dir, 'fake-agentdb.json');
+    const bin = path.join(dir, 'ruflo');
+    fs.writeFileSync(bin, `#!${process.execPath}
+const fs = require('fs'); const a = process.argv.slice(2); const db = ${JSON.stringify(db)};
+const get = (f) => a[a.indexOf(f) + 1]; let rows = {}; try { rows = JSON.parse(fs.readFileSync(db, 'utf8')); } catch {}
+if (a[0] === 'memory' && a[1] === 'store') { const k = get('--key'); if (rows[k]) process.exit(1); rows[k] = get('--value'); fs.writeFileSync(db, JSON.stringify(rows)); process.exit(0); }
+if (a[0] === 'memory' && a[1] === 'retrieve') { const v = rows[get('--key')]; if (v === undefined) process.exit(1); process.stdout.write(v); process.exit(0); }
+process.exit(2);
+`, { mode: 0o755 });
+    return { bin, rows: () => { try { return JSON.parse(fs.readFileSync(db, 'utf8')); } catch { return {}; } } };
+  }
+  const pendingIn = (dir) => new ProgressionOutbox({ projectRoot: dir }).pendingSnapshots().length;
+
+  it('SessionEnd (1900ms) defers its row; the next Stop (3700ms) hands it to the detached replayer, which commits it', async () => {
+    const dir = project();
+    const ruflo = fakeRuflo(dir);
+    const prior = process.env.RUFLO_BIN;
+    process.env.RUFLO_BIN = ruflo.bin;
+    try {
+      const spawned = [];
+      const ended = runSessionSnapshotHook(dir, 'SessionEnd', {
+        rawInput: JSON.stringify({ session_id: 'codex-a', hook_event_name: 'SessionEnd', cwd: dir }), host: 'codex', budgetMs: 1900,
+        makeStoreFactory: () => (options) => new ProjectProgressionStore({ ...options, reader: null, runner: () => { throw new Error('capture budget exceeded'); } }),
+        spawnReplay: (x) => { spawned.push(x); return false; },
+      });
+      expect(ended.skipped).toMatch(/capture deferred/);
+      expect(pendingIn(dir), 'the deferred row is durable in the outbox').toBe(1);
+      expect(spawned, 'a short boundary with pending debt hands it on').toHaveLength(1);
+
+      const stopped = runSessionSnapshotHook(dir, 'Stop', {
+        rawInput: JSON.stringify({ session_id: 'codex-b', hook_event_name: 'Stop', cwd: dir }), host: 'codex',
+        budgetMs: effectiveBudgetMs({ RUVNET_CODEX_BUDGET_MS: '4000' }),
+      });
+      expect(stopped.progressionCaptured).toBe(true);
+      expect(stopped.replaySkipped).toMatch(/1 pending handed to a detached replayer/);
+
+      const until = Date.now() + 20_000;
+      while (pendingIn(dir) > 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 200));
+      expect(pendingIn(dir), 'the detached replayer committed the deferred row').toBe(0);
+      expect(Object.keys(ruflo.rows()).length, 'both sessions\' snapshots are in the store').toBe(2);
+      expect(fs.existsSync(path.join(dir, '.swarm', '.progression-replay.lock')), 'lock released').toBe(false);
+    } finally {
+      if (prior === undefined) delete process.env.RUFLO_BIN; else process.env.RUFLO_BIN = prior;
+    }
+  }, 40_000);
+
+  it('only ONE replayer at a time: a held, fresh lock refuses a second spawn', () => {
+    const dir = project();
+    expect(takeReplayLock(dir)).toBe(true);
+    let spawns = 0;
+    expect(replayOutboxDetached({ projectDir: dir, spawnFn: () => { spawns += 1; return { unref() {} }; } })).toBe(false);
+    expect(spawns).toBe(0);
   });
 });
 
