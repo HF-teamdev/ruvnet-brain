@@ -12,6 +12,14 @@ import path from 'node:path';
 
 const lstat = (file) => { try { return fs.lstatSync(file); } catch { return null; } };
 const names = (dir) => { try { return fs.readdirSync(dir).sort(); } catch { return []; } };
+
+/**
+ * macOS VOLUME METADATA: AppleDouble `._*` shadows (written beside every file on an exFAT/FAT disk, where a
+ * `--move-brain` target may live), .DS_Store, and the volume's own .fseventsd / .Spotlight-V100 / .Trashes
+ * / .TemporaryItems. They belong to the volume, never to the Brain: the classifier does not see them (never
+ * cruft, never removed on their own) and the copy proof does not count them as a copy's unique data.
+ */
+export const isVolumeMetadata = (name) => /^\._|^\.DS_Store$|^\.fseventsd$|^\.Spotlight-V100$|^\.Trashes$|^\.TemporaryItems$|^\.apdisk$/.test(String(name));
 /** Same rule as kb/refresh-run.mjs physicalPath: real path, or resolved through the parent when absent. */
 export function physical(dir) {
   const resolved = path.resolve(String(dir || ''));

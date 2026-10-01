@@ -19,15 +19,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { isVolumeMetadata } from './footprint-io.mjs';
 
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 const lstat = (file) => { try { return fs.lstatSync(file); } catch { return null; } };
 const names = (dir) => { try { return fs.readdirSync(dir).sort(); } catch { return []; } };
 const sha256File = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
-/** Every regular file and link under `root`, relative, without following links. */
+/** Every regular file and link under `root`, relative, without following links. macOS volume metadata
+ * (AppleDouble `._*` shadows on an exFAT disk, .DS_Store, …) is the volume's, never a copy's unique data. */
 function walk(root, prefix = '', out = []) {
-  for (const name of names(path.join(root, prefix))) {
+  for (const name of names(path.join(root, prefix)).filter((n) => !isVolumeMetadata(n))) {
     const relative = prefix ? path.join(prefix, name) : name;
     const st = lstat(path.join(root, relative));
     if (!st) continue;

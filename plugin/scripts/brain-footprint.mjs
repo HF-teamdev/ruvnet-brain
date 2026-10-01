@@ -25,7 +25,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isKbTree, kbCopyProof } from './kb-copy-proof.mjs';
 import { brainLocation } from './brain-location.mjs';
-import { cachedKept, keptCopyFix, physical, readProofCache, rememberKept, removeWithin, rotate, treeBytes, truncateToTail } from './footprint-io.mjs';
+import { cachedKept, isVolumeMetadata, keptCopyFix, physical, readProofCache, rememberKept, removeWithin, rotate, treeBytes, truncateToTail } from './footprint-io.mjs';
 
 export { physical, treeBytes } from './footprint-io.mjs';
 
@@ -65,7 +65,7 @@ const TERMINAL = new Set(['NOOP', 'COMMITTED', 'ROLLED_BACK']);
 
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 const lstat = (file) => { try { return fs.lstatSync(file); } catch { return null; } };
-const names = (dir) => { try { return fs.readdirSync(dir).sort(); } catch { return []; } };
+const names = (dir) => { try { return fs.readdirSync(dir).filter((n) => !isVolumeMetadata(n)).sort(); } catch { return []; } };
 /** A lease's process is gone only when the OS says so (ESRCH); anything else counts as alive. */
 const pidAlive = (pid) => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;

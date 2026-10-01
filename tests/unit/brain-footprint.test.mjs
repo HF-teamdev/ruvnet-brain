@@ -455,6 +455,38 @@ describe('a brain moved to another volume (--move-brain: ~/.cache/ruvnet-brain i
     sweepFootprint({ env: m.env, home: m.home, now: NOW, apply: true });
     expect(inventoryFootprint({ env: m.env, home: m.home, now: NOW }).kbCopies).toBe(1);
   });
+  // A brain moved to an exFAT/FAT disk gets macOS volume metadata beside every file: AppleDouble `._*`,
+  // .DS_Store, .fseventsd, .Spotlight-V100, .Trashes. They are the volume's, never ours: not cruft, not
+  // removed on their own, and an AppleDouble file inside a KB copy does not make that copy "unique".
+  it('macOS volume metadata on an exFAT brain is ignored: never cruft, never removed, never makes a copy unique', () => {
+    const m = moved();
+    const brain = m.disk;
+    const meta = ['._kb', '._active.json', '.DS_Store', '._token-ledger.jsonl', '._open-issues.json.bak-20260808'];
+    for (const n of meta) write(path.join(brain, n), 'AppleDouble');
+    for (const d of ['.fseventsd', '.Spotlight-V100', '.Trashes', '.TemporaryItems']) write(path.join(brain, d, 'x'), 'volume');
+    json(path.join(brain, 'active.json'), { version: '4.5.0', codeRoot: 'versions/4.5.0' });
+    json(path.join(brain, 'versions', '4.5.0', 'x.json'), {});
+    write(path.join(brain, 'versions', '._4.5.0'), 'AppleDouble');
+    write(path.join(brain, 'leases', '._mcp-me.json'), 'AppleDouble'); old(path.join(brain, 'leases', '._mcp-me.json'), 2);
+    write(path.join(brain, 'ruflo-cwd', '._p1'), 'AppleDouble');
+    write(path.join(brain, 'kb', '._SOURCE.json'), 'AppleDouble');
+    // A disposable copy whose only extra files are AppleDouble shadows of its own files.
+    const copy = kbTree(path.join(brain, 'kb.bak-1'), { publicStores: { alpha: 'old' }, privateStores: { secret: 's' } });
+    write(path.join(copy, '._SOURCE.json'), 'AppleDouble'); write(path.join(copy, '._secret.big.rvf'), 'AppleDouble');
+    write(path.join(copy, '.DS_Store'), 'Finder');
+    const metaPaths = [...meta.map((n) => path.join(brain, n)), path.join(brain, 'versions', '._4.5.0'), path.join(brain, 'leases', '._mcp-me.json'),
+      path.join(brain, 'ruflo-cwd', '._p1'), ...['.fseventsd', '.Spotlight-V100', '.Trashes', '.TemporaryItems'].map((d) => path.join(brain, d))];
+    const fp = inventoryFootprint({ env: m.env, home: m.home, now: NOW });
+    for (const p of metaPaths) expect(item(fp, p), p).toBeUndefined();
+    expect(fp.cruft.map((i) => path.basename(i.path))).toEqual(['kb.bak-1']);
+    expect(kbCopyProof({ copyDir: copy, liveDir: path.join(brain, 'kb') })).toMatchObject({ disposable: true });
+    const result = sweepFootprint({ env: m.env, home: m.home, now: NOW, apply: true });
+    for (const p of metaPaths) expect(fs.existsSync(p), `${p} was removed`).toBe(true);
+    expect(fs.existsSync(copy)).toBe(false);
+    const r = confirm({ footprint: result.after, env: m.env, home: m.home, now: NOW, readiness: [] });
+    expect(r.lines.find((l) => l.id === 'cruft')).toMatchObject({ state: 'ok' });
+  });
+
   it('an unmounted volume (dangling link) is reported, and nothing is cleaned, created or reinstalled beside it', async () => {
     const m = moved();
     fs.renameSync(path.join(m.home, 'Volumes'), path.join(m.home, 'Unplugged')); // the drive is gone
