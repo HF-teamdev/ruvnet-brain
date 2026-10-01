@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FOOTPRINT_POLICY, inventoryFootprint, kbCopyPrefixes, sweepFootprint, footprintRoots } from '../../plugin/scripts/brain-footprint.mjs';
 import { kbCopyProof } from '../../plugin/scripts/kb-copy-proof.mjs';
-import { confirm, footprintAlarm, writeSignatureRecord } from '../../plugin/scripts/brain-confirmation.mjs';
+import { confirm, doctorVerdict, footprintAlarm, formatConfirmation, writeSignatureRecord } from '../../plugin/scripts/brain-confirmation.mjs';
 import { footprintCheck } from '../../plugin/scripts/session-start-update-plane.mjs';
 import { managedStorageInventory } from '../../kb/update-storage-transaction.mjs';
 
@@ -336,14 +336,48 @@ describe('positive confirmation', () => {
     const r = run(m, { npmLatest: { version: '4.6.0', checkedAt: NOW }, now: NOW + 3 * 86_400_000,
       readiness: [{ pid: 42, state: 'ready', kbDir: path.join(m.brainHome, 'kb.bak-1') }] });
     const by = Object.fromEntries(r.lines.map((l) => [l.id, l]));
-    expect(by.software).toMatchObject({ state: 'fail', fix: 'npx ruvnet-brain@latest --update' });
+    expect(by.software).toMatchObject({ state: 'warn', fix: 'npx ruvnet-brain@latest --update' }); // currency advises
     expect(by.knowledge.state).toBe('fail');
-    expect(by.knowledge.detail).toMatch(/2 copies on disk.*built 3d ago.*signature record does not match/);
+    expect(by.knowledge.detail).toMatch(/2 copies on disk.*signature record does not match.*built 3d ago/); // structural first, then currency
     expect(by.knowledge.fix).toBe('npx ruvnet-brain --clean');
     expect(by['in-use']).toMatchObject({ state: 'fail' });
     expect(by.cruft).toMatchObject({ state: 'fail', fix: 'npx ruvnet-brain --clean' });
     expect(footprintAlarm(r)).toMatch(/^\[RuvNet Brain — FOOTPRINT NOT CLEAN\] 2 knowledge-base copies/);
     expect(r.ok).toBe(false);
+  });
+
+  // Review S5 + the owner's ruling: ONE verdict, and currency only ADVISES. A correctly installed older build
+  // (a recovery re-run, a quiet week with no new corpus) must stay green for install verification.
+  it('currency is advisory: a 72h-old KB, a host plugin one version behind and a newer npm give ! lines and exit 0', () => {
+    const m = clean();
+    const cache = path.join(m.home, '.claude', 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain');
+    json(path.join(cache, '4.4.9', '.claude-plugin', 'plugin.json'), { version: '4.4.9' });
+    json(path.join(m.home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'ruvnet-brain@ruvnet-brain': [{ installPath: path.join(cache, '4.4.9') }] } });
+    const r = run(m, { now: NOW + 72 * 3_600_000, npmLatest: { version: '4.5.1', checkedAt: NOW } });
+    const by = Object.fromEntries(r.lines.map((l) => [l.id, l]));
+    expect(by.knowledge).toMatchObject({ state: 'warn', fix: 'npx ruvnet-brain@latest --update' });
+    expect(by.knowledge.detail).toMatch(/built 3d ago \(limit 48h\)/);
+    expect(by.hosts).toMatchObject({ state: 'warn', detail: expect.stringMatching(/Claude Code 4\.4\.9 ≠ runtime 4\.5\.0/) });
+    expect(by.software).toMatchObject({ state: 'warn' });
+    expect(r.ok).toBe(true);
+    const verdict = doctorVerdict(r, [{ id: 'grounding', label: 'Grounding', state: 'ok', detail: 'proven' }]);
+    expect(verdict).toMatchObject({ ok: true, exitCode: 0, failing: [], advisories: expect.arrayContaining(['knowledge', 'hosts', 'software']) });
+    const text = formatConfirmation(r);
+    expect(text).toMatch(/^ {4}! Knowledge/m);
+    expect(text).toMatch(/Green — 3 advisory line\(s\) marked ! do not block/);
+    expect(text).not.toMatch(/Not green/);
+  });
+
+  it('a structural ✗ (no signature record) fails the ONE verdict; a failing doctor check fails it too', () => {
+    const m = clean();
+    fs.rmSync(path.join(m.brainHome, 'knowledge-signature.json'));
+    const r = run(m);
+    expect(r.lines.find((l) => l.id === 'knowledge')).toMatchObject({ state: 'fail', detail: expect.stringMatching(/no signature verification recorded/) });
+    expect(doctorVerdict(r, [])).toMatchObject({ ok: false, exitCode: 1, failing: ['knowledge'] });
+    expect(formatConfirmation(doctorVerdict(r, []))).toMatch(/Not green/);
+    const green = run(clean());
+    expect(doctorVerdict(green, [{ id: 'grounding', label: 'Grounding', state: 'fail', detail: 'not proven', fix: 'npx ruvnet-brain' }]))
+      .toMatchObject({ ok: false, exitCode: 1, failing: ['grounding'] });
   });
 });
 

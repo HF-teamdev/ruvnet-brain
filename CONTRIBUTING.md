@@ -235,11 +235,17 @@ artifact only together with its classification there, or `--doctor` will report 
 - **Bounds**: ledgers in `LOG_FILES` rotate to `<name>.1` past 2 MiB; `.last-*.log` files are truncated to
   their tail past 512 KiB; one npx installer copy, never older than the current version; lifecycle receipts
   by lifecycle-evidence-v1 (16 MiB). Budget = live KB + models + 512 MiB.
-- **Positive confirmation** after every install/update and in `npx ruvnet-brain --doctor`
-  (`--doctor --json` for scripts; exit 0 only when every provable line is green): Software = npm latest,
-  Hosts = runtime, Knowledge = exactly one copy, built < 48h, signature verified (bound to the live
+- **Positive confirmation** after every install/update and in `npx ruvnet-brain --doctor`: Software = npm
+  latest, Hosts = runtime, Knowledge = exactly one copy, built < 48h, signature verified (bound to the live
   COVERAGE.json), corpus tag; In use = the search worker opened that copy, last answer; Footprint vs budget;
-  No cruft. Every ✗ names one command. SessionStart prints one `[RuvNet Brain — FOOTPRINT …]` line only
+  No cruft. `--doctor` text, `--doctor --json` (the same doctor; JSON on stdout) and the exit code are ONE
+  verdict (`doctorVerdict` in `plugin/scripts/brain-confirmation.mjs`): exit 0 iff no ✗ line, counting the
+  doctor's own checks too. Structural problems are ✗ (a second KB copy, no/invalid signature record, a worker
+  on another copy, footprint, cruft, install, identity, grounding, Codex, nightly, host sync, ruflo); currency
+  is `!` and advisory (Software behind npm latest, a host plugin ≠ runtime, Knowledge built ≥ 48h), so a
+  correctly installed older build still passes install verification. Every ✗ and ! names one command; a
+  missing signature record is written by a verified install or update, and `--update` restores it from this
+  machine's receipt of a verified apply of the same bytes. SessionStart prints one `[RuvNet Brain — FOOTPRINT …]` line only
   when the footprint is wrong.
 - **Proof it holds**: `tests/integration/footprint-three-updates.test.mjs` (real install, forced reinstall,
   three updates, planted cruft, all lines green, and the same run with the sweep cut out goes red);

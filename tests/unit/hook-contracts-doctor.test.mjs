@@ -10,7 +10,9 @@
  *      number was zero instead of asking hook-contracts.json.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { classifyCodexLifecycle, codexLifecycleGuidance } from '../../bin/install.mjs';
 import { continuityRegistrations } from '../../plugin/scripts/continuity-hook-policy.mjs';
@@ -18,6 +20,7 @@ import { continuityRegistrations } from '../../plugin/scripts/continuity-hook-po
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const INSTALL = fs.readFileSync(path.join(ROOT, 'bin/install.mjs'), 'utf8');
 const CONTRACTS = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin/hooks/hook-contracts.json'), 'utf8'));
+const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 const PLUGIN_ID = /const CODEX_PLUGIN_ID = '([^']+)'/.exec(INSTALL)?.[1];
 
 const listed = (hooks) => ({ ok: true, value: { data: [{ hooks }] } });
@@ -110,20 +113,45 @@ describe('--doctor derives its hook judgments from the contracts', () => {
 });
 
 describe('--doctor emits exactly one verdict', () => {
-  it('prints "✓ Healthy." and "✗ FAILING" from one place each, in one if/else', () => {
-    // The PRINT form, not the string — a comment may quote the verdict; only a console.log emits it.
-    const healthy = [...INSTALL.matchAll(/c\.green\('✓ Healthy\.'\)/g)];
-    const failing = [...INSTALL.matchAll(/c\.red\('✗ FAILING'\)/g)];
-    expect(healthy, 'more than one place prints a Healthy verdict').toHaveLength(1);
-    expect(failing, 'more than one place prints a FAILING verdict').toHaveLength(1);
-    // And they are the two arms of the SAME branch, so they cannot both run.
-    const between = INSTALL.slice(
-      Math.min(healthy[0].index, failing[0].index),
-      Math.max(healthy[0].index, failing[0].index),
-    );
-    expect(between, 'the two verdicts are not the arms of one if/else').toMatch(/}\s*else\s*{/);
-    expect(between.split('\n').length).toBeLessThan(8);
-  });
+  // BEHAVIOUR, not source strings (review S5). A fixture brain with a structural Knowledge ✗ (no signature
+  // record) is run through the REAL installer twice: as text and as --json. Before the fix the text verdict
+  // counted only footprint lines (it could print "Not green" and then "✓ Healthy." with exit 0) while --json
+  // printed only the confirmation and exited on its own rule. Now both must report the SAME failing lines,
+  // and the exit code must be that verdict's.
+  it('text, --json and the exit code agree on a machine whose Knowledge line is ✗', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-one-verdict-'));
+    try {
+      const kb = path.join(home, '.cache', 'ruvnet-brain', 'kb');
+      fs.mkdirSync(kb, { recursive: true });
+      fs.writeFileSync(path.join(kb, 'forge-mcp-all.mjs'), '// fixture: never executed\n');
+      fs.writeFileSync(path.join(kb, 'SOURCE.json'), JSON.stringify({ builtUtc: new Date().toISOString(), releaseTag: `v${VERSION}` }));
+      fs.writeFileSync(path.join(kb, 'COVERAGE.json'), '{"rows":[]}');
+      const emptyGit = path.join(home, 'empty-gitconfig');
+      fs.writeFileSync(emptyGit, '');
+      const env = { PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: home,
+        CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), npm_config_cache: path.join(home, '.npm'),
+        RUVNET_BRAIN_TEST: '1', RUVNET_BRAIN_TEST_NPM_LATEST: VERSION, RUVNET_NO_TELEMETRY: '1', RUFLO_DAEMON_AUTOSTART: '0',
+        GIT_CONFIG_GLOBAL: emptyGit, GIT_CONFIG_NOSYSTEM: '1' };
+      const run = (args) => spawnSync(process.execPath, [path.join(ROOT, 'bin', 'install.mjs'), ...args],
+        { cwd: home, env, encoding: 'utf8', timeout: 120_000 });
+      const raw = run(['--doctor']);
+      // eslint-disable-next-line no-control-regex
+      const text = { ...raw, stdout: String(raw.stdout).replace(/\u001b\[[0-9;]*m/g, '') };
+      const json = run(['--doctor', '--json']);
+      const verdictLines = text.stdout.split('\n').filter((l) => /✓ Healthy\.|✗ FAILING/.test(l));
+      expect(verdictLines, text.stdout.slice(-3000)).toHaveLength(1);
+      expect(verdictLines[0]).toMatch(/✗ FAILING — /);
+      expect(text.stdout).not.toMatch(/✓ Healthy\./);
+      expect(text.stdout).toMatch(/✗ Knowledge .*no signature verification recorded/);
+      const textFailing = verdictLines[0].replace(/^.*✗ FAILING — /, '').replace(/:.*$/, '').split(', ');
+      const verdict = JSON.parse(json.stdout); // stdout is ONLY the verdict object; narration went to stderr
+      expect(verdict).toMatchObject({ kind: 'ruvnet-brain-doctor', ok: false, exitCode: 1 });
+      expect(verdict.failing).toContain('knowledge');
+      expect([...verdict.failing].sort()).toEqual([...textFailing].sort());
+      expect(text.status).toBe(1);
+      expect(json.status).toBe(verdict.exitCode);
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }, 300_000);
 
   it('keeps the narrow install reading from calling itself a verdict', () => {
     // Two lines both labelled "verdict" that answer different questions can disagree in public.

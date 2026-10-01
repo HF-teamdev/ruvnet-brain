@@ -27,7 +27,7 @@ import { assessLifecycleEvidence, pruneLifecycleEvidence } from '../kb/lifecycle
 import { checkDiskSpace, recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
 import { footprintRoots, sweepFootprint } from '../plugin/scripts/brain-footprint.mjs';
 import { kbCopyProof } from '../plugin/scripts/kb-copy-proof.mjs';
-import { confirm, formatBytes, formatConfirmation, writeSignatureRecord } from '../plugin/scripts/brain-confirmation.mjs';
+import { confirm, doctorVerdict, formatBytes, formatConfirmation, signatureEvidenceFromReceipts, signatureRecordValid, writeSignatureRecord } from '../plugin/scripts/brain-confirmation.mjs';
 import {
   requiredEmbedderModels,
   missingEmbedderModels,
@@ -2917,7 +2917,16 @@ function meterSummaryLine() {
 // Honest prose that no machine can read is not a check. It could not gate a CI job, a nightly probe,
 // or a `&&` in someone's shell. It now RETURNS a verdict and main() exits with it, so "needs
 // attention" and "success" can never again be the same thing to a script.
-async function doctor() {
+// `--doctor --json` runs THIS SAME doctor (review S5: it used to print only the confirmation object, so the
+// text doctor and the JSON could give one machine two verdicts). The narration goes to stderr; stdout carries
+// only the ONE verdict object (brain-confirmation.mjs doctorVerdict), and the exit code is its exitCode.
+async function doctor({ json = false } = {}) {
+  if (!json) return doctorRun({ json });
+  const log = console.log;
+  console.log = (...args) => console.error(...args);
+  try { return await doctorRun({ json }); } finally { console.log = log; }
+}
+async function doctorRun({ json }) {
   printBanner('doctor');
   console.log(c.dim('Checking every part of the install and reporting green/red.\n'));
   const cacheDir = process.env.RUVNET_BRAIN_KB || path.join(os.homedir(), '.cache', 'ruvnet-brain', 'kb');
@@ -2929,7 +2938,12 @@ async function doctor() {
   const present = fs.existsSync(path.join(cacheDir, 'forge-mcp-all.mjs'));
   if (!present) {
     warn('brain not found here — run the installer first:  npx ruvnet-brain');
-    return 1; // "not installed" is a FAILING doctor, not a neutral one
+    // "not installed" is a FAILING doctor, not a neutral one — and the same verdict in both outputs.
+    const verdict = doctorVerdict({ schemaVersion: 1, kind: 'ruvnet-brain-confirmation', lines: [] },
+      [{ id: 'install', label: 'Install', state: 'fail', detail: `brain not found at ${cacheDir}`, fix: 'npx ruvnet-brain' }]);
+    if (json) process.stdout.write(`${JSON.stringify(verdict, null, 2)}\n`);
+    else console.log(`\n  ${c.red('✗ FAILING')} — install: run the fix named above.`);
+    return verdict.exitCode;
   }
   const convergencePath = path.join(process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'), 'host-convergence.json');
   let hostConvergence = { healthy: true, state: 'not-recorded' };
@@ -3130,7 +3144,7 @@ async function doctor() {
     if (fs.existsSync(journal.swarm)) {
       const status = journal.status();
       const line = recordingLine(status);
-      const glyph = status.stuck ? c.red('✗') : status.lastCommitAt ? c.green('✓') : c.yellow('!');
+      const glyph = status.stuck ? c.red('✗') : status.notApplicable ? c.dim('○') : status.lastCommitAt ? c.green('✓') : c.yellow('!');
       console.log(`  ${glyph} ${line}`);
     }
   } catch (error) {
@@ -3190,29 +3204,46 @@ async function doctor() {
   const codexTrustBypassed = process.env.RUVNET_CODEX_HOOK_TRUST_MODE === 'bypass';
   const codexWiringFailed = Boolean(cx.host && !cx.wired);
   const codexReadinessFailed = Boolean(codexMcp?.blocking);
-  // ADR-0098 positive confirmation. Read-only here (`--clean` enforces). Its footprint lines — exactly one
-  // KB copy, nothing that must not exist, within budget — are part of the verdict; currency lines inform.
-  const confirmation = await printConfirmation();
-  const footprintFailed = confirmation.lines.some((l) => l.state === 'fail' && ['cruft', 'footprint'].includes(l.id))
-    || confirmation.footprint.kbCopies !== 1;
-  const failed = footprintFailed || (hookResult ? hookResult.exitCode !== 0 : !allGreen)
-    || !installedIdentity.healthy
-    || smoke.grounded !== true
-    || groundingUnprovenPersisted
-    || (codexLifecycleFailed && !codexTrustBypassed)
-    || codexWiringFailed
-    || nightlyHealth.state === 'degraded'
-    || (nightlyHealth.state === 'on' && !['ok', 'running'].includes(nightlyHealth.runHealth?.state))
-    || codexReadinessFailed
-    || !hostConvergence.healthy
-    || Boolean(rufloOperational && !rufloOperational.healthy);
-  // THE ONE VERDICT. Always printed, always consistent with the exit code, never alongside another.
-  if (failed) {
-    console.log(`\n  ${c.red('✗ FAILING')} — the warnings above are real. Re-run  ${c.bold('npx ruvnet-brain')}  to repair.`);
+  // ADR-0098 positive confirmation (read-only here; `--clean` enforces) PLUS every doctor check, as lines of
+  // ONE block, judged by ONE function (doctorVerdict): ✗ anywhere fails; ! (currency: KB age, a host plugin
+  // behind, npm newer) advises and never fails, so a correctly installed older build still verifies.
+  const confirmation = await printConfirmation({ print: false });
+  const check = (id, label, failedNow, detail, fix, { advisory = false } = {}) => ({ id, label,
+    state: failedNow ? (advisory ? 'warn' : 'fail') : 'ok', detail, fix: failedNow ? fix : null });
+  const nightlyFailed = nightlyHealth.state === 'degraded'
+    || (nightlyHealth.state === 'on' && !['ok', 'running'].includes(nightlyHealth.runHealth?.state));
+  const codexFailed = codexWiringFailed || codexReadinessFailed || (codexLifecycleFailed && !codexTrustBypassed);
+  const checks = [
+    // With --hooks the install reading was never part of the verdict (release install verification); keep that.
+    check('install', 'Install', !allGreen, `${v.repos} store(s), reader ${v.reader ? 'present' : 'MISSING'}, search server ${v.mcp ? 'present' : 'MISSING'}`,
+      'npx ruvnet-brain', { advisory: Boolean(hookResult) }),
+    ...(hookResult ? [check('hooks', 'Hooks', hookResult.exitCode !== 0, 'automatic Brain hook continuity policy', 'npx ruvnet-brain')] : []),
+    check('identity', 'Identity', !installedIdentity.healthy, installedIdentity.healthy ? 'search engine, validator and archive manifest agree'
+      : installedIdentity.issues.join('; '), 'npx ruvnet-brain@latest --update'),
+    check('grounding', 'Grounding', smoke.grounded !== true || groundingUnprovenPersisted,
+      smoke.grounded === true && !groundingUnprovenPersisted ? `proven (${smoke.receipt?.path || 'cited passage'})`
+        : groundingUnprovenPersisted ? 'recorded UNPROVEN' : `not proven (${smoke.reason || (smoke.ran === false ? 'the live question did not run' : 'unknown')})`,
+      smoke.slow ? 'npx ruvnet-brain --doctor (again, when the machine is less busy)' : 'npx ruvnet-brain'),
+    ...(cx.host ? [check('codex', 'Codex', codexFailed, codexFailed ? (codexWiringFailed ? 'host detected but NOT wired'
+      : codexReadinessFailed ? 'MCP readiness blocked' : 'lifecycle hooks unhealthy') : 'wired', 'npx ruvnet-brain')] : []),
+    check('nightly', 'Nightly', nightlyFailed, `${nightlyHealth.state}${nightlyHealth.runHealth?.state ? `, last run ${nightlyHealth.runHealth.state}` : ''}`,
+      nightlyHealth.state === 'degraded' ? 'npx ruvnet-brain --enable-nightly' : 'npx ruvnet-brain --update'),
+    check('host-convergence', 'Hosts sync', !hostConvergence.healthy, hostConvergence.state, 'npx ruvnet-brain --update'),
+    ...(rufloOperational ? [check('ruflo', 'Ruflo', !rufloOperational.healthy, rufloOperational.healthy ? 'operational' : 'operational learning DEGRADED', 'ruflo doctor --fix')] : []),
+  ];
+  // THE ONE VERDICT. Text, --json and the exit code are all read from this object; nothing else decides.
+  const verdict = doctorVerdict(confirmation, checks);
+  if (json) {
+    process.stdout.write(`${JSON.stringify(verdict, null, 2)}\n`);
   } else {
-    console.log(`\n  ${c.green('✓ Healthy.')} The brain is installed, reachable, and its checks pass.`);
+    console.log(`\n${formatConfirmation(verdict, { color: c, summary: false })}`);
+    if (!verdict.ok) {
+      console.log(`\n  ${c.red('✗ FAILING')} — ${verdict.failing.join(', ')}: run the fix named on each ✗ line.`);
+    } else {
+      console.log(`\n  ${c.green('✓ Healthy.')} The brain is installed, reachable, and its checks pass${verdict.advisories.length ? ` (${verdict.advisories.length} advisory ! line(s): ${verdict.advisories.join(', ')})` : ''}.`);
+    }
   }
-  return failed ? 1 : 0;
+  return verdict.exitCode;
 }
 
 // ── the post-install self-check, wired for both --doctor --hooks and the installer's last step ────
@@ -4028,6 +4059,24 @@ async function runUpdate() {
       writeSignatureRecord({ brainHome: footprintRoots().brainHome, kbDir, bundleSha256: updaterResult.bundleSha256,
         releaseTag: corpusTag, source: 'update', now: footprintNow() });
     } catch (error) { warn(`signature verification could not be recorded (${error.message})`); }
+  } else if (updateStatus === 0) {
+    // Nothing was applied (already current). The doctor names `--update` as the fix for a missing record, so
+    // this run must be able to write it — but only from proof: this machine's own receipt of an update that
+    // APPLIED a signature-verified bundle whose coverage digest equals the live COVERAGE.json (review S5).
+    const roots = footprintRoots();
+    try {
+      if (!signatureRecordValid({ brainHome: roots.brainHome, kbDir })) {
+        const evidence = signatureEvidenceFromReceipts({ brainHome: roots.brainHome, kbDir });
+        if (evidence) {
+          writeSignatureRecord({ brainHome: roots.brainHome, kbDir, bundleSha256: evidence.bundleSha256,
+            source: `update-receipt:${evidence.runId}`, now: footprintNow() });
+          ok('signature verification recorded for the live knowledge (from this machine\'s verified update receipt)');
+        } else {
+          warn('no signature verification is on record for the live knowledge, and no verified update of these exact bytes is either;');
+          info(`it is recorded by the next update that applies a signed release, or now by a verified reinstall:  ${c.bold('npx ruvnet-brain@latest --force')}`);
+        }
+      }
+    } catch (error) { warn(`signature verification could not be recorded (${error.message})`); }
   }
   let phaseEvidence = updaterResult?.phaseEvidence || null;
   if (!phaseEvidence) {
@@ -4357,10 +4406,11 @@ export function enforceFootprint({ holdingRefreshLock = false, pruneEvidence = f
 }
 
 /** Print (or emit as JSON) the positive-confirmation block for the machine as it is right now. */
-async function printConfirmation({ footprint = null, json = false } = {}) {
+async function printConfirmation({ footprint = null, json = false, print = true } = {}) {
   const now = footprintNow();
   const fp = footprint || sweepFootprint({ apply: false, now, evidence: footprintEvidence() }).before;
   const result = confirm({ footprint: fp, npmLatest: await npmLatestVersion(), installedVersion: PACKAGE_VERSION, now });
+  if (!print) return result;
   if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   else console.log(`\n${formatConfirmation(result, { color: c })}`);
   return result;
@@ -5852,8 +5902,7 @@ the installer reports that boot-level declarations changed.
   // and `echo $?` → 0 coexisted for so long.
   // `--doctor --json`: the positive-confirmation object ONLY (no narration), exit 0 iff every line that
   // can be proven here is green — for scripts, CI, and agents (ADR-0098).
-  if (FLAG_DOCTOR && FLAG_JSON) { process.exitCode = (await printConfirmation({ json: true })).ok ? 0 : 1; return; }
-  if (FLAG_DOCTOR) { process.exitCode = await doctor(); return; }
+  if (FLAG_DOCTOR) { process.exitCode = await doctor({ json: FLAG_JSON }); return; }
   // `--clean`: enforce the footprint guarantee now, then confirm. Exit 0 only when exactly one KB copy
   // remains and nothing that must not exist is left (a private-unique copy kept for safety is a 1).
   if (FLAG_CLEAN) {
@@ -6007,7 +6056,10 @@ the installer reports that boot-level declarations changed.
     // invalid one, and --no-verify remains the single explicit, user-chosen override.
     const SIGNING_REQUIRED = true;
     let signedBundleSha256 = null; // set only when THIS run verified the bundle's Ed25519 signature
-    if (downloaded && !FLAG_NO_VERIFY) {
+    // A local bundle that carries its signature beside it is verified (and recorded) too; without one it
+    // installs as before, unverified and recorded as such (the doctor says "signature NOT verified").
+    const localSigned = !downloaded && Boolean(zipPath) && fs.existsSync(`${zipPath}.sig`);
+    if ((downloaded || localSigned) && !FLAG_NO_VERIFY) {
       const sigPath = `${zipPath}.sig`;
       const hasSig = fs.existsSync(sigPath);
       if (!hasSig) {

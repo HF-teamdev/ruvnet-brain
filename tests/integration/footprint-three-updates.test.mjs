@@ -39,6 +39,7 @@ const TEST_PUB = KEYS.publicKey.export({ type: 'spki', format: 'pem' }).trim();
 const sign = (bytes) => crypto.sign(null, crypto.createHash('sha256').update(bytes).digest(), KEYS.privateKey);
 const shared = [];
 const MIB = 1024 * 1024;
+const CONFIRMATION_IDS = ['software', 'hosts', 'knowledge', 'in-use', 'footprint', 'cruft'];
 
 let server; let origin; const served = { gen: null };
 const release = (gen) => ({ tag_name: gen.tag, draft: false, prerelease: false, published_at: gen.generation,
@@ -153,10 +154,10 @@ function plantCruft({ home, brainHome, kbDir, round }) {
 
 const run = (args, env, cwd) => new Promise((resolve) => {
   const child = spawn(process.execPath, args, { env, cwd });
-  let output = '';
-  child.stdout.on('data', (d) => { output += d; });
+  let output = ''; let stdout = '';
+  child.stdout.on('data', (d) => { output += d; stdout += d; });
   child.stderr.on('data', (d) => { output += d; });
-  child.on('close', (code) => resolve({ code, output }));
+  child.on('close', (code) => resolve({ code, output, stdout }));
 });
 
 beforeAll(async () => {
@@ -236,10 +237,16 @@ describe('footprint guarantee: real install, forced reinstall, three updates', (
       // writer (this test process plays the worker that opened the live KB) and one metered answer.
       writeOwn(brainHome, { state: 'ready', phase: 'warmup', kbDir: fs.realpathSync(kbDir) });
       fs.appendFileSync(path.join(brainHome, 'token-ledger.jsonl'), `${JSON.stringify({ ts: new Date().toISOString(), source: 'mcp', tool: 'search_ruvnet', bytes: 10 })}\n`);
+      // `--doctor --json` is the full doctor (one verdict, review S5): stdout is ONLY that object. The fixture
+      // KB's search entry points are stubs, so the live grounding question cannot pass here; every
+      // positive-confirmation line must, and the exit code must be the verdict's own.
       const doctor = await run([installer, '--doctor', '--json'], { ...stepEnv, RUVNET_BRAIN_TEST_NOW: stepEnv.RUVNET_BRAIN_TEST_NOW }, home);
-      const confirmation = JSON.parse(doctor.output.slice(doctor.output.indexOf('{')));
-      expect(confirmation.lines.filter((l) => l.state !== 'ok'), JSON.stringify(confirmation.lines, null, 2)).toEqual([]);
-      expect(doctor.code).toBe(0);
+      const confirmation = JSON.parse(doctor.stdout);
+      const confirmationLines = confirmation.lines.filter((l) => CONFIRMATION_IDS.includes(l.id));
+      expect(confirmationLines.map((l) => l.id).sort()).toEqual([...CONFIRMATION_IDS].sort());
+      expect(confirmationLines.filter((l) => l.state !== 'ok'), JSON.stringify(confirmation.lines, null, 2)).toEqual([]);
+      expect(doctor.code).toBe(confirmation.exitCode);
+      expect(confirmation.failing.filter((id) => CONFIRMATION_IDS.includes(id))).toEqual([]);
       expect(confirmation.footprint.kbCopies).toBe(1);
       expect(confirmation.footprint.totalBytes).toBeLessThanOrEqual(confirmation.footprint.budgetBytes);
       // Update receipts are the one thing allowed to accumulate, and only up to their own retention policy.
@@ -263,8 +270,9 @@ describe('footprint guarantee: real install, forced reinstall, three updates', (
     const noSweep = await run([installer, '--update', '--no-nightly-prompt'], stepEnv, home);
     expect(kbTrees(home).length, noSweep.output.slice(-3000)).toBeGreaterThan(1);
     const red = await run([installer, '--doctor', '--json'], stepEnv, home);
-    const redConfirmation = JSON.parse(red.output.slice(red.output.indexOf('{')));
+    const redConfirmation = JSON.parse(red.stdout);
     expect(red.code).toBe(1);
+    expect(redConfirmation.failing).toEqual(expect.arrayContaining(['knowledge', 'cruft']));
     expect(redConfirmation.footprint.kbCopies).toBeGreaterThan(1);
     expect(redConfirmation.lines.find((l) => l.id === 'cruft')).toMatchObject({ state: 'fail', fix: 'npx ruvnet-brain --clean' });
     // …and the one command it names restores the guarantee.
@@ -273,4 +281,62 @@ describe('footprint guarantee: real install, forced reinstall, three updates', (
     expect(clean.code, clean.output.slice(-3000)).toBe(0);
     expect(kbTrees(home)).toEqual([kbDir]);
   }, 900_000);
+
+  // Review S5 + the owner's condition for gating on the signature record: a FRESH verified install and an
+  // --update that applies nothing must both leave it present, and "fix: --update" for a lost record must work.
+  it('the signature record survives a verified install, an applied update and a no-op update, and is recovered from proof', async () => {
+    const { seed, generations } = await buildChain(1);
+    const pkg = harness();
+    fs.mkdirSync(path.join(pkg, 'dist'));
+    fs.copyFileSync(seed.file, path.join(pkg, 'dist', 'ruvnet-brain.zip'));
+    fs.writeFileSync(path.join(pkg, 'dist', 'ruvnet-brain.zip.sig'), sign(fs.readFileSync(seed.file)));
+    const home = fs.realpathSync(tempDir(shared, 'sig-home'));
+    const brainHome = path.join(home, '.cache', 'ruvnet-brain');
+    const kbDir = path.join(brainHome, 'kb');
+    const record = path.join(brainHome, 'knowledge-signature.json');
+    const coverageSha = () => sha256File(path.join(kbDir, 'COVERAGE.json'));
+    const env = { PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: home,
+      TMPDIR: tempDir(shared, 'sig-tmp'), CODEX_HOME: path.join(home, '.codex'), npm_config_cache: path.join(home, '.npm'),
+      npm_config_update_notifier: 'false', RUVNET_BRAIN_TEST: '1', RUVNET_BRAIN_TEST_NPM_LATEST: VERSION,
+      RUVNET_BRAIN_NO_UPDATE_FALLBACK: '1', RUVNET_NO_TELEMETRY: '1', RUFLO_DAEMON_AUTOSTART: '0', RUVNET_TURN_CAPTURE: 'off' };
+    const installer = path.join(pkg, 'bin', 'install.mjs');
+    // NO --no-verify: the local bundle's signature beside it is checked with the (test) trust root.
+    const fresh = await run([installer, '--yes', '--no-nightly-prompt', '--no-telemetry', '--no-stack', '--no-enhance', '--no-statusline', '--no-selfcheck'], env, home);
+    expect(fresh.code, fresh.output.slice(-6000)).toBe(0);
+    expect(fresh.output).toMatch(/signature valid \(sha256 /);
+    expect(readJson(record)).toMatchObject({ source: 'install', bundleSha256: seed.sha256, coverageSha256: coverageSha() });
+
+    const pointAtLocal = () => {
+      const source = readJson(path.join(kbDir, 'SOURCE.json'));
+      fs.writeFileSync(path.join(kbDir, 'SOURCE.json'), JSON.stringify({ ...source, canonicalManifestUrl: `${origin}/repos/${REPO}/releases/latest` }, null, 2));
+    };
+    const gen = generations[0];
+    served.gen = gen;
+    const stepEnv = { ...env, RUVNET_BRAIN_TEST_NOW: new Date(Math.max(Date.parse(gen.generation) + 3_600_000, Date.now())).toISOString() };
+    pointAtLocal();
+    const applied = await run([installer, '--update', '--no-nightly-prompt'], stepEnv, home);
+    expect(applied.code, applied.output.slice(-6000)).toBe(0);
+    expect(readJson(record)).toMatchObject({ source: 'update', bundleSha256: gen.sha256, coverageSha256: coverageSha() });
+
+    pointAtLocal();
+    const noop = await run([installer, '--update', '--no-nightly-prompt'], stepEnv, home);
+    expect(noop.code, noop.output.slice(-6000)).toBe(0);
+    expect(noop.output).toMatch(/Nothing to apply — already current/);
+    expect(readJson(record)).toMatchObject({ bundleSha256: gen.sha256, coverageSha256: coverageSha() });
+
+    // A lost record: the doctor gates on it (structural) and names --update; --update applies nothing and
+    // must still restore it — from this machine's own receipt of the verified apply, never by assumption.
+    fs.rmSync(record);
+    const lost = await run([installer, '--doctor', '--json'], stepEnv, home);
+    expect(JSON.parse(lost.stdout).lines.find((l) => l.id === 'knowledge')).toMatchObject({ state: 'fail', fix: 'npx ruvnet-brain@latest --update' });
+    expect(lost.code).toBe(1);
+    pointAtLocal();
+    const repaired = await run([installer, '--update', '--no-nightly-prompt'], stepEnv, home);
+    expect(repaired.code, repaired.output.slice(-6000)).toBe(0);
+    expect(repaired.output).toMatch(/signature verification recorded for the live knowledge/);
+    expect(readJson(record)).toMatchObject({ bundleSha256: gen.sha256, coverageSha256: coverageSha(), source: expect.stringMatching(/^update-receipt:/) });
+    const after = JSON.parse((await run([installer, '--doctor', '--json'], stepEnv, home)).stdout);
+    expect(after.lines.find((l) => l.id === 'knowledge').detail).toMatch(/signature verified/);
+    expect(after.failing).not.toContain('knowledge');
+  }, 600_000);
 });

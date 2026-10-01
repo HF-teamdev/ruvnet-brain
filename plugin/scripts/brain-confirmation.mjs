@@ -73,7 +73,10 @@ function npmLatestFrom({ npmLatest, brainHome }) {
   return null;
 }
 
-const line = (id, label, state, detail, fix = null) => ({ id, label, state, detail, fix: state === 'fail' ? fix : null });
+// state: 'ok' ✓ | 'fail' ✗ (structural: gates the verdict) | 'warn' ! (currency: shown with its fix, never gates)
+// | 'unknown' ○. Currency is advisory on purpose: a correctly installed OLDER build (a recovery re-run of an
+// earlier release, a quiet week with no new corpus) must still pass install verification (`--doctor --hooks`).
+const line = (id, label, state, detail, fix = null) => ({ id, label, state, detail, fix: state === 'fail' || state === 'warn' ? fix : null });
 
 /**
  * @param footprint inventoryFootprint()/sweepFootprint().after output (required)
@@ -94,7 +97,7 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
   else if (!latest) lines.push(line('software', 'Software', 'unknown', `${installed} installed; npm latest could not be checked (offline?)`));
   else {
     const behind = cmpVersion(installed, latest.version) < 0;
-    lines.push(line('software', 'Software', behind ? 'fail' : 'ok',
+    lines.push(line('software', 'Software', behind ? 'warn' : 'ok',
       `${installed} installed ${behind ? '<' : '='} npm latest ${latest.version} (checked ${iso(latest.checkedAt)}, ${latest.source || 'npm registry'})`, UPDATE));
   }
 
@@ -105,7 +108,7 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
   else {
     const off = hosts.filter((h) => h.version !== runtime);
     const label = (h) => `${h.host === 'claude' ? 'Claude Code' : 'Codex'} ${h.version}`;
-    lines.push(line('hosts', 'Hosts', off.length || !runtime ? 'fail' : 'ok',
+    lines.push(line('hosts', 'Hosts', !runtime ? 'fail' : off.length ? 'warn' : 'ok',
       `${hosts.map(label).join(' · ')} ${off.length ? '≠' : '='} runtime ${runtime || 'unknown'}`, UPDATE));
   }
 
@@ -122,16 +125,19 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
   const coverage = sha256File(path.join(roots.kbDir, 'COVERAGE.json'));
   const signed = Boolean(signature?.coverageSha256 && coverage && signature.coverageSha256 === coverage);
   const tag = source?.corpusReleaseTag || source?.releaseTag || null;
+  // Structural problems (a second copy, unverified bytes) gate; age is currency and only advises.
   const knowledgeProblems = [];
-  if (footprint.kbCopies !== 1) knowledgeProblems.push([`${footprint.kbCopies} copies on disk (must be exactly 1)`, footprint.kbCopies ? CLEAN : 'npx ruvnet-brain@latest']);
-  if (!Number.isFinite(builtMs) || (now - builtMs) / 3_600_000 >= KNOWLEDGE_MAX_AGE_HOURS) knowledgeProblems.push([`built ${Number.isFinite(builtMs) ? ago(builtMs, now) : 'at an unknown time'} (limit ${KNOWLEDGE_MAX_AGE_HOURS}h)`, UPDATE]);
+  const knowledgeAdvice = [];
+  if (footprint.kbCopies !== 1) knowledgeProblems.push([`${footprint.kbCopies} copies on disk (must be exactly 1)`, footprint.kbCopies ? (footprint.kbCopyFix || CLEAN) : 'npx ruvnet-brain@latest']);
   if (!signed) knowledgeProblems.push([signature ? 'signature record does not match the live COVERAGE.json' : 'no signature verification recorded for these bytes', UPDATE]);
+  if (!Number.isFinite(builtMs) || (now - builtMs) / 3_600_000 >= KNOWLEDGE_MAX_AGE_HOURS) knowledgeAdvice.push([`built ${Number.isFinite(builtMs) ? ago(builtMs, now) : 'at an unknown time'} (limit ${KNOWLEDGE_MAX_AGE_HOURS}h)`, UPDATE]);
   const where = roots.location?.state === 'linked'
     ? `at ${roots.kbDir} (moved to ${volumeOf(roots.location.real)}, mounted)` : `at ${roots.kbDir}`;
   const knowledgeDetail = [`${footprint.kbCopies} copy ${where}`, `built ${iso(builtMs)}${Number.isFinite(builtMs) ? ` (${ago(builtMs, now)})` : ''}`,
     signed ? `signature verified ${iso(Date.parse(signature.verifiedAt))}` : 'signature NOT verified', `corpus ${tag ? (tag.length > 28 ? `${tag.slice(0, 26)}…` : tag) : 'unknown'}`].join(' · ');
-  lines.push(line('knowledge', 'Knowledge', knowledgeProblems.length ? 'fail' : 'ok',
-    knowledgeProblems.length ? `${knowledgeDetail} — ${knowledgeProblems.map(([p]) => p).join('; ')}` : knowledgeDetail, knowledgeProblems[0]?.[1]));
+  const knowledgeIssues = [...knowledgeProblems, ...knowledgeAdvice];
+  lines.push(line('knowledge', 'Knowledge', knowledgeProblems.length ? 'fail' : knowledgeAdvice.length ? 'warn' : 'ok',
+    knowledgeIssues.length ? `${knowledgeDetail} — ${knowledgeIssues.map(([p]) => p).join('; ')}` : knowledgeDetail, knowledgeIssues[0]?.[1]));
 
   // In use
   const records = (readiness || readReadiness(roots.brainHome)).filter((r) => r.state === 'ready');
@@ -170,17 +176,65 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
       unowned: footprint.unowned.map(({ path: p, kind, bytes, reason }) => ({ path: p, kind, bytes, reason })) } };
 }
 
-const MARK = { ok: '✓', fail: '✗', unknown: '○' };
-/** The human block. `color` is an optional { green, red, dim, bold } painter. */
-export function formatConfirmation(result, { color = null } = {}) {
-  const paint = (state, text) => (color ? (state === 'ok' ? color.green(text) : state === 'fail' ? color.red(text) : color.dim(text)) : text);
+const MARK = { ok: '✓', fail: '✗', warn: '!', unknown: '○' };
+/** The human block. `color` is an optional { green, red, yellow, dim, bold } painter. `summary:false` omits the
+ * closing line, for a caller (`--doctor`) that prints the ONE verdict itself from the same `ok`. */
+export function formatConfirmation(result, { color = null, summary = true } = {}) {
+  const paint = (state, text) => (color ? (state === 'ok' ? color.green(text) : state === 'fail' ? color.red(text)
+    : state === 'warn' ? (color.yellow || color.dim)(text) : color.dim(text)) : text);
   const out = ['  Positive confirmation'];
   for (const l of result.lines) {
-    out.push(`    ${paint(l.state, MARK[l.state])} ${l.label.padEnd(10)} ${l.detail}`);
+    out.push(`    ${paint(l.state, MARK[l.state] || '○')} ${l.label.padEnd(10)} ${l.detail}`);
     if (l.fix) out.push(`      fix: ${l.fix}`);
   }
-  out.push(`    ${result.ok ? 'All checks that can be proven here are green.' : 'Not green — run the fix named on each ✗ line.'}`);
+  const advisories = result.lines.filter((l) => l.state === 'warn').length;
+  if (summary) {
+    out.push(`    ${!result.ok ? 'Not green — run the fix named on each ✗ line.'
+      : advisories ? `Green — ${advisories} advisory line(s) marked ! do not block; each names its fix.` : 'All checks that can be proven here are green.'}`);
+  }
   return out.join('\n');
+}
+
+/**
+ * THE ONE VERDICT (review S5). `--doctor` text, `--doctor --json` and the exit code all come from this:
+ * failing iff ANY line is ✗ — the positive-confirmation lines plus the doctor's own checks (each a line
+ * `{ id, label, state, detail, fix }`). '!' lines are advisory (currency) and never fail it.
+ */
+export function doctorVerdict(confirmation, checks = []) {
+  const lines = [...(confirmation?.lines || []), ...checks];
+  const failing = lines.filter((l) => l.state === 'fail').map((l) => l.id);
+  return { ...confirmation, kind: 'ruvnet-brain-doctor', lines, ok: failing.length === 0, failing,
+    advisories: lines.filter((l) => l.state === 'warn').map((l) => l.id), exitCode: failing.length ? 1 : 0 };
+}
+
+/** Is there a signature record bound to the bytes live now? */
+export function signatureRecordValid({ brainHome, kbDir }) {
+  const signature = readJson(path.join(brainHome, SIGNATURE_RECORD));
+  const coverage = sha256File(path.join(kbDir, 'COVERAGE.json'));
+  return Boolean(signature?.coverageSha256 && coverage && signature.coverageSha256 === coverage && signature.bundleSha256);
+}
+
+/**
+ * Evidence that the bytes live now were signature-verified, from this machine's own refresh receipts: a
+ * SUCCEEDED run whose updater APPLIED a bundle (the updater refuses unsigned or mis-signed bundles, exit
+ * 3/4) and whose recorded coverage digest equals the live COVERAGE.json. Used by `--update` when it applies
+ * nothing, so "fix: --update" on a missing record is a fix that works. null when no such run exists.
+ */
+export function signatureEvidenceFromReceipts({ brainHome, kbDir }) {
+  const coverage = sha256File(path.join(kbDir, 'COVERAGE.json'));
+  if (!coverage) return null;
+  const dir = path.join(brainHome, 'refresh-runs');
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')).sort().reverse(); } catch { return null; }
+  for (const name of names) {
+    const receipt = readJson(path.join(dir, name));
+    if (receipt?.status !== 'SUCCEEDED' || !Array.isArray(receipt.phases)) continue;
+    const phase = (id) => receipt.phases.find((p) => p?.phase === id && p.status === 'PASS')?.evidence || null;
+    const bundleSha256 = phase('bundle-assembly')?.bundleSha256;
+    if (phase('update')?.terminalVerdict === 'applied' && /^[a-f0-9]{64}$/.test(bundleSha256 || '')
+      && phase('coverage-generation')?.coverageSha256 === coverage) return { bundleSha256, runId: receipt.runId || name, receipt: path.join(dir, name) };
+  }
+  return null;
 }
 
 /** SessionStart: ONE line, only when the footprint itself is wrong (currency has its own line). */

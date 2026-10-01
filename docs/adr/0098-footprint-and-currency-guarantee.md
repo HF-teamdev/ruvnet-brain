@@ -63,6 +63,12 @@ shouldn't be there isn't, nothing building up cruft" — confirmed positively, n
    COVERAGE.json, corpus tag), In use (the search worker reports the KB path it opened; last metered
    answer), Footprint (total vs budget = KB + models + fixed allowance, with breakdown), No cruft. Every ✗
    names one command. SessionStart prints one line only when the footprint is wrong.
+   *Amended 2026-10-01 (review S5):* `--doctor`, `--doctor --json` and the exit code are one verdict
+   (`doctorVerdict`): ✗ anywhere fails, including the doctor's own checks; currency (Software behind npm
+   latest, Hosts ≠ runtime, Knowledge built ≥ 48 h) is `!` advisory and never fails it, so install
+   verification of a correctly installed older build stays green. A verified local bundle (signature beside
+   it) is recorded like a download, and `--update` that applies nothing restores a missing record only from
+   this machine's receipt of a verified apply whose coverage digest equals the live COVERAGE.json.
 
 ## Invariants (each enforced by a test that is proven red by breaking its guard)
 
