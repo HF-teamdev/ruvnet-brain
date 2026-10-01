@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { restoreProgressionForSession } from './project-progression-session-start.mjs';
+import { restoreWithBrief } from './continuity-brief.mjs';
 import {
   read, json, exists, mkdir, write, runNode,
 } from './session-start-fsutil.mjs';
@@ -66,7 +66,7 @@ export async function runSessionStart({
   stdout = process.stdout,
   stderr = process.stderr,
   platform = process.platform,
-  restoreContinuity = restoreProgressionForSession,
+  restoreContinuity = restoreWithBrief,
   runHeartbeat = true,
 } = {}) {
   const lines = [];
@@ -102,6 +102,7 @@ export async function runSessionStart({
       || s.startsWith('[ASCII→SVG]')
       || s.startsWith('[RuvNet Brain — PROJECT CONTINUITY UNKNOWN]')
       || s.startsWith('[RuvNet Brain — PROJECT CONTINUITY RESTORED]')
+      || s.startsWith('[RuvNet Brain — COME UP TO SPEED')
       || s.startsWith('[RuvNet Brain — MAINTAINER ONLY:');
   };
   // An alarm's HEADER line always matches isSafeStatus on its own dedicated prefix (above); its

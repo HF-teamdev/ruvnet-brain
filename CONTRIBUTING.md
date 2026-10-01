@@ -275,7 +275,18 @@ turn's outcome at Stop (final assistant text, files changed, command description
 text) to AgentDB namespace `turns` — the project's `.swarm/memory.db` if it exists, otherwise
 `~/.claude/global-memory/.swarm/memory.db`; `.swarm` is never created in a repository — and at
 SessionEnd/PreCompact runs `ruflo memory distill run` on that db so the records become patterns.
-Writes run in a detached worker; `RUVNET_TURN_CAPTURE=off` disables it. `npm run hooks:check` and
+Writes run in a detached worker; `RUVNET_TURN_CAPTURE=off` disables it. Where the owner's user-level
+`~/.claude/hooks/agentdb-turn-capture.mjs` is registered in `~/.claude/settings.json`, the product defers
+Claude turn records to it (one writer per turn; `RUVNET_TURN_CAPTURE=force` keeps both). The same
+boundaries also record MATERIAL EVENTS (ADR-100, `continuity-events.mjs` / `continuity-journal.mjs`):
+commits and tags from git, test/check/release gate outcomes, agent findings, decisions and lessons
+(explicit, or detected and marked non-authoritative), each fsynced to `.swarm/continuity-events-outbox.jsonl`
+before a detached drainer stores it (`ruflo memory store --no-upsert --path`, namespace `continuity-events`)
+and reads it back by exact key; a refused write (WAL contention) stays pending and is retried at every
+boundary, and a stuck one is shown (`AgentDB: recording ✗ …`) at Stop (Claude), at SessionStart and in
+`--doctor`. SessionStart prints a bounded `[RuvNet Brain — COME UP TO SPEED …]` brief before the progression
+restore; `/ruvnet-brain:rnb-brief` (`continuity-brief.mjs --full | --record`) pulls history or records
+explicitly. `RUVNET_CONTINUITY_CAPTURE=off` disables event capture. `npm run hooks:check` and
 `npm run wired:check` fail on any hook or module that is registered-but-missing or present-but-unwired.
 
 ## Tests
