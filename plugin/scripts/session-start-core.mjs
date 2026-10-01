@@ -33,7 +33,8 @@ import {
 import { maintainerIssueEntitlement, surfaceIssuePointer } from './session-start-issue-alert.mjs';
 import { surfaceSignals } from './session-start-signals.mjs';
 import { brainState, health, knowledgeCurrency, mcpReadiness, KNOWLEDGE_LINE_PREFIX } from './session-start-health.mjs';
-import { stableSpine, heartbeat, knowledgeAutoUpdate } from './session-start-update-plane.mjs';
+import { stableSpine, heartbeat, knowledgeAutoUpdate, footprintCheck } from './session-start-update-plane.mjs';
+import { FOOTPRINT_LINE_PREFIX } from './brain-confirmation.mjs';
 import { describeLifecycleHooks, readHookContracts } from './session-start-hook-description.mjs';
 import { createStageTracer } from './session-start-trace.mjs';
 
@@ -80,6 +81,7 @@ export async function runSessionStart({
       || s.startsWith('[RuvNet Brain — INSTALL ALARM')
       || s.startsWith('[RuvNet Brain — NIGHTLY FAILED')
       || s.startsWith(KNOWLEDGE_LINE_PREFIX)
+      || s.startsWith(FOOTPRINT_LINE_PREFIX)
       || s.startsWith('[RuvNet Brain — OPEN ISSUES')
       || /\bopen issue\(s\)/i.test(s)
       || /^\[RuvNet Brain — external signal/i.test(s)
@@ -217,6 +219,12 @@ export async function runSessionStart({
       knowledgeAutoUpdate({ env, home, now, hookDir, emit });
       const line = knowledgeCurrency({ env, home, now });
       if (line) emit(line);
+    });
+    // ONE line only when the footprint is wrong (a second KB copy, cruft, a worker on another copy);
+    // a bounded detached sweep follows at most every 6h (ADR-0098). Silent on a clean machine.
+    tracer.stage('footprint', () => {
+      if (brain.off || state.problem) return;
+      footprintCheck({ env, home, now, hookDir, emit });
     });
 
     tracer.stage('misc', () => {

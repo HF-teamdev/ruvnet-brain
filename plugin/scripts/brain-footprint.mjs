@@ -1,0 +1,479 @@
+#!/usr/bin/env node
+// DISTINCT-FROM: kb/forge-update.mjs reclaimBackups — that proof keeps a full-KB copy unless EVERY byte of it survives in the live brain, which an older generation never satisfies (measured 2026-10-01: 3.6 GB in three copies kept forever). This module releases public bytes (signed, re-downloadable) and demands byte-identity in live only for private-store files, per the owner's rule (ADR-0098).
+//
+// brain-footprint.mjs — THE FOOTPRINT GUARANTEE (ADR-0098). One classifier for everything the Brain
+// owns on a machine, in three classes, and one sweep that keeps it that way:
+//
+//   must-exist      the live KB, the active Stable Spine generation, each registered plugin generation
+//   may-exist       bounded state: logs under a size cap, lease-held plugin generations, the newest npx
+//                   copy, lifecycle evidence under its own retention policy, models, small state files
+//   must-not-exist  every other full-KB copy (kb.bak-*, kb.install-preserved-*, kb.pre-update-*, …,
+//                   *-quarantine-* dirs), stale install stages and forge candidates, older npx copies,
+//                   stale leases, ruflo scratch debris, rotated-away log bytes
+//   unowned         things in our directories we did not create and cannot classify: REPORTED, never removed
+//
+// SAFETY (non-negotiable, each one has a test that breaks it and goes red):
+//   * A KB copy is removed only after kbCopyProof() shows every private-store file in it — names from the
+//     PRIVATE-STORES.json fence of the live brain AND of the copy, plus every updateManaged:false store —
+//     exists byte-identical at the same path in the live brain, and every store artifact absent from live
+//     has public provenance. Anything unique KEEPS the copy, and the files are named.
+//   * Nothing is ever followed through a symlink: entries are lstat'ed, a symlinked entry is never removed
+//     or entered, and removal targets must sit directly inside an owned root.
+//   * kb.next-/rollback-/failed- trees of a transaction whose latest receipt is non-terminal are kept;
+//     no KB sibling is touched while a refresh lock exists (unless the caller holds it); the live KB's own
+//     files are never written here.
+//   * Plugin generations are only ever removed through the caller-supplied lease-aware collector
+//     (bin/install.mjs prunePluginGenerations); a generation holding a lease is kept.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isKbTree, kbCopyProof } from './kb-copy-proof.mjs';
+
+export { kbCopyProof, privateStoreNames } from './kb-copy-proof.mjs';
+
+const MIB = 1024 * 1024;
+export const FOOTPRINT_POLICY = Object.freeze({
+  schemaVersion: 1,
+  logCapBytes: 2 * MIB,              // an append-only ledger rotates to <name>.1 past this (bound: 2x cap)
+  textLogCapBytes: 512 * 1024,       // a .last-*.log is truncated to its newest tail past this
+  fixedAllowanceBytes: 512 * MIB,    // plugin + spine generations, logs, evidence, scratch, state files
+  staleStageMs: 2 * 3_600_000,       // an install stage nobody activated in 2h is debris
+  staleForgeCandidateMs: 24 * 3_600_000,
+  staleLeaseMs: 6 * 3_600_000,       // plugin/scripts/update-apply.mjs LEASE_FRESH_MS
+  staleRufloRunMs: 3_600_000,        // plugin/scripts/project-progression-store.mjs STALE_RUN_MS
+  recoveryLeftoverMs: 7 * 24 * 3_600_000,
+  recoveryLeftoverMaxBytes: 64 * MIB,
+});
+
+/** Every full-KB copy name this product (or a recovery) has ever created beside the live KB. A superset of
+ * kb/update-storage-transaction.mjs managedStorageInventory's names and kb/forge-update.mjs reclaimBackups'
+ * prefixes — tests/unit/brain-footprint.test.mjs fails if either grows a name this table lacks. */
+export const kbCopyPrefixes = (base) => [
+  `${base}.bak-`, `${base}.pre-reset-backup-`, `${base}.agent-harness-generator-backup-`,
+  `${base}-pre-gap-rebuild-backup-`, `${base}.install-preserved-`, `${base}.install-prior-`,
+  `${base}.pre-update-`, `${base}.next-`, `${base}.rollback-`, `${base}.failed-`,
+];
+const TRANSACTION_KINDS = { next: 'candidate', rollback: 'rollback', failed: 'failed' };
+export const LOG_FILES = Object.freeze(['evidence.jsonl', 'token-ledger.jsonl', 'detached-jobs.jsonl',
+  'update-receipts.jsonl', 'gate-blocks.jsonl', 'distill-receipts.jsonl', 'assertion-gate-shadow.jsonl',
+  'capability-live-evidence.jsonl', 'design-grades.jsonl', 'grounding-overrides.jsonl']);
+const TEXT_LOG = /^\.(?:last-[A-Za-z0-9-]+|seed)\.log$/;
+const RECOVERY_LEFTOVER = /(?:\.(?:bak|retired|dead)-\d{6,}|^bootstrap-backup-\d)/;
+const RUFLO_DEBRIS = new Set(['.swarm', '.claude', '.claude-flow', 'ruvector.db']);
+// Directories in the brain home that hold data another tool owns: measured, shown, never budgeted or removed.
+const FOREIGN = { 'ruvector-mcp': 'RuVector MCP server working store (its own live memory)',
+  'worktree-recovery': 'hand-made recovery archives, not created by the Brain' };
+const TERMINAL = new Set(['NOOP', 'COMMITTED', 'ROLLED_BACK']);
+
+const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+const lstat = (file) => { try { return fs.lstatSync(file); } catch { return null; } };
+const names = (dir) => { try { return fs.readdirSync(dir).sort(); } catch { return []; } };
+/** A lease's process is gone only when the OS says so (ESRCH); anything else counts as alive. */
+const pidAlive = (pid) => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error?.code !== 'ESRCH'; }
+};
+/** Same rule as kb/refresh-run.mjs physicalPath: real path, or resolved through the parent when absent. */
+export function physical(dir) {
+  const resolved = path.resolve(String(dir || ''));
+  try { return fs.realpathSync.native(resolved); } catch { /* absent */ }
+  try { return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved)); } catch { return resolved; }
+}
+const semver = (v) => String(v || '').replace(/^v/, '').split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+export const cmpVersion = (a, b) => {
+  const A = semver(a); const B = semver(b);
+  for (let i = 0; i < Math.max(A.length, B.length); i += 1) {
+    const x = A[i] ?? 0; const y = B[i] ?? 0;
+    if (x === y) continue;
+    if (typeof x === 'number' && typeof y === 'number') return x - y;
+    return String(x) < String(y) ? -1 : 1;
+  }
+  return 0;
+};
+
+export function footprintRoots({ env = process.env, home = os.homedir() } = {}) {
+  const brainHomeSpelled = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain');
+  const brainHome = physical(brainHomeSpelled);
+  const kbDir = physical(env.RUVNET_BRAIN_KB || path.join(brainHomeSpelled, 'kb'));
+  const claude = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
+  const codex = env.CODEX_HOME || path.join(home, '.codex');
+  // `npm run`/`npx` export npm_config_cache to every child — including a test that swapped HOME for a temp
+  // dir, where honouring it would point the sweep at the REAL npm cache. It is honoured only inside HOME.
+  const defaultCache = process.platform === 'win32'
+    ? path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'npm-cache') : path.join(home, '.npm');
+  const configured = env.npm_config_cache || env.NPM_CONFIG_CACHE;
+  const npmCache = configured && physical(configured).startsWith(`${physical(home)}${path.sep}`) ? configured : defaultCache;
+  return { brainHome, kbDir, kbParent: path.dirname(kbDir), brainHomeParent: path.dirname(brainHome),
+    claudeRegistry: path.join(claude, 'plugins', 'installed_plugins.json'),
+    claudePluginCache: path.join(claude, 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain'),
+    codexPluginCache: path.join(codex, 'plugins', 'cache', 'ruvnet-brain', 'ruvnet-brain'),
+    npxRoot: path.join(npmCache, '_npx') };
+}
+
+/** Bytes under a path, never following a link (a link counts as itself). */
+export function treeBytes(target) {
+  const st = lstat(target);
+  if (!st) return 0;
+  if (!st.isDirectory() || st.isSymbolicLink()) return st.size;
+  let total = 0;
+  for (const name of names(target)) total += treeBytes(path.join(target, name));
+  return total;
+}
+
+function transactionState(kbParent, base, id) {
+  const dir = path.join(kbParent, `.${base}.update-transactions`, id);
+  const phases = names(dir).filter((n) => /^\d{3}-[A-Z_]+\.json$/.test(n));
+  if (!phases.length) return null;
+  return readJson(path.join(dir, phases.at(-1)))?.state || 'UNREADABLE';
+}
+
+/** Registered Claude generations (installPaths) and the version each one carries. */
+function claudeRegistered(registryFile) {
+  const registry = readJson(registryFile);
+  return Object.entries(registry?.plugins || {}).filter(([name]) => /^ruvnet-brain@/.test(name))
+    .flatMap(([, v]) => (Array.isArray(v) ? v : [])).map((e) => e?.installPath).filter((p) => typeof p === 'string' && p)
+    .map((p) => physical(p));
+}
+
+const pluginVersion = (dir) => readJson(path.join(dir, '.claude-plugin', 'plugin.json'))?.version || null;
+
+/**
+ * The classified inventory. Pure read. `measure:false` skips recursive byte counts (SessionStart's fast
+ * path); classes and actions do not depend on bytes. `evidence` is kb/lifecycle-evidence-retention.mjs
+ * assessLifecycleEvidence (injected: the plugin payload cannot import kb/).
+ */
+export function inventoryFootprint({ env = process.env, home = os.homedir(), now = Date.now(), measure = true,
+  evidence = null, npmLatest = null, holdingRefreshLock = false, selfPath = process.argv[1] || '' } = {}) {
+  const roots = footprintRoots({ env, home });
+  const policy = FOOTPRINT_POLICY;
+  const items = [];
+  const bytes = (p) => (measure ? treeBytes(p) : 0);
+  const add = (item) => { items.push({ bytes: 0, ...item }); return item; };
+  const base = path.basename(roots.kbDir);
+  const refreshLock = path.join(roots.kbParent, `.${base}.refresh-run.lock`);
+  const lockHeld = !holdingRefreshLock && Boolean(lstat(refreshLock));
+  const kbBlocked = lockHeld ? 'an update holds the refresh lock; KB copies are never touched while it runs' : null;
+
+  // ── the live KB and its siblings ────────────────────────────────────────────────────────────
+  const liveOk = isKbTree(roots.kbDir);
+  add({ id: 'kb', path: roots.kbDir, class: 'must-exist', kind: 'live-kb', action: 'keep',
+    bytes: bytes(roots.kbDir), present: liveOk, reason: liveOk ? 'the one live knowledge base' : 'MISSING or incomplete' });
+  const kbCopyDirs = [];
+  const seen = new Set();
+  const quarantineCopies = (dir) => names(dir).filter((n) => isKbTree(path.join(dir, n))).length;
+  const scanSiblings = (dir) => {
+    for (const name of names(dir)) {
+      const full = path.join(dir, name);
+      if (seen.has(full) || full === roots.kbDir) continue;
+      const st = lstat(full);
+      if (!st) continue;
+      const before = items.length;
+      classifySibling(name, full, st);
+      if (items.length > before) seen.add(full);
+    }
+  };
+  const classifySibling = (name, full, st) => {
+    {
+      const prefix = kbCopyPrefixes(base).find((p) => name.startsWith(p));
+      if (prefix) {
+        if (st.isSymbolicLink() || !st.isDirectory()) { add({ id: 'kb-copy', path: full, class: 'unowned', kind: 'kb-copy-link', action: 'report', reason: 'a link or file under a KB-copy name; never followed or removed' }); return; }
+        const kind = Object.entries(TRANSACTION_KINDS).find(([k]) => prefix === `${base}.${k}-`)?.[1] || null;
+        if (kind) {
+          const state = transactionState(roots.kbParent, base, name.slice(prefix.length));
+          if (state && !TERMINAL.has(state)) {
+            add({ id: 'kb-copy', path: full, class: 'may-exist', kind: `transaction-${kind}`, action: 'keep', bytes: bytes(full),
+              reason: `owned by an in-progress update transaction (${state}); its recovery decides` });
+            return;
+          }
+        }
+        kbCopyDirs.push(full);
+        add({ id: 'kb-copy', path: full, class: 'must-not-exist', kind: 'kb-copy', action: kbBlocked ? 'report' : 'remove-if-proven',
+          blocked: kbBlocked, bytes: bytes(full), reason: 'a second full copy of the knowledge base' });
+      } else if (name.startsWith(`.${base}.install-stage-`) && st.isDirectory() && !st.isSymbolicLink()) {
+        const stale = now - st.mtimeMs > policy.staleStageMs;
+        add({ id: 'install-stage', path: full, class: stale ? 'must-not-exist' : 'may-exist', kind: 'install-stage',
+          action: stale && !kbBlocked ? 'remove' : 'keep', bytes: bytes(full), reason: stale ? 'an install stage nobody activated' : 'an install may be extracting into it now' });
+      } else if (/^\.forge-.+-candidate-/.test(name) && st.isDirectory() && !st.isSymbolicLink()) {
+        const empty = !names(full).length;
+        const stale = empty || now - st.mtimeMs > policy.staleForgeCandidateMs;
+        add({ id: 'forge-candidate', path: full, class: stale ? 'must-not-exist' : 'may-exist', kind: 'forge-candidate',
+          action: stale && !kbBlocked ? 'remove' : 'keep', bytes: bytes(full), reason: stale ? 'a local rebuild candidate left by a killed run' : 'a local rebuild may be using it' });
+      } else if (/quarantine/i.test(name) && st.isDirectory() && !st.isSymbolicLink()) {
+        add({ id: 'quarantine', path: full, class: 'must-not-exist', kind: 'quarantine', action: kbBlocked ? 'report' : 'remove-if-proven',
+          blocked: kbBlocked, bytes: bytes(full), copies: quarantineCopies(full), reason: 'a recovery quarantine of earlier KB copies' });
+      }
+    }
+  };
+  scanSiblings(roots.kbParent);
+  if (roots.brainHome !== roots.kbParent) scanSiblings(roots.brainHome);
+  for (const name of names(roots.brainHomeParent)) {
+    if (!/^ruvnet-brain.*quarantine/i.test(name)) continue;
+    const full = path.join(roots.brainHomeParent, name);
+    const st = lstat(full);
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) continue;
+    add({ id: 'quarantine', path: full, class: 'must-not-exist', kind: 'quarantine', action: kbBlocked ? 'report' : 'remove-if-proven',
+      blocked: kbBlocked, bytes: bytes(full), copies: quarantineCopies(full), reason: 'a recovery quarantine of earlier KB copies' });
+  }
+
+  // ── brain home state ────────────────────────────────────────────────────────────────────────
+  const homeEntries = names(roots.brainHome);
+  for (const name of homeEntries) {
+    const full = path.join(roots.brainHome, name);
+    const st = lstat(full);
+    if (!st || full === roots.kbDir || seen.has(full)) continue;
+    const entryStart = items.length;
+    // Lifecycle evidence has its own retention policy (kb/lifecycle-evidence-retention.mjs); with the
+    // assessment injected it is ONE item below, otherwise it is measured here — never counted twice.
+    if (name === 'refresh-runs' || name === `.${base}.update-transactions`) {
+      if (!evidence) add({ id: 'evidence', path: full, class: 'may-exist', kind: 'lifecycle-evidence', action: 'keep', bytes: bytes(full), reason: 'refresh and transaction receipts (retention: lifecycle-evidence-v1)' });
+      continue;
+    }
+    if (FOREIGN[name]) { add({ id: 'foreign', path: full, class: 'unowned', kind: name, action: 'report', bytes: bytes(full), reason: FOREIGN[name] }); continue; }
+    if (LOG_FILES.includes(name) && st.isFile()) {
+      const over = st.size > policy.logCapBytes;
+      add({ id: 'log', path: full, class: over ? 'must-not-exist' : 'may-exist', kind: 'log', action: over ? 'rotate' : 'keep', bytes: st.size,
+        reason: over ? `${(st.size / MIB).toFixed(1)} MiB over its ${policy.logCapBytes / MIB} MiB cap` : 'within its size cap' });
+      continue;
+    }
+    if (LOG_FILES.some((log) => name === `${log}.1`) && st.isFile()) {
+      add({ id: 'log', path: full, class: 'may-exist', kind: 'log-rotation', action: 'keep', bytes: st.size,
+        reason: 'the one retained rotation of a capped log (replaced at the next rotation)' });
+      continue;
+    }
+    if (TEXT_LOG.test(name) && st.isFile()) {
+      const over = st.size > policy.textLogCapBytes;
+      add({ id: 'log', path: full, class: over ? 'must-not-exist' : 'may-exist', kind: 'text-log', action: over ? 'truncate' : 'keep', bytes: st.size,
+        reason: over ? 'over its size cap' : 'within its size cap' });
+      continue;
+    }
+    if (RECOVERY_LEFTOVER.test(name) && !st.isSymbolicLink()) {
+      const size = bytes(full);
+      const old = now - st.mtimeMs > policy.recoveryLeftoverMs;
+      const holdsKb = st.isDirectory() && (isKbTree(full) || names(full).some((n) => isKbTree(path.join(full, n))));
+      const removable = old && !holdsKb && (!measure || size <= policy.recoveryLeftoverMaxBytes);
+      add({ id: 'leftover', path: full, class: old || holdsKb ? 'must-not-exist' : 'may-exist', kind: 'recovery-leftover', action: removable ? 'remove' : old || holdsKb ? 'report' : 'keep', bytes: size,
+        reason: holdsKb ? 'a hand-made recovery copy that holds a KB tree; remove it yourself once inspected'
+          : old ? 'a hand-made backup of a replaced file' : 'a recent hand-made backup; released after 7 days' });
+      continue;
+    }
+    if (name === 'leases' && st.isDirectory()) {
+      for (const lease of names(full)) {
+        const lp = path.join(full, lease); const ls = lstat(lp);
+        if (ls && ls.isFile() && now - ls.mtimeMs > policy.staleLeaseMs && !pidAlive(readJson(lp)?.pid)) {
+          add({ id: 'lease', path: lp, class: 'must-not-exist', kind: 'stale-lease', action: 'remove', bytes: ls.size, reason: 'a spine lease older than 6h whose process is gone' });
+        }
+      }
+    }
+    if (name === 'versions' && st.isDirectory() && !st.isSymbolicLink()) {
+      const active = readJson(path.join(roots.brainHome, 'active.json'));
+      const keep = new Set([active?.codeRoot, active?.previous?.codeRoot].filter(Boolean).map((p) => path.basename(p)));
+      for (const lease of names(path.join(roots.brainHome, 'leases'))) {
+        const lp = path.join(roots.brainHome, 'leases', lease); const ls = lstat(lp);
+        const lease = ls ? readJson(lp) : null;
+        if (lease?.version && (now - ls.mtimeMs < policy.staleLeaseMs || pidAlive(lease.pid))) keep.add(lease.version);
+      }
+      for (const v of names(full)) {
+        const vp = path.join(full, v);
+        const kept = keep.has(v);
+        add({ id: 'spine', path: vp, class: kept ? (path.basename(active?.codeRoot || '') === v ? 'must-exist' : 'may-exist') : 'must-not-exist',
+          kind: 'spine-generation', action: kept ? 'keep' : 'report', bytes: bytes(vp), fix: kept ? null : 'npx ruvnet-brain@latest --update',
+          reason: kept ? 'active, previous, or leased Stable Spine generation' : 'unreferenced spine generation (collected by the next update)' });
+      }
+      continue;
+    }
+    if (name === 'ruflo-cwd' && st.isDirectory() && !st.isSymbolicLink()) {
+      for (const project of names(full)) {
+        const pp = path.join(full, project); const ps = lstat(pp);
+        if (!ps || ps.isSymbolicLink() || !ps.isDirectory()) continue;
+        for (const entry of names(pp)) {
+          const ep = path.join(pp, entry); const es = lstat(ep);
+          if (!es || es.isSymbolicLink()) continue;
+          const debris = RUFLO_DEBRIS.has(entry) || (entry.startsWith('run-') && es.isDirectory() && now - es.mtimeMs > policy.staleRufloRunMs);
+          if (debris) add({ id: 'ruflo-scratch', path: ep, class: 'must-not-exist', kind: 'ruflo-scratch', action: 'remove', bytes: bytes(ep), reason: 'ruflo working-directory debris (never read back)' });
+        }
+      }
+    }
+    // Debris items carved out of this directory above are counted once, as debris, not again as state.
+    const carved = items.slice(entryStart).reduce((n, i) => n + (i.bytes || 0), 0);
+    add({ id: 'state', path: full, class: 'may-exist', kind: name === 'models' ? 'models' : 'state', action: 'keep',
+      bytes: Math.max(0, bytes(full) - carved), reason: name === 'models' ? 'embedder and reranker model cache' : 'Brain state' });
+  }
+
+  // ── host plugin caches ──────────────────────────────────────────────────────────────────────
+  const registered = new Set(claudeRegistered(roots.claudeRegistry));
+  for (const v of names(roots.claudePluginCache)) {
+    const vp = physical(path.join(roots.claudePluginCache, v)); const vs = lstat(path.join(roots.claudePluginCache, v));
+    if (!vs || vs.isSymbolicLink() || !vs.isDirectory() || !pluginVersion(vp)) continue;
+    const leases = names(path.join(vp, '.in_use')).length;
+    const isRegistered = registered.has(vp);
+    add({ id: 'plugin', path: vp, host: 'claude', version: pluginVersion(vp), bytes: bytes(vp),
+      class: isRegistered ? 'must-exist' : leases ? 'may-exist' : 'must-not-exist', kind: 'claude-plugin-generation',
+      action: isRegistered ? 'keep' : 'collect', reason: isRegistered ? 'the registered Claude Code plugin'
+        : leases ? `kept while ${leases} session lease(s) may still run it` : 'an unregistered generation with no live session' });
+  }
+  const codexVersions = names(roots.codexPluginCache).filter((v) => pluginVersion(path.join(roots.codexPluginCache, v)));
+  const codexNewest = codexVersions.slice().sort(cmpVersion).at(-1);
+  for (const v of codexVersions) {
+    const vp = path.join(roots.codexPluginCache, v);
+    add({ id: 'plugin', path: vp, host: 'codex', version: pluginVersion(vp), bytes: bytes(vp), class: v === codexNewest ? 'must-exist' : 'must-not-exist',
+      kind: 'codex-plugin-generation', action: v === codexNewest ? 'keep' : 'report', fix: v === codexNewest ? null : 'codex plugin update ruvnet-brain@ruvnet-brain',
+      reason: v === codexNewest ? 'the current Codex plugin' : 'an older Codex plugin generation' });
+  }
+
+  // ── npx copies of the installer ─────────────────────────────────────────────────────────────
+  const self = physical(selfPath);
+  const npx = [];
+  for (const hash of names(roots.npxRoot)) {
+    const dir = path.join(roots.npxRoot, hash);
+    const manifest = readJson(path.join(dir, 'package.json'));
+    const specs = manifest?._npx?.packages || Object.keys(manifest?.dependencies || {});
+    if (!specs.length || !specs.every((s) => /^ruvnet-brain(?:@[^/\\]*)?$/.test(String(s)))) {
+      if (lstat(path.join(dir, 'node_modules', 'ruvnet-brain'))) add({ id: 'npx', path: dir, class: 'unowned', kind: 'npx-dev-copy', action: 'report', bytes: bytes(dir), reason: 'an npx copy of a local checkout (not a registry install)' });
+      continue;
+    }
+    const version = readJson(path.join(dir, 'node_modules', 'ruvnet-brain', 'package.json'))?.version;
+    if (!version) continue;
+    npx.push({ dir, version, mtime: lstat(dir)?.mtimeMs || 0, running: self.startsWith(`${physical(dir)}${path.sep}`) });
+  }
+  // Keep at most ONE copy: the running installer, else the newest copy that is not older than the current
+  // version (npm latest when known, else the installed runtime). Every older copy goes.
+  const current = npmLatest || readJson(path.join(roots.brainHome, 'active.json'))?.version
+    || readJson(path.join(roots.kbDir, 'RUNTIME-IDENTITY.json'))?.brainVersion || null;
+  const newestVersion = npx.map((n) => n.version).sort(cmpVersion).at(-1);
+  const keepVersion = current && cmpVersion(newestVersion, current) < 0 ? null : newestVersion;
+  const keeper = npx.find((n) => n.running) || npx.filter((n) => n.version === keepVersion).sort((a, b) => b.mtime - a.mtime)[0];
+  for (const n of npx) {
+    const keep = n === keeper || n.running;
+    add({ id: 'npx', path: n.dir, version: n.version, bytes: bytes(n.dir), class: keep ? 'may-exist' : 'must-not-exist', kind: 'npx-copy',
+      action: keep ? 'keep' : 'remove', reason: keep ? (n.running ? 'the installer running now' : 'the newest installer copy') : `an older installer copy (${n.version})` });
+  }
+
+  // ── lifecycle evidence, judged by its own policy ────────────────────────────────────────────
+  if (evidence) {
+    add({ id: 'evidence', path: path.join(roots.brainHome, 'refresh-runs'), class: evidence.withinBudget ? 'may-exist' : 'must-not-exist',
+      kind: 'lifecycle-evidence', action: evidence.withinBudget ? 'keep' : 'prune', bytes: evidence.before?.bytes || 0,
+      reason: evidence.withinBudget ? 'within lifecycle-evidence-v1 retention' : `over retention (${evidence.unsafe?.length || 0} unsafe entr(ies))` });
+  }
+  return summarize({ roots, items, policy, kbCopyDirs, lockHeld });
+}
+
+function summarize({ roots, items, policy, kbCopyDirs, lockHeld }) {
+  const sum = (list) => list.reduce((n, i) => n + (i.bytes || 0), 0);
+  const owned = items.filter((i) => i.class !== 'unowned');
+  const kbBytes = sum(items.filter((i) => i.kind === 'live-kb'));
+  const modelBytes = sum(items.filter((i) => i.kind === 'models'));
+  const budgetBytes = kbBytes + modelBytes + policy.fixedAllowanceBytes;
+  const breakdown = {};
+  for (const i of owned) {
+    const group = i.kind === 'live-kb' ? 'knowledge base' : i.kind === 'models' ? 'models' : /plugin|spine/.test(i.kind) ? 'plugins'
+      : i.kind === 'lifecycle-evidence' && i.class !== 'must-not-exist' ? 'receipts'
+      : i.kind === 'npx-copy' ? 'installer' : /log/.test(i.kind) ? 'logs' : i.class === 'must-not-exist' ? 'cruft' : 'state';
+    breakdown[group] = (breakdown[group] || 0) + (i.bytes || 0);
+  }
+  const cruft = items.filter((i) => i.class === 'must-not-exist');
+  return { schemaVersion: 1, kind: 'ruvnet-brain-footprint', roots, items, policy, lockHeld,
+    liveKb: items.find((i) => i.kind === 'live-kb'),
+    kbCopies: (items.find((i) => i.kind === 'live-kb')?.present ? 1 : 0)
+      + items.filter((i) => i.kind === 'kb-copy' || /^transaction-/.test(i.kind)).length
+      + items.filter((i) => i.kind === 'quarantine').reduce((n, i) => n + (i.copies || 0), 0),
+    kbCopyDirs, cruft, totalBytes: sum(owned), budgetBytes, withinBudget: sum(owned) <= budgetBytes, breakdown,
+    unowned: items.filter((i) => i.class === 'unowned') };
+}
+
+/** Atomic rename-rotation: <name> -> <name>.1 (replacing the previous .1). Appenders reopen by path. */
+function rotate(file) { fs.renameSync(file, `${file}.1`); }
+function truncateToTail(file, keep) {
+  const size = fs.statSync(file).size;
+  const fd = fs.openSync(file, 'r');
+  const buf = Buffer.alloc(Math.min(keep, size));
+  try { fs.readSync(fd, buf, 0, buf.length, size - buf.length); } finally { fs.closeSync(fd); }
+  const nl = buf.indexOf(10);
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, nl >= 0 ? buf.subarray(nl + 1) : buf);
+  fs.renameSync(tmp, file);
+}
+
+/** Remove one entry that must sit DIRECTLY inside `root`, never through a link. */
+function removeWithin(target, root) {
+  const st = lstat(target);
+  if (!st) return 0;
+  if (physical(path.dirname(target)) !== physical(root)) throw new Error(`refusing to remove ${target}: not directly inside ${root}`);
+  const size = treeBytes(target);
+  fs.rmSync(target, { recursive: true, force: true }); // fs.rm removes a link itself, never its target
+  return size;
+}
+
+/**
+ * Enforce the classification. `apply:false` reports what would happen. Every removal is returned by name;
+ * every refusal is returned with its reason. `collectPluginGenerations` is the caller's lease-aware
+ * collector (bin/install.mjs prunePluginGenerations); `pruneEvidence` is kb's pruneLifecycleEvidence.
+ */
+export function sweepFootprint({ apply = false, collectPluginGenerations = null, pruneEvidence = null, ...options } = {}) {
+  const before = inventoryFootprint(options);
+  const { roots } = before;
+  const removed = []; const kept = []; const rotated = []; const errors = [];
+  const record = (item, freed, note) => removed.push({ path: item.path, kind: item.kind, bytes: freed ?? item.bytes, reason: note || item.reason });
+  for (const item of before.items) {
+    if (!['remove', 'remove-if-proven', 'rotate', 'truncate'].includes(item.action)) {
+      if (item.class === 'must-not-exist' || item.class === 'unowned') kept.push({ path: item.path, kind: item.kind, reason: item.blocked || item.reason, fix: item.fix || null });
+      continue;
+    }
+    try {
+      if (item.action === 'rotate') { if (apply) rotate(item.path); rotated.push({ path: item.path, bytes: item.bytes }); continue; }
+      if (item.action === 'truncate') { if (apply) truncateToTail(item.path, before.policy.textLogCapBytes / 2); rotated.push({ path: item.path, bytes: item.bytes }); continue; }
+      const root = path.dirname(item.path);
+      if (item.action === 'remove') { record(item, apply ? removeWithin(item.path, root) : item.bytes); continue; }
+      // remove-if-proven: a KB copy, or a quarantine holding KB copies.
+      if (item.kind === 'kb-copy') {
+        const proof = kbCopyProof({ copyDir: item.path, liveDir: roots.kbDir });
+        if (!proof.disposable) { kept.push({ path: item.path, kind: item.kind, reason: `KEPT: ${proof.reason}`, unique: proof.unique }); continue; }
+        record(item, apply ? removeWithin(item.path, root) : item.bytes, proof.reason);
+        continue;
+      }
+      let uniqueLeft = false;
+      for (const child of names(item.path)) {
+        const childPath = path.join(item.path, child);
+        const proof = isKbTree(childPath) ? kbCopyProof({ copyDir: childPath, liveDir: roots.kbDir })
+          : { disposable: false, unique: [], reason: 'not a KB copy; not ours to judge' };
+        if (!proof.disposable) { uniqueLeft = true; kept.push({ path: childPath, kind: 'quarantined-copy', reason: `KEPT: ${proof.reason}`, unique: proof.unique }); continue; }
+        record({ path: childPath, kind: 'quarantined-copy', bytes: treeBytes(childPath) }, apply ? removeWithin(childPath, item.path) : undefined, proof.reason);
+      }
+      if (!uniqueLeft && apply) removeWithin(item.path, root);
+    } catch (error) { errors.push({ path: item.path, reason: error.message }); kept.push({ path: item.path, kind: item.kind, reason: `could not act: ${error.message}` }); }
+  }
+  let plugins = null;
+  if (collectPluginGenerations && before.items.some((i) => i.kind === 'claude-plugin-generation' && i.class !== 'must-exist')) {
+    try { plugins = collectPluginGenerations({ registryPath: roots.claudeRegistry, apply }); }
+    catch (error) { errors.push({ path: roots.claudePluginCache, reason: error.message }); }
+  }
+  let evidence = null;
+  if (pruneEvidence && apply) {
+    try { evidence = pruneEvidence({ brainHome: roots.brainHome, kbDir: roots.kbDir }); }
+    catch (error) { errors.push({ path: roots.brainHome, reason: error.message }); }
+  }
+  const after = apply ? inventoryFootprint({ ...options, evidence: evidence ? { withinBudget: evidence.withinBudget, before: evidence.after, unsafe: evidence.unsafe } : options.evidence }) : before;
+  return { schemaVersion: 1, kind: 'ruvnet-brain-footprint-sweep', apply, removed, kept, rotated, errors, plugins, evidence,
+    freedBytes: removed.reduce((n, r) => n + (r.bytes || 0), 0), before, after };
+}
+
+/** The KB's own sanctioned readers, loaded from the live KB (where the updater keeps them). */
+export async function loadKbReaders(kbDir) {
+  try {
+    const evidence = await import(pathToFileURL(path.join(kbDir, 'lifecycle-evidence-retention.mjs')).href);
+    return { assessLifecycleEvidence: evidence.assessLifecycleEvidence, pruneLifecycleEvidence: evidence.pruneLifecycleEvidence };
+  } catch { return {}; }
+}
+
+// CLI: the detached SessionStart sweep. `node brain-footprint.mjs --sweep [--apply] [--json]`.
+if (process.argv[1] && pathToFileURL(physical(process.argv[1])).href === pathToFileURL(physical(fileURLToPath(import.meta.url))).href) {
+  const argv = process.argv.slice(2);
+  const roots = footprintRoots();
+  const readers = await loadKbReaders(roots.kbDir);
+  const evidence = readers.assessLifecycleEvidence ? (() => { try { return readers.assessLifecycleEvidence({ brainHome: roots.brainHome, kbDir: roots.kbDir }); } catch { return null; } })() : null;
+  const result = sweepFootprint({ apply: argv.includes('--apply'), evidence, pruneEvidence: readers.pruneLifecycleEvidence || null });
+  const { before: _b, after, ...rest } = result;
+  const out = { ...rest, after: { kbCopies: after.kbCopies, totalBytes: after.totalBytes, budgetBytes: after.budgetBytes, cruft: after.cruft.length } };
+  process.stdout.write(argv.includes('--json') ? `${JSON.stringify(out)}\n`
+    : `footprint sweep${result.apply ? '' : ' (dry run)'}: removed ${result.removed.length} (${(result.freedBytes / MIB).toFixed(1)} MiB), rotated ${result.rotated.length}, kept ${result.kept.length}\n`);
+}
