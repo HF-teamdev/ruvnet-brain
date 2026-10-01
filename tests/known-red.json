@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Reviewed quarantine for scripts/full-suite-gate.mjs. Every entry is a test KNOWN to be red with a named owner. Any red test NOT listed fails the gate; any listed test that PASSES fails the gate until its entry is removed. Never add an entry to make a gate green without a class, a reason with evidence, and an owner.",
+  "tests": [
+    {
+      "file": "tests/unit/corpus-canary.test.mjs",
+      "test": "the customer canary applies the staged candidate through a real customer install BREAK IT (node_modules dropped): an updater that no longer carries the reader deps applies \"successfully\" -> FAIL",
+      "class": "stale-anchor",
+      "reason": "Anchors on the pre-7a4de1eb carry line; kb/forge-update.mjs moved it into carryLiveNodeModules(). The test's own toContain guard fails, so the BREAK-IT is void, not the product.",
+      "owner": "robustness-4.4 (fixed in c30856b6; remove this entry when that lands)"
+    },
+    {
+      "file": "tests/unit/session-start-knowledge-currency.test.mjs",
+      "test": "SessionStart knowledge currency speaks when the knowledge base is 35 days old and nothing proves it current",
+      "class": "clock-bomb",
+      "reason": "Compares a line computed at a frozen NOW (2026-09-30) with runSessionStart's real-clock line; passes only on 2026-09-30 ('35d' vs '36d').",
+      "owner": "robustness-4.4 (fixed there; remove this entry when that lands)"
+    },
+    {
+      "file": "tests/unit/no-restated-truth.test.mjs",
+      "test": "no restated truth — a gate may not spell a fact it could derive NO NEW gate restates a truth",
+      "class": "real-violation",
+      "reason": "tests/unit/install-release-fallback.test.mjs:75 toMatch(/2026-09-30T23:59:00\\.000Z/) restates a timestamp (added in 7a4de1eb). Fix belongs in that file (derive it, or mark sync-version-ignore with a reason).",
+      "owner": "update-path owner (install-* tests)"
+    },
+    {
+      "file": "tests/unit/lesson-migrate-agentdb.test.mjs",
+      "test": "lesson-migrate-agentdb.mjs --dry-run --json emits pure JSON on stdout (no trailing human text)",
+      "class": "machine-state",
+      "reason": "Runs the real ruflo CLI against the developer's ~/.claude/global-memory and project AgentDB stores. Fails without ruflo or those stores (CI, isolated HOME); timed out at 60s with the real HOME under load.",
+      "owner": "lessons/AgentDB owner: make it hermetic (fixture stores) or move it to a machine diagnostic"
+    },
+    {
+      "file": "tests/unit/lesson-migrate-agentdb.test.mjs",
+      "test": "lesson-migrate-agentdb.mjs the two AgentDB lesson stores are fully reconciled into the one plugin store (0 pending rows)",
+      "class": "machine-state",
+      "reason": "Asserts the reconciliation state of the developer's own AgentDB data, not code behaviour. Same environment dependency as the entry above.",
+      "owner": "lessons/AgentDB owner: make it hermetic (fixture stores) or move it to a machine diagnostic"
+    },
+    {
+      "file": "tests/integration/project-progression-store.test.mjs",
+      "test": "managed ProjectProgression append and readback stores, exact-retrieves, and strictly deduplicates through a temp real AgentDB",
+      "class": "external-dependency",
+      "reason": "Product capture/dedupe/restoreLatest assertions in this test pass; the trailing capability probe of `ruflo memory export` (ruflo 3.49.0, CLAUDE_FLOW_DB_PATH bound to the disposable store) returns count 0 instead of 2. Reproduced 2/2 with an isolated HOME; not root-caused. Skips where ruflo is absent (CI).",
+      "owner": "continuity owner"
+    }
+  ],
+  "excludedFiles": [
+    {
+      "file": "tests/diagnostics/release-source-shape.test.mjs",
+      "reason": "Historical source-shape diagnostics, deliberately outside vitest include. Measured 2026-10-01: 1 of its checks is red against current architecture. Delete or rewrite as behaviour tests; never release authority."
+    },
+    {
+      "file": "tests/diagnostics/retired-hook-release.test.mjs",
+      "reason": "Historical source-shape diagnostics, deliberately outside vitest include. Measured 2026-10-01: 3 of its checks are red against current architecture. Delete or rewrite as behaviour tests; never release authority."
+    },
+    {
+      "file": "tests/experience/report.test.mjs",
+      "reason": "node:test format, not vitest; the canonical-qa full-suite job runs it with `node --test` (8/8 green 2026-10-01)."
+    }
+  ]
+}

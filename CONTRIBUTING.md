@@ -215,6 +215,7 @@ Writes run in a detached worker; `RUVNET_TURN_CAPTURE=off` disables it. `npm run
 ```bash
 npm test                        # plugin battery over real JSON-RPC
 npx vitest run                  # unit + integration
+node scripts/full-suite-gate.mjs  # the same run, judged against tests/known-red.json (canonical-qa blocks on it)
 npm run qa:release              # release-scope checks
 npm run single-source:check     # one version of every rule and fact
 npm run wired:check             # every module has a caller or a stated reason
