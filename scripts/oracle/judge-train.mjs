@@ -15,6 +15,7 @@
  *
  *   node scripts/oracle/judge-train.mjs --set <need-set.json> --split <split.json> --trace <cetrace.jsonl>
  *     [--precision 0.8] [--weights <out.json>] [--report <out.json>]
+ *     [--recall-trace <recall.cetrace.jsonl> --recall-fixture data/retrieval-query-evidence.json]
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -139,6 +140,16 @@ async function main() {
     train: { crossEncoder: metrics(decide(train, pools, ceScore), train.length), judge: metrics(decide(train, pools, judgeScore(model)), train.length) },
     heldout: { crossEncoder: metrics(decide(held, pools, ceScore), held.length), judge: metrics(decide(held, pools, judgeScore(model)), held.length) },
   };
+  // Offline replay on the recall-gate fixture's recorded pools: does re-ranking hurt questions the
+  // cross-encoder already answers? (Approximate: selectResults' name boosts are not replayed here, so
+  // the full path is the authority; this only flags gross damage early.)
+  if (arg('--recall-trace') && arg('--recall-fixture')) {
+    const fx = JSON.parse(fs.readFileSync(arg('--recall-fixture'), 'utf8')).queries;
+    const items = Object.entries(fx).map(([store, v]) => ({ id: store, need: v.query, repo: store, path: v.expected.path }));
+    const rpools = poolsByNeed(items, fs.readFileSync(arg('--recall-trace'), 'utf8'));
+    report.recallReplay = { crossEncoder: metrics(decide(items, rpools, ceScore), items.length),
+      judge: metrics(decide(items, rpools, judgeScore(model)), items.length) };
+  }
   if (arg('--weights')) fs.writeFileSync(arg('--weights'), `${JSON.stringify(model, null, 1)}\n`);
   if (arg('--report')) fs.writeFileSync(arg('--report'), `${JSON.stringify(report, null, 1)}\n`);
   console.log(JSON.stringify({ threshold: tau, trainedOn: model.trainedOn, heldout: report.heldout }, null, 1));
