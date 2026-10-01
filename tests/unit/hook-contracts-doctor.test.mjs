@@ -59,6 +59,31 @@ describe('--doctor derives its hook judgments from the contracts', () => {
     expect(Object.keys(CONTRACTS._codexCapture.notObserved).sort()).toEqual(['PreCompact', 'Stop']);
   });
 
+  // 4.5 (review-4.3.39 #7): Codex lists an untrusted/modified hook but does not run it. Measured on the
+  // owner's machine 2026-10-01 via the same hooks/list the doctor calls: SessionEnd `modified` after 4.4.0.
+  const registered = (overrides = {}) => continuityRegistrations('codex').map((spec) => ({
+    pluginId: PLUGIN_ID, event: spec.event, enabled: true, trustStatus: 'trusted',
+    command: wrapper(spec.id, spec.event === 'SessionEnd' || spec.event === 'UserPromptSubmit' ? spec.event : ''),
+    ...(overrides[spec.event] || {}),
+  }));
+  it('reports a registered hook Codex will not run (modified / untrusted) as PENDING TRUST, with the exact fix', () => {
+    const status = classifyCodexLifecycle(plugin, listed(registered({ SessionEnd: { trustStatus: 'modified' }, SessionStart: { trustStatus: 'untrusted' } })));
+    expect(status.state).toBe('pending-trust');
+    expect(status.pending.map((h) => h.event).sort()).toEqual(['SessionEnd', 'SessionStart']);
+    const guidance = codexLifecycleGuidance(status);
+    expect(guidance.healthy).toBe(false);
+    expect(guidance.intentional).toBe(false);
+    expect(guidance.summary).toMatch(/NOT running 2 Brain hooks/);
+    expect(guidance.summary).toMatch(/SessionEnd \(modified\)/);
+    expect(guidance.action).toMatch(/Trust all and continue/);
+    expect(guidance.action).toMatch(/\/hooks/);
+  });
+  it('all trusted stays continuity-registered; a hook the USER disabled is their choice, not pending', () => {
+    expect(classifyCodexLifecycle(plugin, listed(registered())).state).toBe('continuity-registered');
+    expect(classifyCodexLifecycle(plugin, listed(registered({ Stop: { trustStatus: 'modified', enabled: false } }))).state)
+      .toBe('continuity-registered');
+  });
+
   it('still calls a genuinely stale Brain hook stale', () => {
     const status = classifyCodexLifecycle(plugin, listed([
       { pluginId: PLUGIN_ID, event: 'PreToolUse', command: wrapper('ground-ruvnet') },
