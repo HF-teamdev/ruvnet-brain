@@ -1,7 +1,7 @@
 # Routing 4.4: tie-break, metadata index, and the rUv misroute (2026-10-01)
 
 These are measurements only. Corpus: `ruvnet-brain.zip` v4.3.37 data (`scratchpad/latest/kb`). Baseline runtime: `cb656e47`. That commit is the
-4.3.40 code with the planner moved into `planSourceRoute`, and the routing it produces is identical. Final runtime: `87e44fbe`. Intervals are 95% Wilson.
+4.3.40 code with the planner moved into `planSourceRoute`, and the routing it produces is identical. Final runtime: `87e44fbe`. Intervals are 95% Wilson. `8c17b7f9`, measured only in the latency section, adds the build-keyed identifier-scan cache on top of `87e44fbe`. It changes no route or result within a single KB build.
 
 ## Route only (`scripts/route-gold-rank.mjs`, no model)
 
@@ -41,6 +41,31 @@ These are measurements only. Corpus: `ruvnet-brain.zip` v4.3.37 data (`scratchpa
 The final run's `adversarial.json` and `heldout.json` were byte-identical to the baseline's: sha256 `bb7d3e7c…` and `0b98b855…`. Only the baseline copies are kept, because `single-source:check` A2 refuses duplicate files.
 
 The 206-need baseline for the full path is the need-baseline agent's run, recorded in `data/need-set/experiments/2026-09-30-record.json` on that branch: repo at 1 30/206 and exact file 0/206. It was taken on older code at concurrency 4, so it is a reference rather than a paired measurement.
+
+## Warm latency, paired (`latency-warm-abc/`)
+
+The test ran in one process, which is the MCP worker's regime, and called `searchAll` with k 6 and `allowFullCorpus` false. It used every 3rd novice need, so n = 69 across all 3 repos. Every question went to all three arms back to back, the arm order rotated per question, and each question waited for 1-minute load < 60 (the observed range was 30–60). Intervals are 95% paired bootstrap intervals (2000 resamples, seeded) from `summary-paired.json`.
+
+The three arms:
+- **A:** baseline `cb656e47`.
+- **B:** final `8c17b7f9`.
+- **C:** final code with the old top-1-by-name metadata route, so it has the index cache and the old store count.
+
+| Arm | p50 | p90 | Stores per question |
+|---|---|---|---|
+| A, baseline | 9587 ms | 16228 ms | 2.32 |
+| C, cache only | 7174 ms | 11758 ms | 2.32 |
+| B, final | 10825 ms | 18034 ms | 3.29 |
+
+| Paired delta | p50 | p90 | Median of per-question differences |
+|---|---|---|---|
+| C − A (the index cache) | −2413 ms [−3307, −1578] | −4470 ms [−6387, −402] | −2238 ms [−2524, −1951]; C faster on 61/69 |
+| B − C (the extra stores) | +3651 ms [+2023, +4679] | +6275 ms [+1839, +7465] | +3006 ms [+323, +5191]; B faster on 17/69 |
+| B − A (net) | +1238 ms [−364, +2053] | +1806 ms [−1055, +4309] | +453 ms [−271, +2447]; B faster on 31/69 |
+
+- **The cost of searching about one more store is about +3.0 s per question at the median.** The index cache saves about 2.2 s. At n = 69 the net change versus the baseline is not distinguishable from zero.
+- **Arm C changed latency only.** Its top-1 result was identical to A's on 69/69 questions.
+- **A first, unbounded attempt over all 206 questions was stopped** by the 2-hour background limit at 22/206. Its rows were held in memory, so they were lost, and none of its numbers are used here.
 
 ## rUv probes (`ruv-probe-after.jsonl`)
 
