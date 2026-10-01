@@ -3184,17 +3184,29 @@ export function ruvAuthorshipIntent(query) {
 // depend on it (agentdb, agentic-flow). Their manifests declare `"ruvector": "^x"`, which the lane
 // counts as a definition (+5), so "RuVector HNSW vector search overview" was answered from agentdb
 // at 9.336 (plugin/test/capability-selection-questions.json; found 2026-10-01 on the 4.4.0 corpus).
-// The name routers already handle a named store; the identifier lane is for rare tokens. Tokens
-// that are the key or a registered alias of a deployed store are therefore dropped from both the
-// widening scan and the identifier boost.
+// The name routers already handle a named store; the identifier lane is for rare tokens. A token
+// that is the key or a registered alias of a deployed store therefore never widens the route and
+// never adds candidates in ANOTHER store. Inside the store it names it is still an identifier:
+// "In LatentMesh ADR-001, ..." finds latentmesh's own ADR-001 through it (the recall gate lost
+// that question when store names were dropped everywhere; measured 2026-10-01, final-a2adf94a).
+// `forStore(name)` gives the tokens the identifier lane may use while searching `name`.
 export function queryIdentifiers(dir, query) {
-  const names = new Set(discoverRepos(dir).map((r) => r.toLowerCase()));
+  const owner = new Map(); // lower-cased store key or alias -> lower-cased store key
+  for (const r of discoverRepos(dir)) owner.set(r.toLowerCase(), r.toLowerCase());
   for (const [canonical, aliases] of Object.entries(loadRepoAliases(dir) || {})) {
-    names.add(String(canonical).toLowerCase());
-    for (const a of aliases || []) names.add(String(a).toLowerCase());
+    const c = String(canonical).toLowerCase();
+    owner.set(c, c);
+    for (const a of aliases || []) owner.set(String(a).toLowerCase(), c);
   }
-  const keep = (t) => !names.has(String(t).toLowerCase());
-  return { identifierTokens: exactIdentifiers(query).filter(keep), identifierScanTokens: scannableIdentifiers(query).filter(keep) };
+  const exact = exactIdentifiers(query);
+  const scan = scannableIdentifiers(query);
+  const keep = (t) => !owner.has(String(t).toLowerCase());
+  const forStore = (store) => {
+    const own = String(store).toLowerCase();
+    const ok = (t) => keep(t) || owner.get(String(t).toLowerCase()) === own;
+    return { identifierTokens: exact.filter(ok), identifierScanTokens: scan.filter(ok) };
+  };
+  return { identifierTokens: exact.filter(keep), identifierScanTokens: scan.filter(keep), forStore };
 }
 
 export function planSourceRoute({ dir, query, discovered, identifierScanTokens = queryIdentifiers(dir, query).identifierScanTokens, deadline = null }) {
@@ -3429,7 +3441,7 @@ async function searchAllPrimary({
   const fullCorpusLane = (!repos || !repos.length) && !_routeStage;
   // Rare, exact tokens the question names (a dotted filename, a camelCase symbol, an issue ref).
   // Ordinary prose yields none, scans nothing, and pays nothing.
-  const { identifierTokens, identifierScanTokens } = queryIdentifiers(dir, query);
+  const { identifierScanTokens, forStore } = queryIdentifiers(dir, query);
   deadline?.check('route');
   const discovered = (repos && repos.length) ? repos : discoverRepos(dir);
   let routing = null;
@@ -3713,10 +3725,12 @@ async function searchAllPrimary({
       // The identifier lane rides the exempt `rescue` lane for the same reason #33 Part A does: a
       // boost cannot rescue a candidate that never reached the pool, and an identifier's own
       // document is routinely buried past rank 40 by dense retrieval.
-      if (identifierScanTokens.length) {
+      // A store's own name counts as an identifier only while searching that store (queryIdentifiers).
+      const own = forStore(name);
+      if (own.identifierScanTokens.length) {
         const seen = new Set(cands.map((candidate) => candidate.path));
-        const scan = identifierScan(dir, identifierScanTokens, { maxRepos: 2 });
-        const byIdentifier = identifierCandidates(scan, name, identifierTokens, 8, knownRepos)
+        const scan = identifierScan(dir, own.identifierScanTokens, { maxRepos: 2 });
+        const byIdentifier = identifierCandidates(scan, name, own.identifierTokens, 8, knownRepos)
           .filter((candidate) => !seen.has(candidate.path));
         cands = cands.concat(byIdentifier);
       }

@@ -3567,6 +3567,27 @@ describe('searchAll — cross-repo pool + rerank + name-boost', () => {
     expect(out.results.every((r) => r.repo === 'ruvector')).toBe(true);
   });
 
+  it("keeps a store's own name as an identifier inside that store (recall gate: LatentMesh ADR-001)", async () => {
+    // Dropping store names EVERYWHERE lost the recall-gate question "In LatentMesh ADR-001, ..."
+    // (161 vs 162/182): dense never pooled ADR-001, and the identifier lane was what reached it.
+    const d = mkdirWith(['latentmesh.rvf', 'agentdb.rvf']);
+    fs.writeFileSync(path.join(d, 'latentmesh.passages.jsonl'), [
+      JSON.stringify({ path: 'docs/adr/002-packets.md', title: 'Packets', text: 'Packet framing.' }),
+      JSON.stringify({ path: 'docs/adr/001-architecture.md', title: 'LatentMesh architecture',
+        text: '# LatentMesh\nLatentMesh replaces tokenized agent messages with latent packets.' }),
+    ].join('\n'));
+    fs.writeFileSync(path.join(d, 'agentdb.passages.jsonl'),
+      JSON.stringify({ path: 'package.json', title: 'agentdb', text: '{ "dependencies": { "latentmesh": "^0.1.0" } }' }));
+    vi.mocked(searchKb).mockImplementation(async ({ name }) => [hit({ repo: name, path: 'docs/adr/002-packets.md' })]);
+    vi.mocked(rerankPairs).mockImplementation(async (_q, cands) => cands.map((c) => ({ ...c, ceScore: 3 })));
+    await searchAll({ dir: d, repos: ['latentmesh', 'agentdb'],
+      query: 'What does LatentMesh propose instead of tokenized agent messages?' });
+    const pooled = vi.mocked(rerankPairs).mock.calls[0][1];
+    expect(pooled.some((c) => c.repo === 'latentmesh' && c.path === 'docs/adr/001-architecture.md' && c._lane === 'rescue')).toBe(true);
+    // ...but the name still adds nothing in another store that merely depends on it.
+    expect(pooled.some((c) => c.repo === 'agentdb' && c._lane === 'rescue')).toBe(false);
+  });
+
   it.each([['off', undefined], ['on', '1']])('pools a keyword-matched file dense missed only when RUVNET_BRAIN_KEYWORD_LANE=1 (%s)', async (mode, flag) => {
     // 4.5 ships the lane OFF: its query-time index build cost +2.1 s median paired (keyword-lane.mjs).
     const d = mkdirWith(['ruflo.rvf']);
