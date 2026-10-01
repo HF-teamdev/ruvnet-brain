@@ -77,7 +77,12 @@ shouldn't be there isn't, nothing building up cruft" — confirmed positively, n
 - A private-store file that is not byte-identical in live keeps its copy; so does any unclassified file
   or link (`tests/unit/brain-footprint.test.mjs`, BREAK-IT mutants).
 - Nothing is followed through a symlink; nothing outside an owned root is removed; an `npm_config_cache`
-  outside HOME is ignored.
+  outside HOME is ignored. A removal target must sit directly inside the REAL directory it was inventoried
+  in, itself inside an owned root (`plugin/scripts/footprint-io.mjs` removeWithin; the earlier guard compared
+  a path with its own parent and could never refuse — review S7, BREAK-IT: a parent swapped for a link).
+- A copy KEPT because it holds data the live brain lacks is proven once and cached (stat fingerprints of
+  the copy and the live brain; a stale entry can only keep), reported with what it holds and "nothing to
+  run" instead of `--clean`, triggers no background sweep, and is announced at SessionStart once per change.
 - **Only what the Brain itself created is ever removed.** Anything in our directories that the Brain did
   not write — in particular hand-made backups such as `X.bak-20260808`, `*.retired-*`, `*.dead-*` and
   `bootstrap-backup-*` — is classified **unowned** and only REPORTED: no age, size or "looks like a backup"

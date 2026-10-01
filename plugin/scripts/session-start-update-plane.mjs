@@ -93,6 +93,13 @@ export const footprintCheck = ({ env, home, now, hookDir, emit = () => {}, dispa
   if (!line) return { clean: true, dispatched: false };
   const stamp = path.join(footprint.roots.brainHome, '.footprint-sweep');
   const removable = footprint.cruft.some((i) => ['remove', 'remove-if-proven', 'rotate', 'truncate'].includes(i.action));
+  // Nothing a sweep could remove (e.g. a copy kept for the private data it holds — review S7): say it ONCE,
+  // until the line changes, instead of at every session; and dispatch no sweep that could only keep it again.
+  if (!removable && !footprint.roots.dangling) { // an unplugged brain disk is told every session, and nothing is written beside it
+    const notice = path.join(footprint.roots.brainHome, '.footprint-kept-notice');
+    if (read(notice) === line) return { clean: false, dispatched: false, repeated: true };
+    write(notice, line);
+  }
   const due = !(now - mtimeMs(stamp) < FOOTPRINT_SWEEP_HOURS * 3_600_000);
   const testMode = env.RUVNET_BRAIN_TEST === '1' && String(env.RUVNET_FOOTPRINT_SWEEP || '').toLowerCase() !== 'on';
   let dispatched = false;

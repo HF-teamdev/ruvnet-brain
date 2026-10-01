@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 // DISTINCT-FROM: kb/forge-update.mjs reclaimBackups — that proof keeps a full-KB copy unless EVERY byte of it survives in the live brain, which an older generation never satisfies (measured 2026-10-01: 3.6 GB in three copies kept forever). This module releases public bytes (signed, re-downloadable) and demands byte-identity in live only for private-store files, per the owner's rule (ADR-0098).
-//
 // brain-footprint.mjs — THE FOOTPRINT GUARANTEE (ADR-0098). One classifier for everything the Brain
 // owns on a machine, in three classes, and one sweep that keeps it that way:
 //
@@ -13,23 +12,22 @@
 //   unowned         things in our directories we did not create and cannot classify: REPORTED, never removed
 //
 // SAFETY (non-negotiable, each one has a test that breaks it and goes red):
-//   * A KB copy is removed only after kbCopyProof() shows every private-store file in it — names from the
-//     PRIVATE-STORES.json fence of the live brain AND of the copy, plus every updateManaged:false store —
-//     exists byte-identical at the same path in the live brain, and every store artifact absent from live
-//     has public provenance. Anything unique KEEPS the copy, and the files are named.
-//   * Nothing is ever followed through a symlink: entries are lstat'ed, a symlinked entry is never removed
-//     or entered, and removal targets must sit directly inside an owned root.
-//   * kb.next-/rollback-/failed- trees of a transaction whose latest receipt is non-terminal are kept;
-//     no KB sibling is touched while a refresh lock exists (unless the caller holds it); the live KB's own
-//     files are never written here.
-//   * Plugin generations are only ever removed through the caller-supplied lease-aware collector
-//     (bin/install.mjs prunePluginGenerations); a generation holding a lease is kept.
+//   * A KB copy is removed only after kbCopyProof() shows nothing in it is unique (every private-store file
+//     byte-identical in live, everything else of public provenance); a KEPT proof is cached (footprint-io).
+//   * Nothing is followed through a symlink; a removal target must sit directly inside the real directory it
+//     was inventoried in, itself inside an owned root (footprint-io removeWithin).
+//   * Kept: non-terminal transaction trees; every KB sibling and npx copy while someone else holds the refresh
+//     lock or an install is activating; hand-made backups (unowned). The live KB is never written here.
+//   * Plugin generations go only through the caller's lease-aware collector (prunePluginGenerations).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isKbTree, kbCopyProof } from './kb-copy-proof.mjs';
 import { brainLocation } from './brain-location.mjs';
+import { cachedKept, keptCopyFix, physical, readProofCache, rememberKept, removeWithin, rotate, treeBytes, truncateToTail } from './footprint-io.mjs';
+
+export { physical, treeBytes } from './footprint-io.mjs';
 
 export { kbCopyProof, privateStoreNames } from './kb-copy-proof.mjs';
 
@@ -73,12 +71,6 @@ const pidAlive = (pid) => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (error) { return error?.code !== 'ESRCH'; }
 };
-/** Same rule as kb/refresh-run.mjs physicalPath: real path, or resolved through the parent when absent. */
-export function physical(dir) {
-  const resolved = path.resolve(String(dir || ''));
-  try { return fs.realpathSync.native(resolved); } catch { /* absent */ }
-  try { return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved)); } catch { return resolved; }
-}
 const semver = (v) => String(v || '').replace(/^v/, '').split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
 export const cmpVersion = (a, b) => {
   const A = semver(a); const B = semver(b);
@@ -117,15 +109,6 @@ export function footprintRoots({ env = process.env, home = os.homedir() } = {}) 
     npxRoot: path.join(npmCache, '_npx') };
 }
 
-/** Bytes under a path, never following a link (a link counts as itself). */
-export function treeBytes(target) {
-  const st = lstat(target);
-  if (!st) return 0;
-  if (!st.isDirectory() || st.isSymbolicLink()) return st.size;
-  let total = 0;
-  for (const name of names(target)) total += treeBytes(path.join(target, name));
-  return total;
-}
 
 function transactionState(kbParent, base, id) {
   const dir = path.join(kbParent, `.${base}.update-transactions`, id);
@@ -155,7 +138,8 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   const policy = FOOTPRINT_POLICY;
   const items = [];
   const bytes = (p) => (measure ? treeBytes(p) : 0);
-  const add = (item) => { items.push({ bytes: 0, ...item }); return item; };
+  // Each item remembers the REAL directory it was found in; removal refuses if that changed (review S7).
+  const add = (item) => { items.push({ bytes: 0, realParent: physical(path.dirname(item.path)), ...item }); return item; };
   const base = path.basename(roots.kbDir);
   const refreshLock = path.join(roots.kbParent, `.${base}.refresh-run.lock`);
   const lockHeld = !holdingRefreshLock && Boolean(lstat(refreshLock));
@@ -186,6 +170,19 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
   const kbCopyDirs = [];
   const seen = new Set();
   const quarantineCopies = (dir) => names(dir).filter((n) => isKbTree(path.join(dir, n))).length;
+  const proofCache = readProofCache(roots.brainHome);
+  // A quarantine whose every entry is a KB copy already proven KEPT has nothing a sweep could remove.
+  const quarantineKept = (dir) => {
+    const children = names(dir);
+    const hits = children.map((n) => isKbTree(path.join(dir, n)) && cachedKept(proofCache, path.join(dir, n), roots.kbDir));
+    return children.length && hits.every(Boolean) ? { hit: hits[0], file: path.join(dir, children[0]) } : null;
+  };
+  const addQuarantine = (full) => {
+    const kept = quarantineKept(full);
+    add({ id: 'quarantine', path: full, class: 'must-not-exist', kind: 'quarantine', action: kbBlocked || kept ? 'report' : 'remove-if-proven',
+      blocked: kbBlocked, bytes: bytes(full), copies: quarantineCopies(full), keptUnique: Boolean(kept), fix: kept ? keptCopyFix(kept.file, kept.hit) : null,
+      reason: kept ? `KEPT: ${kept.hit.reason}` : 'a recovery quarantine of earlier KB copies' });
+  };
   const scanSiblings = (dir) => {
     for (const name of names(dir)) {
       const full = path.join(dir, name);
@@ -212,8 +209,10 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
           }
         }
         kbCopyDirs.push(full);
-        add({ id: 'kb-copy', path: full, class: 'must-not-exist', kind: 'kb-copy', action: kbBlocked ? 'report' : 'remove-if-proven',
-          blocked: kbBlocked, bytes: bytes(full), reason: 'a second full copy of the knowledge base' });
+        const hit = cachedKept(proofCache, full, roots.kbDir);
+        add({ id: 'kb-copy', path: full, class: 'must-not-exist', kind: 'kb-copy', action: kbBlocked || hit ? 'report' : 'remove-if-proven',
+          blocked: kbBlocked, bytes: bytes(full), keptUnique: Boolean(hit), fix: hit ? keptCopyFix(full, hit) : null,
+          reason: hit ? `KEPT: ${hit.reason}` : 'a second full copy of the knowledge base' });
       } else if (name.startsWith(`.${base}.install-stage-`) && st.isDirectory() && !st.isSymbolicLink()) {
         const stale = now - st.mtimeMs > policy.staleStageMs;
         add({ id: 'install-stage', path: full, class: stale ? 'must-not-exist' : 'may-exist', kind: 'install-stage',
@@ -224,8 +223,7 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
         add({ id: 'forge-candidate', path: full, class: stale ? 'must-not-exist' : 'may-exist', kind: 'forge-candidate',
           action: stale && !kbBlocked ? 'remove' : 'keep', bytes: bytes(full), reason: stale ? 'a local rebuild candidate left by a killed run' : 'a local rebuild may be using it' });
       } else if (/quarantine/i.test(name) && st.isDirectory() && !st.isSymbolicLink()) {
-        add({ id: 'quarantine', path: full, class: 'must-not-exist', kind: 'quarantine', action: kbBlocked ? 'report' : 'remove-if-proven',
-          blocked: kbBlocked, bytes: bytes(full), copies: quarantineCopies(full), reason: 'a recovery quarantine of earlier KB copies' });
+        addQuarantine(full);
       }
     }
   };
@@ -238,8 +236,7 @@ export function inventoryFootprint({ env = process.env, home = os.homedir(), now
     seen.add(full);
     const st = lstat(full);
     if (!st || st.isSymbolicLink() || !st.isDirectory()) continue;
-    add({ id: 'quarantine', path: full, class: 'must-not-exist', kind: 'quarantine', action: kbBlocked ? 'report' : 'remove-if-proven',
-      blocked: kbBlocked, bytes: bytes(full), copies: quarantineCopies(full), reason: 'a recovery quarantine of earlier KB copies' });
+    addQuarantine(full);
   }
 
   // ── brain home state ────────────────────────────────────────────────────────────────────────
@@ -403,7 +400,10 @@ function summarize({ roots, items, policy, kbCopyDirs, lockHeld }) {
     breakdown[group] = (breakdown[group] || 0) + (i.bytes || 0);
   }
   const cruft = items.filter((i) => i.class === 'must-not-exist');
-  return { schemaVersion: 1, kind: 'ruvnet-brain-footprint', roots, items, policy, lockHeld,
+  // When every extra KB copy is one no command can remove, the copy-count fix is the honest remedy, not --clean.
+  const extra = items.filter((i) => i.kind === 'kb-copy' || i.kind === 'quarantine');
+  const kbCopyFix = extra.length && extra.every((i) => i.keptUnique) ? extra[0].fix : null;
+  return { schemaVersion: 1, kind: 'ruvnet-brain-footprint', roots, items, policy, lockHeld, kbCopyFix,
     liveKb: items.find((i) => i.kind === 'live-kb'),
     kbCopies: (items.find((i) => i.kind === 'live-kb')?.present ? 1 : 0)
       + items.filter((i) => i.kind === 'kb-copy' || /^transaction-/.test(i.kind)).length
@@ -412,37 +412,21 @@ function summarize({ roots, items, policy, kbCopyDirs, lockHeld }) {
     unowned: items.filter((i) => i.class === 'unowned') };
 }
 
-/** Atomic rename-rotation: <name> -> <name>.1 (replacing the previous .1). Appenders reopen by path. */
-function rotate(file) { fs.renameSync(file, `${file}.1`); }
-function truncateToTail(file, keep) {
-  const size = fs.statSync(file).size;
-  const fd = fs.openSync(file, 'r');
-  const buf = Buffer.alloc(Math.min(keep, size));
-  try { fs.readSync(fd, buf, 0, buf.length, size - buf.length); } finally { fs.closeSync(fd); }
-  const nl = buf.indexOf(10);
-  const tmp = `${file}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, nl >= 0 ? buf.subarray(nl + 1) : buf);
-  fs.renameSync(tmp, file);
-}
-
-/** Remove one entry that must sit DIRECTLY inside `root`, never through a link. */
-function removeWithin(target, root) {
-  const st = lstat(target);
-  if (!st) return 0;
-  if (physical(path.dirname(target)) !== physical(root)) throw new Error(`refusing to remove ${target}: not directly inside ${root}`);
-  const size = treeBytes(target);
-  fs.rmSync(target, { recursive: true, force: true }); // fs.rm removes a link itself, never its target
-  return size;
-}
-
 /**
  * Enforce the classification. `apply:false` reports what would happen. Every removal is returned by name;
  * every refusal is returned with its reason. `collectPluginGenerations` is the caller's lease-aware
  * collector (bin/install.mjs prunePluginGenerations); `pruneEvidence` is kb's pruneLifecycleEvidence.
  */
-export function sweepFootprint({ apply = false, collectPluginGenerations = null, pruneEvidence = null, ...options } = {}) {
+export function sweepFootprint({ apply = false, collectPluginGenerations = null, pruneEvidence = null,
+  proveCopy = kbCopyProof, beforeRemove = null, ...options } = {}) {
   const before = inventoryFootprint(options);
   const { roots } = before;
+  const owned = [...new Set([roots.kbParent, roots.brainHome, ...roots.brainHomeParents, roots.npxRoot].map(physical))];
+  const prove = (copyDir) => {
+    const proof = proveCopy({ copyDir, liveDir: roots.kbDir });
+    if (!proof.disposable && isKbTree(roots.kbDir)) rememberKept(roots.brainHome, copyDir, roots.kbDir, proof);
+    return proof;
+  };
   const removed = []; const kept = []; const rotated = []; const errors = [];
   if (roots.dangling) {
     return { schemaVersion: 1, kind: 'ruvnet-brain-footprint-sweep', apply, removed, rotated, errors, plugins: null, evidence: null,
@@ -457,24 +441,25 @@ export function sweepFootprint({ apply = false, collectPluginGenerations = null,
     try {
       if (item.action === 'rotate') { if (apply) rotate(item.path); rotated.push({ path: item.path, bytes: item.bytes }); continue; }
       if (item.action === 'truncate') { if (apply) truncateToTail(item.path, before.policy.textLogCapBytes / 2); rotated.push({ path: item.path, bytes: item.bytes }); continue; }
-      const root = path.dirname(item.path);
-      if (item.action === 'remove') { record(item, apply ? removeWithin(item.path, root) : item.bytes); continue; }
+      if (apply) beforeRemove?.(item);
+      if (item.action === 'remove') { record(item, apply ? removeWithin(item.path, item.realParent, owned) : item.bytes); continue; }
       // remove-if-proven: a KB copy, or a quarantine holding KB copies.
       if (item.kind === 'kb-copy') {
-        const proof = kbCopyProof({ copyDir: item.path, liveDir: roots.kbDir });
+        const proof = prove(item.path);
         if (!proof.disposable) { kept.push({ path: item.path, kind: item.kind, reason: `KEPT: ${proof.reason}`, unique: proof.unique }); continue; }
-        record(item, apply ? removeWithin(item.path, root) : item.bytes, proof.reason);
+        record(item, apply ? removeWithin(item.path, item.realParent, owned) : item.bytes, proof.reason);
         continue;
       }
       let uniqueLeft = false;
+      const quarantineReal = physical(item.path);
       for (const child of names(item.path)) {
         const childPath = path.join(item.path, child);
-        const proof = isKbTree(childPath) ? kbCopyProof({ copyDir: childPath, liveDir: roots.kbDir })
+        const proof = isKbTree(childPath) ? prove(childPath)
           : { disposable: false, unique: [], reason: 'not a KB copy; not ours to judge' };
         if (!proof.disposable) { uniqueLeft = true; kept.push({ path: childPath, kind: 'quarantined-copy', reason: `KEPT: ${proof.reason}`, unique: proof.unique }); continue; }
-        record({ path: childPath, kind: 'quarantined-copy', bytes: treeBytes(childPath) }, apply ? removeWithin(childPath, item.path) : undefined, proof.reason);
+        record({ path: childPath, kind: 'quarantined-copy', bytes: treeBytes(childPath) }, apply ? removeWithin(childPath, quarantineReal, owned) : undefined, proof.reason);
       }
-      if (!uniqueLeft && apply) removeWithin(item.path, root);
+      if (!uniqueLeft && apply) removeWithin(item.path, item.realParent, owned);
     } catch (error) { errors.push({ path: item.path, reason: error.message }); kept.push({ path: item.path, kind: item.kind, reason: `could not act: ${error.message}` }); }
   }
   let plugins = null;

@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FOOTPRINT_POLICY, inventoryFootprint, kbCopyPrefixes, sweepFootprint, footprintRoots } from '../../plugin/scripts/brain-footprint.mjs';
+// (kbCopyProof is imported below; the S7 tests also spy on it through sweepFootprint's proveCopy seam.)
 import { kbCopyProof } from '../../plugin/scripts/kb-copy-proof.mjs';
 import { confirm, doctorVerdict, footprintAlarm, formatConfirmation, writeSignatureRecord } from '../../plugin/scripts/brain-confirmation.mjs';
 import { footprintCheck } from '../../plugin/scripts/session-start-update-plane.mjs';
@@ -492,6 +493,43 @@ describe('SessionStart footprint line', () => {
     check({ ...m.env, RUVNET_BRAIN_TEST: '1', RUVNET_FOOTPRINT_SWEEP: 'on' });
     expect(dispatched).toHaveLength(1); // throttled: at most once per 6h
   });
+  // Review S7: a copy kept because it holds private files the live brain lacks cannot be fixed by --clean.
+  // Say the honest reason, never re-hash it every 6h, and never dispatch a sweep that can only keep it again.
+  it('a private-unique copy: proven once, cached, honest fix (not --clean), no background sweep, shown once', () => {
+    const m = machine(); live(m);
+    const kept = kbTree(path.join(m.brainHome, 'kb.bak-2'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'OLDER-secret' } });
+    const calls = [];
+    const proveCopy = (args) => { calls.push(args.copyDir); return kbCopyProof(args); };
+    sweepFootprint(opts(m, { apply: true, now: Date.now(), proveCopy }));
+    expect(calls).toEqual([kept]);
+    sweepFootprint(opts(m, { apply: true, now: Date.now(), proveCopy }));
+    expect(calls).toHaveLength(1); // cached: the 6-hourly sweep no longer re-hashes a copy it must keep
+    const fp = inventoryFootprint(opts(m, { measure: false, now: Date.now() }));
+    const it_ = item(fp, kept);
+    expect(it_).toMatchObject({ action: 'report', class: 'must-not-exist' });
+    expect(it_.fix).toMatch(/holds private data the live brain lacks.*secret\.big\.rvf/);
+    expect(it_.fix).not.toMatch(/--clean/);
+    const r = confirm({ footprint: fp, env: m.env, home: m.home, now: Date.now(), readiness: [] });
+    expect(r.lines.find((l) => l.id === 'knowledge').fix).not.toMatch(/--clean/);
+    expect(r.lines.find((l) => l.id === 'cruft').fix).not.toMatch(/--clean/);
+    expect(footprintAlarm(r)).not.toMatch(/--clean/);
+    expect(footprintAlarm(r)).toMatch(/private data the live brain lacks/);
+    // SessionStart: no background sweep for it, and the line is shown once, not every session.
+    const lines = []; const dispatched = [];
+    const check = () => footprintCheck({ env: { ...m.env, RUVNET_BRAIN_TEST: '1', RUVNET_FOOTPRINT_SWEEP: 'on' }, home: m.home, now: Date.now(),
+      hookDir: path.join(ROOT, 'plugin', 'scripts'), emit: (l) => lines.push(l), dispatch: (...args) => { dispatched.push(args); return true; } });
+    check(); check();
+    expect(dispatched).toEqual([]);
+    expect(lines).toHaveLength(1);
+    // The live brain changes (the owner restored the private store): the cache no longer applies.
+    write(path.join(m.kbDir, 'secret.big.rvf'), 'OLDER-secret');
+    write(path.join(m.kbDir, 'secret.passages.jsonl'), 'OLDER-secret-passages');
+    json(path.join(m.kbDir, 'SOURCE.json'), { ...JSON.parse(fs.readFileSync(path.join(m.kbDir, 'SOURCE.json'), 'utf8')), restoredAt: 1 });
+    sweepFootprint(opts(m, { apply: true, now: Date.now(), proveCopy }));
+    expect(calls).toHaveLength(2);
+    expect(fs.existsSync(kept)).toBe(false); // now provably disposable
+  });
+
   it('the detached CLI sweep really removes a disposable copy and keeps a private-unique one', async () => {
     const m = machine(); live(m);
     kbTree(path.join(m.brainHome, 'kb.bak-1'), { publicStores: { alpha: 'a0' }, privateStores: { secret: 'secret-bytes' } });
@@ -513,7 +551,7 @@ describe('SessionStart footprint line', () => {
 async function mutant(replacements) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'footprint-mutant-'));
   dirs.push(dir);
-  for (const f of ['brain-footprint.mjs', 'kb-copy-proof.mjs', 'brain-confirmation.mjs', 'mcp-readiness.mjs', 'brain-location.mjs']) {
+  for (const f of ['brain-footprint.mjs', 'kb-copy-proof.mjs', 'brain-confirmation.mjs', 'mcp-readiness.mjs', 'brain-location.mjs', 'footprint-io.mjs']) {
     let src = fs.readFileSync(path.join(ROOT, 'plugin', 'scripts', f), 'utf8');
     for (const [file, from, to] of replacements) if (file === f) {
       expect(src.includes(from), `mutation anchor missing in ${f}: ${from}`).toBe(true);
@@ -565,6 +603,32 @@ describe('BREAK IT: every guard is proven by a mutant that goes red', () => {
     expect(fs.existsSync(mine)).toBe(true); // real module: kept
     mod.sweepFootprint(opts(m, { apply: true }));
     expect(fs.existsSync(mine)).toBe(false); // mutant: deleted
+  });
+  // Review S7: removeWithin(item.path, path.dirname(item.path)) compared a path with its own parent, so it
+  // could never refuse. If a directory on the way is swapped for a link between inventory and removal, the
+  // sweep must refuse rather than delete through it.
+  it('owned-root guard removed -> a parent swapped for a link mid-sweep lets the sweep delete outside its roots', async () => {
+    const setup = () => {
+      const m = machine(); live(m);
+      const project = path.join(m.brainHome, 'ruflo-cwd', 'p1');
+      write(path.join(project, '.swarm', 'hnsw.metadata.json'), '{}');
+      const outside = path.join(m.home, 'Documents', 'project');
+      write(path.join(outside, '.swarm', 'memory.db'), 'the user real store');
+      const swap = (item) => {
+        if (item.kind !== 'ruflo-scratch') return;
+        fs.rmSync(project, { recursive: true, force: true });
+        fs.symlinkSync(outside, project); // a link where the scratch directory was
+      };
+      return { m, outside, swap };
+    };
+    const real = setup();
+    const result = sweepFootprint(opts(real.m, { apply: true, beforeRemove: real.swap }));
+    expect(fs.readFileSync(path.join(real.outside, '.swarm', 'memory.db'), 'utf8')).toBe('the user real store');
+    expect(result.errors.some((e) => /refusing to remove/.test(e.reason))).toBe(true);
+    const mod = await mutant([['footprint-io.mjs', 'if (!realOk) throw', 'if (false) throw']]);
+    const broken = setup();
+    mod.sweepFootprint(opts(broken.m, { apply: true, beforeRemove: broken.swap }));
+    expect(fs.existsSync(path.join(broken.outside, '.swarm'))).toBe(false); // mutant: deleted through the link
   });
   it('install-in-progress guard removed -> the rollback copy is deleted between the installer\'s renames', async () => {
     const mod = await mutant([['brain-footprint.mjs', '    : installing ? \'an install is activating', '    : false ? \'an install is activating']]);

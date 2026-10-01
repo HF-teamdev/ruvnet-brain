@@ -171,7 +171,7 @@ export function confirm({ footprint, env = process.env, home = os.homedir(), now
   const ok = lines.every((l) => l.state !== 'fail');
   return { schemaVersion: 1, kind: 'ruvnet-brain-confirmation', ok, checkedAt: new Date(now).toISOString(), lines,
     location: roots.location || null,
-    footprint: { kbCopies: footprint.kbCopies, totalBytes: footprint.totalBytes, budgetBytes: footprint.budgetBytes,
+    footprint: { kbCopies: footprint.kbCopies, kbCopyFix: footprint.kbCopyFix || null, totalBytes: footprint.totalBytes, budgetBytes: footprint.budgetBytes,
       breakdown: footprint.breakdown, cruft: cruft.map(({ path: p, kind, bytes, reason, action }) => ({ path: p, kind, bytes, reason, action })),
       unowned: footprint.unowned.map(({ path: p, kind, bytes, reason }) => ({ path: p, kind, bytes, reason })) } };
 }
@@ -245,7 +245,7 @@ export function footprintAlarm(result) {
   }
   const bad = result.lines.filter((l) => l.state === 'fail' && ['cruft', 'footprint', 'in-use'].includes(l.id));
   const copies = result.footprint.kbCopies;
-  if (copies !== 1) bad.unshift({ detail: `${copies} knowledge-base copies on disk (must be exactly 1)`, fix: CLEAN });
+  if (copies !== 1) bad.unshift({ detail: `${copies} knowledge-base copies on disk (must be exactly 1)`, fix: result.footprint.kbCopyFix || CLEAN });
   if (!bad.length) return '';
   return `${FOOTPRINT_LINE_PREFIX}NOT CLEAN] ${bad.map((l) => l.detail).join('; ')}. Fix: ${bad[0].fix} (verify: npx ruvnet-brain --doctor).`;
 }
