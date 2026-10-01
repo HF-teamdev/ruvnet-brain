@@ -12,7 +12,9 @@ amends: [ADR-040, ADR-052]
 
 # ADR-093 — The proactive package recommender
 
-**Status**: Proposed (2026-10-01). Implementation exists on branch `recommender-4.6`, **default off**.
+**Status**: Proposed (2026-10-01)
+
+Implementation ships in 4.5, **default off** (`RUVNET_PACKAGE_RECOMMENDER`); see the decision run below.
 Revision 2 (same day, below) adds the warm semantic lane; rev 1's lexical lane is now its cold fallback.
 
 ## Decision run — all 88 blind prompts on a real host (2026-10-01)

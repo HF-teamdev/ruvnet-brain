@@ -12,6 +12,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
+// The fixture brain claims the CURRENT version, derived — a literal goes stale at every release.
+const PACKAGE_VERSION = JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version;
+
 export const REPO = path.resolve(import.meta.dirname, '../../..');
 export const CONSOLE = path.join(REPO, 'scripts', 'onboarding-console.mjs');
 
@@ -35,7 +38,7 @@ function kbFixture(dir) {
   write(path.join(dir, 'forge-update.mjs'), '// self-updater stub (fixture) — never run by the QA test\nprocess.exit(0);\n');
   write(path.join(dir, 'capability-cards.md'), '# Capability Cards\n\n## ruflo\nAgent orchestration and memory.\n\n## ruvector\nVector search and RVF storage.\n');
   json(path.join(dir, 'RVF-GENERATIONS.json'), {
-    schemaVersion: 2, brainVersion: '4.4.1', releaseTag: 'v4.4.1',
+    schemaVersion: 2, brainVersion: PACKAGE_VERSION, releaseTag: `v${PACKAGE_VERSION}`,
     stores: {
       ruflo: { file: 'ruflo.big.rvf', sourceCommit: 'aaaaaaa1111111', builtUtc: daysAgo(1), bytes: 6144, model: 'fixture-384' },
       ruvector: { file: 'ruvector.big.rvf', sourceCommit: 'bbbbbbb2222222', builtUtc: daysAgo(2), bytes: 8192, model: 'fixture-384' },
