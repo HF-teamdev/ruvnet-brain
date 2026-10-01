@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { searchKb } from './forge-ask.mjs';
 import { kbBuildIdentity } from './kb-build-identity.mjs';
 import { keywordCandidates } from './keyword-lane.mjs';
+import { applyJudge, loadJudge } from './judge-rank.mjs';
 import { describeSearchFailure } from './search-outcome.mjs';
 import { prepareRelatedSources, renderRelatedSources } from './grounded-response.mjs';
 import { rerankPairs, cePrefilterScores } from './forge-rerank.mjs';
@@ -3800,7 +3801,10 @@ async function searchAllPrimary({
       })),
     }) + '\n');
   }
-  const { results, adrCollision, evidence, implementation } = selectResults({ query, ranked, k });
+  // THE LEARNED JUDGE (kb/judge-rank.mjs, ADR-099 arm C): off unless RUVNET_BRAIN_JUDGE=1 and a
+  // trained kb/judge-weights.json is present; then it re-scores the pool with its threshold at 0.
+  const judged = applyJudge(loadJudge(dir), query, ranked);
+  const { results, adrCollision, evidence, implementation } = selectResults({ query, ranked: judged, k });
 
   // `pooled` stays the number of pairs the cross-encoder read IN FULL — that is what the count
   // has always meant to a reader. `pooledAll`/`cappedOut` report what the cap withheld, because a
