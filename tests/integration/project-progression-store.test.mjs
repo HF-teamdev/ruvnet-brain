@@ -226,8 +226,9 @@ describe('managed ProjectProgression append and readback', () => {
       },
     ]);
     expect(fake.calls.every((call) => call.options.env.RUFLO_DAEMON_AUTOSTART === '0')).toBe(true);
-    // The default store's directory is ruflo's own `<cwd>/.swarm`, so ruflo runs from the project root.
-    expect(fake.calls.every((call) => call.options.cwd === bridge.resolution.projectRoot)).toBe(true);
+    // ruflo never runs inside the customer's project: one per-user scratch cwd outside it (rufloCwdFor).
+    expect(fake.calls.every((call) => call.options.cwd === rufloCwdFor(bridge.resolution.canonicalAgentDbPath))).toBe(true);
+    expect(fake.calls.every((call) => path.relative(projectRoot, call.options.cwd).startsWith('..'))).toBe(true);
     expect(bridge.outbox.pendingSnapshots()).toEqual([]);
   });
 
@@ -330,7 +331,7 @@ describe('managed ProjectProgression append and readback', () => {
     const env = { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' };
     const initialized = spawnSync(ruflo, [
       'memory', 'init', '--backend', 'agentdb', '--path', resolution.canonicalAgentDbPath,
-    ], { cwd: projectRoot, env, encoding: 'utf8', timeout: 120_000 });
+    ], { cwd: rufloCwdFor(resolution.canonicalAgentDbPath), env, encoding: 'utf8', timeout: 120_000 });
     expect(initialized.status, initialized.stderr || initialized.stdout).toBe(0);
     const observed = [];
     const bridge = new ProjectProgressionStore({
@@ -387,7 +388,7 @@ describe('managed ProjectProgression append and readback', () => {
     // `memory retrieve --path` return both rows byte-identical. Export reads a cwd-derived store,
     // not the canonical one, so it cannot prove anything about this store.
     const started = Date.now();
-    const cli = (args) => spawnSync(ruflo, args, { cwd: projectRoot, encoding: 'utf8', timeout: 120_000, env });
+    const cli = (args) => spawnSync(ruflo, args, { cwd: rufloCwdFor(resolution.canonicalAgentDbPath), encoding: 'utf8', timeout: 120_000, env });
     const listed = cli(['memory', 'list', '--namespace', NAMESPACE, '--path', resolution.canonicalAgentDbPath, '--format', 'json']);
     expect(listed.status, listed.stderr || listed.stdout).toBe(0);
     for (const expected of [snapshot, successor]) {
@@ -402,15 +403,26 @@ describe('managed ProjectProgression append and readback', () => {
     // ruflo creates `<cwd>/.swarm/` on every call; run from inside `.swarm` it left an unused nested
     // store in every customer project (measured 2026-10-01, ruflo 3.49.0).
     expect(fs.existsSync(path.join(projectRoot, '.swarm', '.swarm'))).toBe(false);
+    // ruflo writes .claude/, .claude-flow/, ruvector.db and .swarm/ into its cwd. None of it may land in
+    // the customer's project (it changed the working tree and broke no-op capture detection): the project
+    // holds only the store directory, and the store directory only the store and the product's outbox.
+    expect(fs.readdirSync(projectRoot).sort()).toEqual(['.swarm']);
+    const storeFiles = fs.readdirSync(path.join(projectRoot, '.swarm')).sort();
+    expect(storeFiles.filter((name) => !/^memory\.db(?:-wal|-shm|-journal)?$/.test(name)
+      && name !== 'schema.sql' // written beside the store by `ruflo memory init --path` (measured, 3.49.0)
+      && name !== 'project-progression-outbox.jsonl'), storeFiles.join(', ')).toEqual([]);
   }, 180_000);
 
   // The resolver pins the store to <projectRoot>/.swarm/memory.db (a foreign --path is rejected), but the
   // cwd rule must hold for ANY store path: ruflo creates <cwd>/.swarm on every call.
-  it('chooses a ruflo cwd that never creates a store beside or inside a store', () => {
+  it('runs ruflo from one per-user scratch cwd outside every project, for every store path', () => {
     const projectRoot = temporaryProject();
-    expect(rufloCwdFor(path.join(projectRoot, '.swarm', 'memory.db'))).toBe(projectRoot);
-    expect(rufloCwdFor(path.join(projectRoot, 'other', '.swarm', 'memory.db'))).toBe(path.join(projectRoot, 'other'));
     const scratchRoot = temporaryProject();
+    for (const store of [path.join(projectRoot, '.swarm', 'memory.db'), path.join(projectRoot, 'other', '.swarm', 'memory.db')]) {
+      const chosen = rufloCwdFor(store, { scratchRoot });
+      expect(path.dirname(chosen)).toBe(scratchRoot);
+      expect(path.relative(projectRoot, chosen).startsWith('..')).toBe(true);
+    }
     const cwd = rufloCwdFor(path.join(projectRoot, 'stores', 'memory.db'), { scratchRoot });
     expect(path.dirname(cwd)).toBe(scratchRoot);
     expect(fs.statSync(cwd).isDirectory()).toBe(true);
