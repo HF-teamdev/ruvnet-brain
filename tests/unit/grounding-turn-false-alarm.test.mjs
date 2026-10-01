@@ -133,6 +133,16 @@ describe('ruvCapabilityClaims: each rule, with the claim it must still catch', (
     expect(claims('One small thing: your ruflo is a version behind.')).toEqual([]);
     expect(claims('The fix for ruflo is a one-line change in this repo.')).toEqual([]);
   });
+  it('4.4.1 review: status phrasing in rows, our CHANGES to a product, "own CI", and a fix heading are not claims', () => {
+    for (const s of ['| ruflo | Upgraded and restarted |', '| ruflo | Installed globally |', '| agentdb | Healthy and reachable |',
+      'The ruflo upgrade is a no-op.', 'The AgentDB write is a success.', 'This is ruflo\'s own CI failing.',
+      '## What the ruflo fix does\n\nIt\'s a one-line change in the hook.',
+      // Each of these is rejected by ONE rule only, so each rule is proven on its own:
+      'The ruflo upgrade is a three-step process.',                  // a change-noun is not the product
+      'Ruflo is a no-op for this repo.',                             // an outcome noun is not a definition
+      '## What the ruflo fix does\n\nIt\'s a small wrapper around the CLI.',   // the heading must name the product itself
+    ]) expect(claims(s), s).toEqual([]);
+  });
   it('4.4.1 KNOWN-MISS LIFTS: heading-bound pronoun, product rows, "this is X\'s own …", passive agent', () => {
     expect(claims('## What AgentDB actually is\n\nIt\'s a SQLite database file that stores notes across sessions.')).toEqual(['agentdb']);
     expect(claims('## Release status\n\nIt\'s a clean tree and it is green.')).toEqual([]);

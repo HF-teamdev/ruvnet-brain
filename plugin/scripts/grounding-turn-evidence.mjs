@@ -239,14 +239,16 @@ const RUV_DOC_CLAIM = new RegExp(`(?<![\\w/.@-])${RUV_PRODUCT}(?:(?:'|’)s)?(?:
 // parenthetical is not what "they" means: "N-API builds (ruvector, rvf, …), so they don't depend…").
 // The opening subject phrase of a sentence: "The RuVector router package (`ruvector-router`)",
 // "RuVector's router", "Ruflo". Words stop at a copula; a parenthetical right after it is allowed.
-const OPENING_SUBJECT = String.raw`^(?:the\s+)?(${RUV_PRODUCT})(?![\w-]|[./][\w])(?:(?:'|’)s)?(?:\s+(?!(?:is|are|was|were|has|and|or|but|it|they)\b)[\w.@/-]+){0,4}?\s+(?:\([^)]{0,80}\)\s+)?`;
+// OUR change to a product ("the ruflo upgrade", "the AgentDB write", "the ruflo fix") is not the product.
+const CHANGE_NOUN = 'upgrade|update|fix|change|patch|install|installation|write|read|call|run|release|build|migration|restart|bump|version|commit|test|tests|check|ci|job|workflow|step|lock|config|setting|settings|issue|bug|error|failure|outage|incident|pr|branch|diff|rollout|deploy|deployment';
+const OPENING_SUBJECT = String.raw`^(?:the\s+)?(${RUV_PRODUCT})(?![\w-]|[./][\w])(?:(?:'|’)s)?(?:\s+(?!(?:is|are|was|were|has|and|or|but|it|they|${CHANGE_NOUN})\b)[\w.@/-]+){0,4}?\s+(?:\([^)]{0,80}\)\s+)?`;
 const RUV_COREF_CLAIM = new RegExp(`${OPENING_SUBJECT}(?:(?:is|are)\\s+(?:a|an|the)\\b|has\\b|provides?\\b|ships?\\b|${CAPABILITY_VERB})[^.;!?]{0,200}?\\b(?:and|but|so|which|because)\\s+(?:it|they)\\s+(?:also\\s+|now\\s+|still\\s+|only\\s+)?${CAPABILITY_VERB}`, 'gi');
 // A DEFINITION is a capability claim too: "The RuVector router package (…) is a vector database …"
 // asserts what the product is and does (4.4.1, a live miss). Only as the sentence's opening subject,
 // and only "is a/an": "your ruflo is a version behind" (a status) does not open the sentence.
-const RUV_DEFINE_CLAIM = new RegExp(`${OPENING_SUBJECT}(?:is|are)\\s+(?:a|an)\\s+(?!(?:version|bit|few|lot|little|couple|day|week|month|commit)s?\\b)\\w`, 'gi');
+const RUV_DEFINE_CLAIM = new RegExp(`${OPENING_SUBJECT}(?:is|are)\\s+(?:a|an)\\s+(?!(?:version|bit|few|lot|little|couple|day|week|month|commit|no-op|success|failure|regression|bug|fix|one-line|change|problem|mistake|non-issue|win|loss)s?\\b)\\w`, 'gi');
 // "this is agentic-qe's own static/heuristic estimate": a copula naming what the PRODUCT's output is.
-const RUV_COPULA_OWN_CLAIM = new RegExp(`\\b(?:this|that|it)\\s+is\\s+(${RUV_PRODUCT})(?![\\w-]|[./][\\w])(?:'|’)s\\s+own\\s+[\\w/-]+`, 'gi');
+const RUV_COPULA_OWN_CLAIM = new RegExp(`\\b(?:this|that|it)\\s+is\\s+(${RUV_PRODUCT})(?![\\w-]|[./][\\w])(?:'|’)s\\s+own\\s+(?!(?:ci|tests?|build|pipeline|run|job|workflow|checks?|bug|failure|issue|repo|release|fault|problem|mistake|error)\\b)[\\w/-]+`, 'gi');
 // "is confirmed honored by the installed ruflo": the product as the passive AGENT of a behaviour.
 const RUV_PASSIVE_CLAIM = new RegExp(`\\b(?:is|are)\\s+(?:\\w+\\s+){0,2}?(?:honou?red|supported|handled|enforced|rejected|ignored|accepted|respected|read|parsed)\\s+by\\s+(?:the\\s+)?(?:installed\\s+|global\\s+|current\\s+)?(${RUV_PRODUCT})(?![\\w-]|[./][\\w])`, 'gi');
 // Not an assertion: a question, a hedge, a plan or hypothetical. Narrower than HEDGE above on purpose,
@@ -275,7 +277,7 @@ function isAssertion(s, m) {
 
 // "## What AgentDB actually is" followed by "It's a SQLite database file …": the heading names the subject
 // and the section's sentence-initial "It" refers to it (4.4.1, a measured known miss).
-const DEFINING_HEADING = new RegExp(`^\\s*#{1,6}\\s+(?:what|how)\\s+(?:the\\s+)?(${RUV_PRODUCT})(?![\\w-])\\b.*\\b(?:is|are|does|works?)\\b`, 'i');
+const DEFINING_HEADING = new RegExp(`^\\s*#{1,6}\\s+(?:what|how)\\s+(?:the\\s+)?(${RUV_PRODUCT})(?![\\w-])\\s+(?:(?:actually|really|even)\\s+)?(?:is|are|does|works?)\\b`, 'i');   // the product ITSELF, not "the ruflo fix"
 function bindHeadingPronouns(message) {
   let subject = null;
   return String(message || '').split('\n').map((line) => {
@@ -289,7 +291,7 @@ function bindHeadingPronouns(message) {
 // audit trail | Concurrent-write safe KB |") asserts what the product is. Only descriptive cells count:
 // letters only (no digits, hashes, dates or versions) and no status vocabulary — a status table about a
 // product ("| ruflo | 3.41.2 | PASS |", "| ruflo | No version at all … |") never qualifies.
-const STATUS_WORD = /\b(?:no|not|none|n\/a|missing|stale|behind|current|unverified|verified|pass(?:ed)?|fail(?:ed)?|yes|done|version|commit|ok|error|broken|pending|todo|skipped|live|shipped|absent|present)\b/i;
+const STATUS_WORD = /\b(?:no|not|none|n\/a|missing|stale|behind|current|unverified|verified|pass(?:ed)?|fail(?:ed)?|yes|done|version|commit|ok|error|broken|pending|todo|skipped|live|shipped|absent|present|installed|upgraded|restarted|healthy|unhealthy|running|reachable|unreachable|updated|configured|enabled|disabled|failing|passing|green|red|removed|added|fixed|deployed|published|merged|stopped|started|restored|reset|rebuilt)\b/i;
 function productRowClaims(message) {
   const claims = [];
   for (const line of String(message || '').split('\n')) {

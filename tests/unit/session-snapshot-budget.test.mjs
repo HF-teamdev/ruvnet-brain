@@ -13,11 +13,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   CAPTURE_BUDGET_MS, REPLAY_MIN_BUDGET_MS, effectiveBudgetMs, queueCapture, queuedCaptures, refreshReplayLock, releaseReplayLock, REPLAY_LOCK_STALE_MS,
   replayOutboxDetached, runOutboxReplay, runSessionSnapshotHook, takeReplayLock, queuedWork, REPLAY_LOCK_ABANDON_MS,
+  processStart, reclaimOrphans, adoptReplayLock,
 } from '../../plugin/scripts/session-snapshot-hook.mjs';
 import { ProgressionOutbox } from '../../plugin/scripts/project-progression-outbox.mjs';
 import { ProjectProgressionStore } from '../../plugin/scripts/project-progression-store.mjs';
@@ -147,6 +148,36 @@ process.exit(2);
     }
   }, 40_000);
 
+  it('4.4.1 SLEEP, REAL WORKER: the detached worker records ITS OWN pid on the lock, so a stale-by-time lock held by a live worker is not taken over', async () => {
+    const dir = project();
+    const ruflo = fakeRuflo(dir);
+    // A slow ruflo keeps the real worker alive long enough to observe it.
+    fs.writeFileSync(ruflo.bin, fs.readFileSync(ruflo.bin, 'utf8').replace('const fs = require', 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500); const fs = require'));
+    const prior = process.env.RUFLO_BIN;
+    process.env.RUFLO_BIN = ruflo.bin;
+    try {
+      queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'slow', hook_event_name: 'Stop', cwd: dir } });
+      // The lock as a hook leaves it after spawning the worker and EXITING: its token names a dead pid.
+      const token = '999999999-1-exitedhook';
+      fs.writeFileSync(path.join(dir, '.swarm', '.progression-replay.lock'), `${token}\npid 999999999\n`);
+      let childPid = null;
+      expect(replayOutboxDetached({ projectDir: dir, token, spawnFn: (...a) => { const c = spawn(...a); childPid = c.pid; return c; } })).toBe(true);
+      const lock = path.join(dir, '.swarm', '.progression-replay.lock');
+      const readPid = () => { try { return Number((/^pid (\d+)$/m.exec(fs.readFileSync(lock, 'utf8')) || [])[1]); } catch { return null; } };
+      const until = Date.now() + 15_000;
+      while (readPid() !== childPid && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+      expect(readPid(), 'the lock names the WORKER, not the spawning hook').toBe(childPid);
+      expect(childPid).not.toBe(process.pid);
+      const old = new Date(Date.now() - REPLAY_LOCK_STALE_MS - 10_000); fs.utimesSync(lock, old, old);
+      expect(takeReplayLock(dir), 'a stale-looking lock whose worker is alive (asleep mid-step) is not taken over').toBeNull();
+      const done = Date.now() + 30_000;
+      while (fs.existsSync(lock) && Date.now() < done) await new Promise((r) => setTimeout(r, 200));
+      expect(fs.existsSync(lock), 'the worker finished and released its own lock').toBe(false);
+    } finally {
+      if (prior === undefined) delete process.env.RUFLO_BIN; else process.env.RUFLO_BIN = prior;
+    }
+  }, 60_000);
+
   it('only ONE replayer at a time: a held, fresh lock refuses a second spawn', () => {
     const dir = project();
     expect(takeReplayLock(dir)).toBeTruthy();
@@ -210,7 +241,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const old = new Date(Date.now() - REPLAY_LOCK_STALE_MS - 10_000); fs.utimesSync(lock, old, old);
     const t = takeReplayLock(dir);
     expect(t).toBeTruthy();
-    expect(fs.readFileSync(lock, 'utf8').trim()).toBe(t);
+    expect(fs.readFileSync(lock, 'utf8').split('\n')[0].trim()).toBe(t);
   });
 
   it('heartbeat: the owner refreshes the lock; a non-owner cannot refresh or release it', () => {
@@ -244,7 +275,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const lock = path.join(dir, '.swarm', '.progression-replay.lock');
     const handed = spawned.find((x) => x.token);
     expect(handed, 'A handed its lock to a worker instead of releasing it').toBeTruthy();
-    expect(fs.readFileSync(lock, 'utf8').trim()).toBe(handed.token);
+    expect(fs.readFileSync(lock, 'utf8').split('\n')[0].trim()).toBe(handed.token);
     expect(queuedCaptures(dir).map(sessionOf)).toEqual(['B']);
   });
 
@@ -257,7 +288,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const ours = takeReplayLock(dir, Date.now(), { isAlive: () => false, beforeRename: () => { successor = takeReplayLock(dir, Date.now(), { isAlive: () => false }); } });
     expect(successor, 'the successor took the stale lock').toBeTruthy();
     expect(ours, 'we moved the successor\'s FRESH lock, saw it was not the stale one, and backed off').toBeNull();
-    expect(fs.readFileSync(lock, 'utf8').trim(), 'the successor\'s lock is back in place').toBe(successor);
+    expect(fs.readFileSync(lock, 'utf8').split('\n')[0].trim(), 'the successor\'s lock is back in place').toBe(successor);
     expect(fs.readdirSync(path.join(dir, '.swarm')).filter((n) => n.includes('.stale-'))).toEqual([]);
   });
 
@@ -275,8 +306,8 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const dir = project();
     const live = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'live-claim', hook_event_name: 'Stop' } });
     const dead = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'dead-claim', hook_event_name: 'Stop' } });
-    const claim = (file, pid) => { const to = path.join(dir, '.swarm', `.progression-capture-claimed-${pid}-${path.basename(file).slice('.progression-capture-queue-'.length)}`); fs.renameSync(file, to); return to; };
-    const liveClaim = claim(live, process.pid);
+    const claim = (file, pid, start = 'na') => { const to = path.join(dir, '.swarm', `.progression-capture-claimed-${pid}-${start}-${path.basename(file).slice('.progression-capture-queue-'.length)}`); fs.renameSync(file, to); return to; };
+    const liveClaim = claim(live, process.pid, processStart(process.pid) || 'na');
     claim(dead, 999999999);
     expect(queuedWork(dir), 'claimed work still counts as work a boundary must wait behind').toBe(2);
     const ran = [];
@@ -291,10 +322,71 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     const dir = project();
     const names = ['a', 'b', 'c'].map((s) => path.basename(queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: s } })));
     expect(names).toEqual(['000000000001', '000000000002', '000000000003'].map((n) => `.progression-capture-queue-${n}.json`));
-    fs.renameSync(path.join(dir, '.swarm', names[2]), path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-000000000003.json`));
+    fs.renameSync(path.join(dir, '.swarm', names[2]), path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-na-000000000003.json`));
     expect(path.basename(queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'd' } })))
       .toBe('.progression-capture-queue-000000000004.json');
     expect(queuedCaptures(dir).map(sessionOf)).toEqual(['a', 'b', 'd']);
+  });
+
+  it('4.4.1 UPGRADE WINDOW: mixed 4.4.0 (timestamp) and 4.4.1 (sequence) queue files replay in creation order, not name order', () => {
+    const dir = project();
+    const sw = path.join(dir, '.swarm');
+    const put = (name, sid, ageMs) => { const f = path.join(sw, name); fs.writeFileSync(f, JSON.stringify({ event: 'Stop', host: 'codex', payload: { session_id: sid } })); const t = new Date(Date.now() - ageMs); fs.utimesSync(f, t, t); };
+    put('.progression-capture-queue-001790000000000-123456789-111-1.json', 'legacy-old', 40_000);    // 4.4.0, before the update
+    put('.progression-capture-queue-000000000001.json', 'seq-1', 30_000);                               // 4.4.1
+    put('.progression-capture-queue-001790000000100-123456789-222-1.json', 'legacy-after-update', 20_000); // an open 4.4.0 window
+    put('.progression-capture-queue-000000000002.json', 'seq-2', 10_000);
+    expect(queuedCaptures(dir).map(sessionOf)).toEqual(['legacy-old', 'seq-1', 'legacy-after-update', 'seq-2']);
+    // Once the legacy entries are gone, the sequence alone decides, whatever the clocks say.
+    for (const n of fs.readdirSync(sw).filter((x) => /-\d{15}-/.test(x))) fs.rmSync(path.join(sw, n));
+    const t = new Date(Date.now() - 999_000); fs.utimesSync(path.join(sw, '.progression-capture-queue-000000000002.json'), t, t);
+    expect(queuedCaptures(dir).map(sessionOf)).toEqual(['seq-1', 'seq-2']);
+  });
+
+  it('4.4.1 ORPHANS: a claim returns when its pid now belongs to ANOTHER process (start time differs) or it is past the ceiling; a live claim stays', () => {
+    const dir = project();
+    const mk = (sid, start, ageMs) => {
+      const f = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: sid } });
+      const to = path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-${start}-${path.basename(f).slice('.progression-capture-queue-'.length)}`);
+      fs.renameSync(f, to); const t = new Date(Date.now() - ageMs); fs.utimesSync(to, t, t); return to;
+    };
+    const own = processStart(process.pid) || 'na';
+    const kept = mk('live', own, 1_000);
+    mk('reused-pid', 'ThuJan11000001970', 1_000);
+    mk('ancient', own, REPLAY_LOCK_ABANDON_MS + 60_000);
+    expect(reclaimOrphans(dir, { startOf: (pid) => (pid === process.pid ? own : null) })).toBe(own === 'na' ? 1 : 2);
+    expect(queuedCaptures(dir).map(sessionOf).sort()).toEqual((own === 'na' ? ['ancient'] : ['ancient', 'reused-pid']).sort());
+    expect(fs.existsSync(kept)).toBe(true);
+  });
+
+  it('4.4.1 NIT: a hook whose lock is taken over before it commits does not produce or capture — it queues itself', () => {
+    const dir = project();
+    const order = [];
+    const lock = path.join(dir, '.swarm', '.progression-replay.lock');
+    const r = runSessionSnapshotHook(dir, 'Stop', {
+      rawInput: JSON.stringify({ session_id: 'racer', hook_event_name: 'Stop', cwd: dir }), host: 'claude', budgetMs: 8000,
+      produce: () => { order.push('produce'); return { projectProgression: {}, provenance: {} }; },
+      captureProgression: () => { order.push('capture'); return { receipt: {} }; },
+      makeStoreFactory: () => () => ({ replay: () => { fs.writeFileSync(lock, 'intruder\npid 1\n'); return []; } }),
+      spawnReplay: () => false,
+    });
+    expect(order).toEqual([]);
+    expect(r).toMatchObject({ progressionCaptured: false, deferredToReplayer: true });
+    expect(r.replaySkipped).toMatch(/the lock was taken over before this capture committed/);
+    expect(fs.readFileSync(lock, 'utf8').split('\n')[0]).toBe('intruder');
+  });
+
+  it('4.4.1 NIT: ownership is re-checked right after a claim — a worker that lost the lock puts the claim back UNRUN', () => {
+    const dir = project();
+    const lock = path.join(dir, '.swarm', '.progression-replay.lock');
+    queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'claimed-then-lost' } });
+    const ran = [];
+    const fakeStore = () => () => ({ outbox: new ProgressionOutbox({ projectRoot: dir }), appendExact: () => { throw new Error('none'); } });
+    runOutboxReplay({ projectDir: dir, token: takeReplayLock(dir), makeStoreFactory: fakeStore,
+      onClaim: () => fs.writeFileSync(lock, 'successor\npid 1\n'), runCapture: (d, ev, opts) => ran.push(JSON.parse(opts.rawInput).session_id) });
+    expect(ran).toEqual([]);
+    expect(queuedCaptures(dir).map(sessionOf)).toEqual(['claimed-then-lost']);
+    expect(fs.readdirSync(path.join(dir, '.swarm')).filter((n) => n.startsWith('.progression-capture-claimed-'))).toEqual([]);
   });
 
   it('NIT 6: the detached worker is spawned hidden (no console window on Windows), detached, and handed the lock token', () => {
@@ -302,7 +394,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     let opts = null;
     expect(replayOutboxDetached({ projectDir: dir, spawnFn: (bin, args, o) => { opts = o; return { unref() {} }; } })).toBe(true);
     expect(opts).toMatchObject({ windowsHide: true, detached: true, stdio: 'ignore' });
-    expect(opts.env.RUVNET_REPLAY_LOCK_TOKEN).toBe(fs.readFileSync(path.join(dir, '.swarm', '.progression-replay.lock'), 'utf8').trim());
+    expect(opts.env.RUVNET_REPLAY_LOCK_TOKEN).toBe(fs.readFileSync(path.join(dir, '.swarm', '.progression-replay.lock'), 'utf8').split('\n')[0].trim());
   });
 
   it('a worker whose lock was taken over STOPS (no duplicate work) and never deletes the successor\'s lock', () => {
@@ -315,7 +407,7 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     runOutboxReplay({ projectDir: dir, token: t, makeStoreFactory: fakeStore,
       runCapture: (d, ev, opts) => { ran.push(JSON.parse(opts.rawInput).session_id); fs.writeFileSync(lock, 'successor\n'); } });
     expect(ran, 'stopped after the takeover').toEqual(['a']);
-    expect(fs.readFileSync(lock, 'utf8').trim()).toBe('successor');
+    expect(fs.readFileSync(lock, 'utf8').split('\n')[0].trim()).toBe('successor');
   });
 });
 
