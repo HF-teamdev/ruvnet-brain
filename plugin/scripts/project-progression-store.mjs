@@ -135,17 +135,14 @@ function sortRejected(rows) {
 }
 
 /**
- * The working directory ruflo runs in for a store at `storePath`. ruflo creates `<cwd>/.swarm/` on every
- * invocation even when --path names the store (measured 2026-10-01, ruflo 3.49.0), so:
- *  - a store at `<dir>/.swarm/memory.db` (the default, and any other `.swarm` store) runs from `<dir>`,
- *    where `<cwd>/.swarm` IS the store's own directory;
- *  - any other store path runs from a dedicated, per-user scratch directory outside every project, so a
- *    stray `.swarm` lands there and never next to (or nested inside) a store.
- * Running from the store's own directory left an unused nested `.swarm/.swarm/` store in every project.
+ * The working directory ruflo runs in. ruflo writes into its cwd on every invocation even when --path
+ * names the store (measured 2026-10-01, ruflo 3.49.0): `<cwd>/.swarm/`, and from the project root also
+ * `.claude/`, `.claude-flow/` and `ruvector.db`. Run from inside `<root>/.swarm` it left a nested
+ * `.swarm/.swarm/` store; run from the project root it changed the CUSTOMER'S working tree, which broke
+ * no-op capture detection. So ruflo ALWAYS runs from one dedicated, per-user scratch directory outside
+ * every project; every call carries --path, so the store it reads and writes is unaffected.
  */
-export function rufloCwdFor(storePath, { scratchRoot = os.tmpdir() } = {}) {
-  const storeDir = path.dirname(path.resolve(storePath));
-  if (path.basename(storeDir) === '.swarm') return path.dirname(storeDir);
+export function rufloCwdFor(_storePath, { scratchRoot = os.tmpdir() } = {}) {
   const scratch = path.join(scratchRoot, `ruvnet-brain-ruflo-cwd-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
   fs.mkdirSync(scratch, { recursive: true, mode: 0o700 });
   return scratch;
