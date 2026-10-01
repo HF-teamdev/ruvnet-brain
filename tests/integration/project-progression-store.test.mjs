@@ -372,25 +372,29 @@ describe('managed ProjectProgression append and readback', () => {
     expect(restored.payload.evidence).toMatchObject({ structurallyEnumerated: 2, exactRetrieved: 2 });
     expect(observed.every((row) => row.stdoutShape !== 'not-json')).toBe(true);
     console.info(JSON.stringify({ proof: 'global-ruflo-disposable-store', binary: ruflo, observations: observed }));
-    // Capability probe only: runtime restoration still uses exact-key readback. Export has no
-    // --path option, so bind both native resolver environment inputs to this disposable store.
-    // The default bridge selects sibling agentdb-memory.db when export omits dbPath; explicitly
-    // selecting Ruflo's supported fallback is required to read the canonical memory.db here.
-    const output = path.join(projectRoot, 'progression-export.json');
+    // Independent proof that the GLOBAL ruflo CLI sees what the product wrote. The product's own reads
+    // above may take the node:sqlite fast path, so this reads back through the CLI, bound to the exact
+    // canonical store with --path (the flag Ruflo wires on init/store/retrieve/list/search/delete/stats:
+    // ruflo/scripts/smoke-memory-db-path.mjs, #2105), and compares every value by canonical digest.
+    //
+    // Why not `ruflo memory export` (this probe until 2026-10-01): export has no --path, and on ruflo
+    // 3.49.0 it ignores CLAUDE_FLOW_DB_PATH/CLAUDE_FLOW_MEMORY_PATH. Measured on a disposable store
+    // holding these two product rows: export from the project root -> count 0 (with or without those
+    // env overrides), from <root>/.swarm -> count 1, while `memory list --path` and exact
+    // `memory retrieve --path` return both rows byte-identical. Export reads a cwd-derived store,
+    // not the canonical one, so it cannot prove anything about this store.
     const started = Date.now();
-    const exported = spawnSync(ruflo, ['memory', 'export', '--output', output,
-      '--namespace', NAMESPACE, '--format', 'json'], {
-      cwd: projectRoot, encoding: 'utf8', timeout: 120_000,
-      env: { ...env, CLAUDE_FLOW_DISABLE_BRIDGE: '1', CLAUDE_FLOW_DB_PATH: resolution.canonicalAgentDbPath,
-        CLAUDE_FLOW_MEMORY_PATH: path.dirname(resolution.canonicalAgentDbPath) },
-    });
-    expect(exported.status, exported.stderr || exported.stdout).toBe(0);
-    const data = JSON.parse(fs.readFileSync(output, 'utf8'));
-    expect(data).toMatchObject({ schema: 'ruflo-memory-export/v1', count: 2, namespace: NAMESPACE });
-    const values = new Map(data.entries.map((entry) => [entry.key, JSON.parse(entry.value)]));
-    expect(digestCanonical(values.get(snapshot.eventKey))).toBe(digestCanonical(snapshot));
-    expect(digestCanonical(values.get(successor.eventKey))).toBe(digestCanonical(successor));
-    console.info(JSON.stringify({ proof: 'global-ruflo-export-capability-only', bridge: 'disabled', elapsedMs: Date.now() - started,
-      exactValues: values.size, schema: data.schema, hasTotal: Object.hasOwn(data, 'total') }));
+    const cli = (args) => spawnSync(ruflo, args, { cwd: projectRoot, encoding: 'utf8', timeout: 120_000, env });
+    const listed = cli(['memory', 'list', '--namespace', NAMESPACE, '--path', resolution.canonicalAgentDbPath, '--format', 'json']);
+    expect(listed.status, listed.stderr || listed.stdout).toBe(0);
+    for (const expected of [snapshot, successor]) {
+      expect(listed.stdout).toContain(expected.eventKey);
+      const read = cli(['memory', 'retrieve', '--key', expected.eventKey, '--namespace', NAMESPACE, '--value-only',
+        '--path', resolution.canonicalAgentDbPath]);
+      expect(read.status, read.stderr || read.stdout).toBe(0);
+      expect(digestCanonical(JSON.parse(read.stdout))).toBe(digestCanonical(expected));
+    }
+    console.info(JSON.stringify({ proof: 'global-ruflo-cli-exact-readback', path: 'canonical --path', elapsedMs: Date.now() - started,
+      exactValues: 2 }));
   }, 180_000);
 });
