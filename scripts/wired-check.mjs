@@ -77,6 +77,7 @@ const STANDALONE = [
   ['gate', 'retired automatic-hook helper and manual benchmark retained for explicit human use; no workflow or scheduler invokes this expensive command'],
   ['route-gold-rank', 'human-run measurement harness: routes question sets through kb/forge-ask-all.mjs planSourceRoute (no model) and reports where the gold store lands, with Wilson intervals; nothing to schedule'],
   ['abstain-trace', 'human-run measurement harness: traces why the reranker abstains on novice needs whose gold repository was searched (pool membership, cross-encoder on production text, best chunk and gold span); minutes of model time, never scheduled'],
+  ['need-set-split', 'human-run measurement tool: writes the frozen, repository-stratified train / held-out split every learning arm (ADR-099) trains and is measured on; nothing to schedule'],
   ['abstain-threshold-sweep', 'human-run measurement harness: replays measured runs at other abstain thresholds (no model) and reports confident hits, confident misses, off-topic abstain and held-out routed with Wilson intervals; nothing to schedule'],
   ['route-latency-warm','human-run measurement harness: paired warm latency of two or more search runtimes in one process, load-gated, with paired bootstrap intervals; minutes to hours of model time, never scheduled'],
   ['route-index-memory', 'human-run measurement harness: retained memory and cold/warm time of the router metadata index (needs node --expose-gc); nothing to schedule'],
