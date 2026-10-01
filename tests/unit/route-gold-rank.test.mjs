@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { goldRank, measureRouteRanks, summarizeRoutes, unnameRecallQuery } from '../../scripts/route-gold-rank.mjs';
+import { goldRank, measureRouteRanks, reportIdentity, summarizeRoutes, unnameRecallQuery } from '../../scripts/route-gold-rank.mjs';
 import { discoverRepos, planSourceRoute } from '../../kb/forge-ask-all.mjs';
 
 describe('goldRank', () => {
@@ -31,6 +31,18 @@ describe('unnameRecallQuery', () => {
       .toBe('how does this project / this project train?');
     expect(unnameRecallQuery('In the ruvector repository, compare ruvector-core and ruvectors.', 'ruvector'))
       .toBe('compare this project-core and ruvectors.');
+  });
+});
+
+describe('reportIdentity', () => {
+  it('names the KB by its build stamp and never writes a local absolute path', () => {
+    const kb = fs.mkdtempSync(path.join(os.tmpdir(), 'route-id-'));
+    fs.writeFileSync(path.join(kb, 'manifest.json'), JSON.stringify({ brainVersion: '9.9.9', generated: 'g1' }));
+    const inside = reportIdentity({ impl: path.resolve('kb/forge-ask-all.mjs'), kbDir: kb });
+    expect(inside).toEqual({ impl: 'kb/forge-ask-all.mjs', kbDir: '<kb>', kbBuild: { brainVersion: '9.9.9', generated: 'g1' } });
+    const outside = reportIdentity({ impl: path.join(kb, 'forge-ask-all.mjs'), kbDir: kb });
+    expect(outside.impl).toBe('<impl>');
+    expect(JSON.stringify([inside, outside])).not.toContain(os.tmpdir());
   });
 });
 

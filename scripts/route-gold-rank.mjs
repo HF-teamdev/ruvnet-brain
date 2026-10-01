@@ -109,6 +109,21 @@ export function loadQuestions({ needs, heldout, recallFixture }) {
   return out;
 }
 
+/**
+ * What a committed report says about its inputs. Never a local absolute path: the KB is named by its
+ * build stamp, and the implementation by its repo-relative path (or `<impl>` when it lives outside
+ * this checkout). The code's identity is the commit the report is filed with.
+ */
+export function reportIdentity({ impl, kbDir }) {
+  let kbBuild = null;
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(kbDir, 'manifest.json'), 'utf8'));
+    kbBuild = { brainVersion: m.brainVersion ?? null, generated: m.generated ?? null };
+  } catch { /* no manifest */ }
+  const rel = path.relative(ROOT, path.resolve(impl));
+  return { impl: rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : '<impl>', kbDir: '<kb>', kbBuild };
+}
+
 function arg(name) {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
@@ -123,7 +138,7 @@ async function main() {
   let aliases = {};
   try { aliases = JSON.parse(fs.readFileSync(path.join(kbDir, 'repo-aliases.json'), 'utf8')); } catch { /* none */ }
   const sets = loadQuestions({ needs: arg('--needs'), heldout: arg('--heldout'), recallFixture: arg('--recall-fixture') });
-  const report = { kind: 'ruvnet-brain-route-gold-rank', impl, kbDir, measuredAt: new Date().toISOString(), sets: {} };
+  const report = { kind: 'ruvnet-brain-route-gold-rank', ...reportIdentity({ impl, kbDir }), measuredAt: new Date().toISOString(), sets: {} };
   for (const [name, questions] of Object.entries(sets)) {
     if (!questions.length) continue;
     const { rows, msPerQuestion } = measureRouteRanks({ kbDir, questions, planSourceRoute: mod.planSourceRoute,
