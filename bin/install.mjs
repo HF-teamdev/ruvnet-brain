@@ -1284,6 +1284,19 @@ export function installConsoleRuntime(cacheDir, sourceRoot = REPO_ROOT) {
 // Receipts of Consoles that died (pid gone, port silent) are pruned, not counted: the owner's Mac
 // reported pending-console-restart forever from two receipts left on 2026-09-16/17
 // (scripts/console-instances.mjs).
+/**
+ * --doctor's view of a recorded convergence receipt. Its Console state is a snapshot from the last sync;
+ * a recorded pending-console-restart is re-read against the LIVE receipts, so a Console that has since
+ * exited (or a receipt it left when it died) stops failing --doctor. Returns a new object.
+ */
+export function withLiveConsoleState(recorded, { receiptDir, alive, probe } = {}) {
+  if (recorded?.consoleRuntime?.state !== 'pending-console-restart' || !recorded.consoleRuntime.sourceSha256) return recorded;
+  const { replacementFailures, ...kept } = recorded.consoleRuntime;
+  const live = { ...kept, ...consoleRestartState(recorded.consoleRuntime, { receiptDir, alive, probe }) };
+  if (live.state !== 'ready' && replacementFailures) live.replacementFailures = replacementFailures;
+  return { ...recorded, consoleRuntime: live };
+}
+
 export function consoleRestartState(identity, {
   receiptDir = path.join(process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'), 'console-instances'),
   alive, probe,
@@ -2765,15 +2778,8 @@ async function doctor() {
   let hostConvergence = { healthy: true, state: 'not-recorded' };
   if (fs.existsSync(convergencePath)) {
     try {
-      const recorded = JSON.parse(fs.readFileSync(convergencePath, 'utf8'));
-      // The recorded Console state is a snapshot from the last sync. Re-read the live receipts so a
-      // Console that has since exited (or a receipt it left when it died) stops failing --doctor.
-      if (recorded?.consoleRuntime?.state === 'pending-console-restart' && recorded.consoleRuntime.sourceSha256) {
-        const { replacementFailures: _old, ...kept } = recorded.consoleRuntime;
-        recorded.consoleRuntime = { ...kept, ...consoleRestartState(recorded.consoleRuntime,
-          { receiptDir: path.join(path.dirname(convergencePath), 'console-instances') }) };
-        if (recorded.consoleRuntime.state !== 'ready' && _old) recorded.consoleRuntime.replacementFailures = _old;
-      }
+      const recorded = withLiveConsoleState(JSON.parse(fs.readFileSync(convergencePath, 'utf8')),
+        { receiptDir: path.join(path.dirname(convergencePath), 'console-instances') });
       hostConvergence = classifyHostConvergence(recorded);
       if (hostConvergence.healthy) ok(`host convergence receipt: ${hostConvergence.state}`);
       else {

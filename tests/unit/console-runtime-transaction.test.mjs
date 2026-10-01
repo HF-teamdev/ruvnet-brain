@@ -370,6 +370,28 @@ describe('Console instances — dead receipts and owned stale replacement', () =
       .toMatchObject({ state: 'ready', prunedDeadReceipts: 1 });
   });
 
+  it('--doctor re-reads live receipts: a recorded pending-console-restart whose Console died reads healthy', () => {
+    const receiptDir = temporary('brain-console-receipts-');
+    const recorded = { desiredVersion: VERSION, hosts: { claude: { state: 'absent', version: null } },
+      consoleRuntime: { sourceSha256: 'c'.repeat(64), state: 'pending-console-restart', instanceReceipts: 2, staleInstances: 2,
+        replacementFailures: ['port 7411: the old Console (pid 1) did not release port 7411 within 20s'] } };
+    fs.writeFileSync(path.join(receiptDir, 'dead-0916.json'), JSON.stringify(ownedReceipt()));
+    fs.writeFileSync(path.join(receiptDir, 'dead-0917.json'), JSON.stringify(ownedReceipt({ startedAt: '2026-09-17T10:00:00.000Z' })));
+    // What --doctor said before: the recorded snapshot fails forever.
+    expect(install.classifyHostConvergence(recorded).healthy).toBe(false);
+    const live = install.withLiveConsoleState(recorded, { receiptDir });
+    expect(live.consoleRuntime).toEqual({ sourceSha256: 'c'.repeat(64), state: 'ready', instanceReceipts: 0, staleInstances: 0,
+      prunedDeadReceipts: 2 });
+    expect(install.classifyHostConvergence(live)).toEqual({ healthy: true, state: 'channels-converged' });
+    expect(recorded.consoleRuntime.state).toBe('pending-console-restart'); // the input is not mutated
+    // A Console that really is still running the old runtime keeps --doctor failing, with its recorded reason.
+    fs.writeFileSync(path.join(receiptDir, 'live.json'), JSON.stringify(ownedReceipt({ pid: process.pid })));
+    const still = install.withLiveConsoleState(recorded, { receiptDir });
+    expect(still.consoleRuntime).toMatchObject({ state: 'pending-console-restart', staleInstances: 1,
+      replacementFailures: recorded.consoleRuntime.replacementFailures });
+    expect(install.classifyHostConvergence(still).action).toMatch(/could not replace the running Console \(port 7411/);
+  });
+
   it('keeps a live-pid stale receipt (a real running Console is never pruned)', () => {
     const receiptDir = temporary('brain-console-receipts-');
     fs.writeFileSync(path.join(receiptDir, 'live.json'), JSON.stringify(ownedReceipt({ pid: process.pid })));
