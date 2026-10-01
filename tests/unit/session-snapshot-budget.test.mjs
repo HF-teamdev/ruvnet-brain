@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   CAPTURE_BUDGET_MS, REPLAY_MIN_BUDGET_MS, effectiveBudgetMs, queueCapture, queuedCaptures, refreshReplayLock, releaseReplayLock, REPLAY_LOCK_STALE_MS,
-  replayOutboxDetached, runOutboxReplay, runSessionSnapshotHook, takeReplayLock,
+  replayOutboxDetached, runOutboxReplay, runSessionSnapshotHook, takeReplayLock, queuedWork, REPLAY_LOCK_ABANDON_MS,
 } from '../../plugin/scripts/session-snapshot-hook.mjs';
 import { ProgressionOutbox } from '../../plugin/scripts/project-progression-outbox.mjs';
 import { ProjectProgressionStore } from '../../plugin/scripts/project-progression-store.mjs';
@@ -226,6 +226,75 @@ describe('ordering under a live worker, stranded queues, and lock ownership', ()
     expect(fs.existsSync(lock)).toBe(true);
     expect(releaseReplayLock(dir, t)).toBe(true);
     expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it('4.4.1 STRAND: a boundary B that queues while A holds the lock is handed to a worker when A releases (two simultaneous SessionEnds)', () => {
+    const dir = project();
+    const spawned = [];
+    const spawnReplay = (x) => { spawned.push({ ...x, at: 'call' }); return Boolean(x.token); };
+    let inner = null;
+    const mk = (sid, during) => runSessionSnapshotHook(dir, 'SessionEnd', {
+      rawInput: JSON.stringify({ session_id: sid, hook_event_name: 'SessionEnd', cwd: dir }), host: 'claude', budgetMs: 8000,
+      produce: () => { during?.(); return { projectProgression: {}, provenance: {} }; },
+      captureProgression: () => ({ receipt: { sid } }), makeStoreFactory: () => () => ({ replay: () => [] }), spawnReplay,
+    });
+    const a = mk('A', () => { inner = mk('B'); });
+    expect(a.progressionCaptured).toBe(true);
+    expect(inner.replaySkipped).toMatch(/the current lock holder hands the queue to a worker when it releases/);
+    const lock = path.join(dir, '.swarm', '.progression-replay.lock');
+    const handed = spawned.find((x) => x.token);
+    expect(handed, 'A handed its lock to a worker instead of releasing it').toBeTruthy();
+    expect(fs.readFileSync(lock, 'utf8').trim()).toBe(handed.token);
+    expect(queuedCaptures(dir).map(sessionOf)).toEqual(['B']);
+  });
+
+  it('4.4.1 TWO SUCCESSORS: a successor that takes a stale lock between our check and our rename keeps it; we back off', () => {
+    const dir = project();
+    const lock = path.join(dir, '.swarm', '.progression-replay.lock');
+    fs.writeFileSync(lock, '999999999-1-dead\n');
+    const old = new Date(Date.now() - REPLAY_LOCK_STALE_MS - 10_000); fs.utimesSync(lock, old, old);
+    let successor = null;
+    const ours = takeReplayLock(dir, Date.now(), { isAlive: () => false, beforeRename: () => { successor = takeReplayLock(dir, Date.now(), { isAlive: () => false }); } });
+    expect(successor, 'the successor took the stale lock').toBeTruthy();
+    expect(ours, 'we moved the successor\'s FRESH lock, saw it was not the stale one, and backed off').toBeNull();
+    expect(fs.readFileSync(lock, 'utf8').trim(), 'the successor\'s lock is back in place').toBe(successor);
+    expect(fs.readdirSync(path.join(dir, '.swarm')).filter((n) => n.includes('.stale-'))).toEqual([]);
+  });
+
+  it('4.4.1 SLEEP: a stale lock whose holder is ALIVE (laptop asleep mid-step) is not taken over until the abandon horizon', () => {
+    const dir = project();
+    const lock = path.join(dir, '.swarm', '.progression-replay.lock');
+    fs.writeFileSync(lock, `${process.pid}-1-sleeping\n`);
+    const stale = new Date(Date.now() - REPLAY_LOCK_STALE_MS - 10_000); fs.utimesSync(lock, stale, stale);
+    expect(takeReplayLock(dir)).toBeNull();
+    const abandoned = new Date(Date.now() - REPLAY_LOCK_ABANDON_MS - 10_000); fs.utimesSync(lock, abandoned, abandoned);
+    expect(takeReplayLock(dir)).toBeTruthy();
+  });
+
+  it('4.4.1 CLAIMS: a capture claimed by a LIVE worker is never run by another; a dead worker\'s claim returns to the queue', () => {
+    const dir = project();
+    const live = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'live-claim', hook_event_name: 'Stop' } });
+    const dead = queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'dead-claim', hook_event_name: 'Stop' } });
+    const claim = (file, pid) => { const to = path.join(dir, '.swarm', `.progression-capture-claimed-${pid}-${path.basename(file).slice('.progression-capture-queue-'.length)}`); fs.renameSync(file, to); return to; };
+    const liveClaim = claim(live, process.pid);
+    claim(dead, 999999999);
+    expect(queuedWork(dir), 'claimed work still counts as work a boundary must wait behind').toBe(2);
+    const ran = [];
+    const fakeStore = () => () => ({ outbox: new ProgressionOutbox({ projectRoot: dir }), appendExact: () => { throw new Error('none'); } });
+    runOutboxReplay({ projectDir: dir, token: takeReplayLock(dir), makeStoreFactory: fakeStore,
+      runCapture: (d, ev, opts) => { ran.push(JSON.parse(opts.rawInput).session_id); } });
+    expect(ran, 'only the dead worker\'s claim was reclaimed and run').toEqual(['dead-claim']);
+    expect(fs.existsSync(liveClaim), 'the live worker\'s claim is untouched').toBe(true);
+  });
+
+  it('4.4.1 ORDER without a clock: queue names follow exclusive-creation order after every queued or claimed one', () => {
+    const dir = project();
+    const names = ['a', 'b', 'c'].map((s) => path.basename(queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: s } })));
+    expect(names).toEqual(['000000000001', '000000000002', '000000000003'].map((n) => `.progression-capture-queue-${n}.json`));
+    fs.renameSync(path.join(dir, '.swarm', names[2]), path.join(dir, '.swarm', `.progression-capture-claimed-${process.pid}-000000000003.json`));
+    expect(path.basename(queueCapture({ projectDir: dir, event: 'Stop', host: 'codex', payload: { session_id: 'd' } })))
+      .toBe('.progression-capture-queue-000000000004.json');
+    expect(queuedCaptures(dir).map(sessionOf)).toEqual(['a', 'b', 'd']);
   });
 
   it('NIT 6: the detached worker is spawned hidden (no console window on Windows), detached, and handed the lock token', () => {
