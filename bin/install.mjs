@@ -2028,10 +2028,8 @@ export function wireCodexPlugin({
   }
   if (announce) {
     ok(`Codex Brain plugin installed and enabled (${after.version || 'version unknown'}).`);
-    if (shellBoundary.restartRequired && shellBoundary.known) {
-      info(`  boot-level plugin declarations changed (${shellBoundary.paths.join(', ')}): new Codex sessions load them; already-open Codex windows keep the old hook definitions until they are reopened.`);
-    } else if (shellBoundary.restartRequired) {
-      warn(`could not verify the plugin's boot-level declarations (${shellBoundary.reason}); restart Codex once to be sure they are loaded.`);
+    if (shellBoundary.restartRequired) {
+      warn(`boot-level plugin declarations changed; restart Codex, then review them in /hooks (${shellBoundary.paths.join(', ') || shellBoundary.reason}).`);
     } else if (before.installed && before.version !== after.version) {
       info('  body-only update: the Stable Spine is live on the next hook/MCP call; no restart is required.');
     }
@@ -2046,7 +2044,10 @@ export function wireCodexPlugin({
     ...(shellBoundary.restartRequired ? {
       sessionSafety: 'restart-required',
       sessionSafetyReason: shellBoundary.reason,
-      restartScope: shellBoundary.known ? 'open-sessions' : 'unproven',
+      // Never 'open-sessions' for Codex: changed hook definitions show as PENDING until reviewed in
+      // /hooks (doctor fails closed on pending trust; the SessionStart notice says to trust them), and no
+      // measurement shows a fresh Codex session running them without that step. Unproven = restart.
+      restartScope: 'unproven',
     } : {}),
   };
 }

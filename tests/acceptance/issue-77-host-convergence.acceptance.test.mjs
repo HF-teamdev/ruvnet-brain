@@ -99,13 +99,18 @@ describe('issue #77 installed host convergence boundary', () => {
       hosts: {
         claude: { state: 'ready', version: VERSION, restartRequired: true, restartScope: 'open-sessions',
           sessionSafety: 'restart-required', sessionSafetyReason: 'boot-level declarations changed: hooks/hooks.json, scripts/hook-shim.mjs' },
-        codex: { state: 'ready', version: VERSION, restartRequired: true, restartScope: 'open-sessions' },
+        codex: { state: 'absent', version: null },
       },
       consoleRuntime: { state: 'ready', runtimeVersion: VERSION },
     };
     expect(install.classifyHostConvergence(receipt)).toEqual({ healthy: true, state: 'channels-converged',
-      openSessions: ['claude', 'codex'],
-      notice: `new Claude Code/Codex sessions use ${VERSION}; already-open windows keep the old hook definitions until they are reopened` });
+      openSessions: ['claude'],
+      notice: `new Claude Code sessions use ${VERSION}; already-open windows keep the old hook definitions until they are reopened` });
+    // Codex is never 'open-sessions' (changed hooks are PENDING until reviewed in /hooks): a Codex boot
+    // change stays a restart, exit 1, beside a converged Claude.
+    expect(install.classifyHostConvergence({ ...receipt, hosts: { ...receipt.hosts,
+      codex: { state: 'ready', version: VERSION, restartRequired: true, restartScope: 'unproven', sessionSafetyReason: 'boot-level declarations changed: hooks/hooks.json' } } }))
+      .toEqual({ healthy: false, state: 'host-restart-required', action: 'boot-level declarations changed: hooks/hooks.json' });
     // An UNPROVEN boot surface (it could not be compared) still requires a restart.
     expect(install.classifyHostConvergence({ ...receipt, hosts: { claude: { ...receipt.hosts.claude, restartScope: 'unproven' } } }))
       .toMatchObject({ healthy: false, state: 'host-restart-required' });
