@@ -63,4 +63,21 @@ describe('Ruflo operational health is derived from the configured execution mode
       expect(rufloCheckLine({ configuredOnly: true })).toMatchObject({ state: 'unknown', detail: expect.stringMatching(/not probed/) });
     } finally { fs.rmSync(home, { recursive: true, force: true }); }
   });
+
+  // Re-review NIT: a ruflo that cannot be started, or whose `status` times out, printed nothing — and empty
+  // output classified as healthy, then `status memory` ran anyway. REAL spawns, through the real probe.
+  it.skipIf(process.platform === 'win32')('a CLI that cannot start or does not answer `status` is not healthy, and nothing else is run', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruflo-unanswered-'));
+    try {
+      const log = path.join(dir, 'calls.log');
+      const hang = path.join(dir, 'ruflo');
+      fs.writeFileSync(hang, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');\nsetTimeout(() => {}, 10_000);\n`, { mode: 0o755 });
+      for (const cli of [path.join(dir, 'missing-ruflo'), hang]) {
+        const health = probeRufloOperationalHealth({ cli, timeoutMs: 300 });
+        expect(health, cli).toMatchObject({ healthy: false, unanswered: true });
+        expect(rufloCheckLine(health)).toMatchObject({ state: 'fail', detail: expect.stringMatching(/did not answer/) });
+      }
+      expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual(['status']); // never `status memory`
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
 });

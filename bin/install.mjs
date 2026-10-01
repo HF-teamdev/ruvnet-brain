@@ -5297,13 +5297,14 @@ export function classifyRufloOperationalHealth({ status = '', memory = '', metri
 }
 
 const RUFLO_NOT_INITIALIZED = /not initialized in this directory/i;
-const rufloProbeRun = (args, cli = 'ruflo') => {
+const rufloProbeRun = (args, cli = 'ruflo', timeoutMs = 10_000) => {
   // Every `ruflo` invocation auto-starts a project background daemon unless this is set
   // (verified live: ~/.npm-global/lib/node_modules/ruflo/node_modules/@claude-flow/cli/dist/src/
   // services/daemon-autostart.js:85) — a read-only health probe must not leave one running.
-  const result = spawnSync(cli, args, { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000, shell: IS_WIN && /\.(?:cmd|bat)$/i.test(cli),
+  const result = spawnSync(cli, args, { cwd: process.cwd(), encoding: 'utf8', timeout: timeoutMs, shell: IS_WIN && /\.(?:cmd|bat)$/i.test(cli),
     env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' } });
-  return `${result.stdout || ''}\n${result.stderr || ''}`;
+  // A spawn failure or a timeout is marked, so it can never pass for an (empty, "healthy") answer.
+  return `${result.stdout || ''}\n${result.stderr || ''}${result.error ? `\n[ruflo-probe-error] ${result.error.code || result.error.message}` : ''}`;
 };
 
 /**
@@ -5314,8 +5315,12 @@ const rufloProbeRun = (args, cli = 'ruflo') => {
  * learning (✗), every later one saw "[STOPPED]" (direct mode, ✓) — text and --json disagreed on CI Linux,
  * run 36915686695. An uninitialized directory is now "not applicable" and the writing commands never run.
  */
-export function probeRufloOperationalHealth({ cli = 'ruflo', run = (args) => rufloProbeRun(args, cli) } = {}) {
+export function probeRufloOperationalHealth({ cli = 'ruflo', timeoutMs = 10_000, run = (args) => rufloProbeRun(args, cli, timeoutMs) } = {}) {
   const status = run(['status']);
+  // No answer (could not start, timed out, printed nothing) is NOT health, and nothing more is asked (re-review NIT).
+  if (/\[ruflo-probe-error\]/.test(status) || !status.trim()) {
+    return { healthy: false, unanswered: true, directMode: false, stopped: false, zeroLearning: false, memoryContradiction: false, memoryEntries: 0 };
+  }
   if (RUFLO_NOT_INITIALIZED.test(status)) {
     return { healthy: true, notInitialized: true, directMode: false, stopped: false, zeroLearning: false, memoryContradiction: false, memoryEntries: 0 };
   }
@@ -5362,6 +5367,9 @@ export function groundingCheckLine({ smoke = {}, persisted = null, coverageSha25
 
 /** THE Ruflo line of the doctor's one verdict: derived only from the probe result, for text and --json alike. */
 export function rufloCheckLine(health) {
+  if (health.unanswered) {
+    return { id: 'ruflo', label: 'Ruflo', state: 'fail', detail: '`ruflo status` did not answer (could not start or timed out)', fix: 'ruflo doctor --fix' };
+  }
   if (health.configuredOnly) {
     return { id: 'ruflo', label: 'Ruflo', state: 'unknown', detail: 'configured in ~/.claude/settings.json; no ruflo CLI on PATH (not probed)', fix: null };
   }
