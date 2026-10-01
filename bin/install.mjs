@@ -24,14 +24,17 @@ import { applyBrainProfile, readBrainProfile } from '../kb/brain-profile.mjs';
 import { acquireRefreshLock, finishRefreshReceipt, openRefreshReceipt, physicalPath, recordRefreshAdvisory,
   recordRefreshPhase, settleRefreshRun, UPDATE_REFRESH_PHASES } from '../kb/refresh-run.mjs';
 import { pruneLifecycleEvidence } from '../kb/lifecycle-evidence-retention.mjs';
-import { recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
+import { checkDiskSpace, recoverIncompleteStorageTransactions } from '../kb/update-storage-transaction.mjs';
 import {
   requiredEmbedderModels,
   missingEmbedderModels,
 } from '../kb/model-requirements.mjs';
 import { applyManagedCatalogUpdate } from '../scripts/model-router-catalog.mjs';
 import { cmpVersion } from '../scripts/stack-sync.mjs';
-import { inspectInstalledBrain, classifySmokeEvidence, DOCTOR_SMOKE_QUERY, doctorSmokeArgs } from '../scripts/installed-brain-health.mjs';
+import {
+  inspectInstalledBrain, classifySmokeEvidence, classifySmokeFailure, coldModels, DOCTOR_SMOKE_QUERY, doctorSmokeArgs,
+  MODEL_WARMUP_SCRIPT, MODEL_WARMUP_TIMEOUT_MS,
+} from '../scripts/installed-brain-health.mjs';
 import { validateCoverageDirectory } from '../plugin/scripts/coverage-integrity.mjs';
 import {
   continuityContractIds,
@@ -72,6 +75,8 @@ import {
 } from '../scripts/console-runtime-identity.mjs';
 import { shellDiff as pluginShellDiff } from '../plugin/scripts/host-shell-boundary.mjs';
 import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
+import { moveBrain, MoveRefused } from '../scripts/move-brain.mjs';
+import { brainLocation } from '../plugin/scripts/brain-location.mjs';
 import { cleanLegacyRufloDebris } from '../plugin/scripts/project-progression-store.mjs';
 import { resolveProjectStore } from '../plugin/scripts/project-store-resolver.mjs';
 import { runHostCli, waitForHostCli } from '../scripts/host-cli.mjs';
@@ -107,17 +112,6 @@ const PACKAGE_VERSION = (() => {
 const REPO = 'stuinfla/ruvnet-brain';
 const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const ASSET_NAME = 'ruvnet-brain.zip';
-// Known-good BUNDLE tag, used ONLY by --pin. It is no longer a silent fallback for a failed
-// latest-release lookup: that bundle predates ReleaseCoverage and cannot pass validation, so a lookup
-// failure now stops with its real cause (resolveRelease / releaseLookupFailure).
-//
-// This MUST NOT be derived from this package's own version. The installer and the brain bundle are
-// two independent version streams (README: "Three independent things version separately here — by
-// design"). Reading it from package.json produced a tag that has never existed — installer 1.14.0-dev
-// asking for releases/download/v1.14.0-dev/ruvnet-brain.zip, which 404s, while the newest bundle
-// Release is v0.5.0-dev. Verified live: v1.14.0-dev → HTTP 404, v0.5.0-dev → HTTP 200. The safety net
-// was broken in exactly the situation it exists for. Bump this by hand when a new bundle ships.
-const RELEASE_VERSION = 'v2.9.0'; // sync-version-ignore: the BUNDLE Release tag, not this package's version
 const fallbackUrl = (tag) => `https://github.com/${REPO}/releases/download/${tag}/${ASSET_NAME}`;
 const APPROX_SIZE = '~736MB';
 
@@ -132,7 +126,6 @@ const FLAG_HOOKS = argv.includes('--hooks');
 const FLAG_NO_VERIFY = argv.includes('--no-verify');
 // Escape hatch for the installer's closing self-check ONLY (it never disables --doctor's verdict).
 const FLAG_NO_SELFCHECK = argv.includes('--no-selfcheck');
-const FLAG_PIN = argv.includes('--pin'); // skip the latest-check, use the bundled default
 const FLAG_DEMO = argv.includes('--demo'); // guided, real (non-fabricated) walkthrough of the brain in action
 const FLAG_FEEDBACK = argv.includes('--feedback'); // prefill a GitHub Discussion (version + health, nothing private) and open it
 // ── freshness flags — invoke/schedule the SELF-UPDATER the bundle already ships (kb/forge-update.mjs) ──
@@ -149,6 +142,10 @@ const FLAG_DISABLE_SPEND_GUARD = argv.includes('--disable-spend-guard'); // the 
 const FLAG_UNINSTALL = argv.includes('--uninstall'); // reverse everything, in one command
 const FLAG_WHAT_CHANGED = argv.includes('--what-changed'); // show our footprint on this machine
 const FLAG_WHATS_NEW = argv.includes('--whats-new'); // show curated major-release highlights
+// --move-brain <dir> moves the whole Brain to another disk, leaving ~/.cache/ruvnet-brain as a link to it;
+// --move-brain --back brings it home (scripts/move-brain.mjs).
+const FLAG_MOVE_BRAIN = argv.includes('--move-brain');
+const MOVE_BRAIN_TO = (() => { const i = argv.indexOf('--move-brain'); const v = i === -1 ? null : argv[i + 1]; return v && !v.startsWith('-') ? v : null; })();
 // ── onboarding-experience flags (all optional; every offer is safe to decline) ──
 const FLAG_YES = argv.includes('--yes') || argv.includes('-y'); // accept every optional offer non-interactively
 const FLAG_PLAN = argv.includes('--plan') || argv.includes('--dry-run'); // show the interactive checklist, then exit — install NOTHING
@@ -158,12 +155,32 @@ const FLAG_ENHANCE_CLAUDE_MD = argv.includes('--enhance-claude-md'); // add the 
 const FLAG_NO_ENHANCE = argv.includes('--no-enhance'); // skip the CLAUDE.md offer entirely
 const FLAG_STATUSLINE = argv.includes('--statusline'); // opt in to the status-bar version segment, non-interactively
 const FLAG_NO_STATUSLINE = argv.includes('--no-statusline'); // decline the status-bar offer without prompting
-// --version <tag> forces a specific Release tag (e.g. --version v0.5.0-dev)
-const versionIdx = argv.indexOf('--version');
-const FORCED_VERSION =
-  versionIdx !== -1 && argv[versionIdx + 1] && !argv[versionIdx + 1].startsWith('-')
-    ? argv[versionIdx + 1]
-    : null;
+// --version <tag> forces a specific Release tag (e.g. --version v0.5.0-dev); --pin <tag> is the same.
+/**
+ * Which release the operator named, if any. Pure, for testing.
+ * --pin used to mean "install the bundled known-good v2.9.0" — a bundle that predates COVERAGE.json,
+ * so every --pin install failed validation two steps later. A pin now names its version, or stops.
+ * @returns {{ tag: string, source: 'pinned'|'forced' } | { error: string, hint: string } | null}
+ */
+export function namedReleaseFromArgs(args) {
+  const valueAfter = (flag) => {
+    const i = args.indexOf(flag);
+    if (i === -1) return undefined;
+    const next = args[i + 1];
+    return next && !next.startsWith('-') ? next : null;
+  };
+  const pin = valueAfter('--pin');
+  const version = valueAfter('--version');
+  if (pin === null) {
+    return { error: '--pin needs the release to install, e.g.  --pin vX.Y.Z', hint: `It no longer falls back to a built-in release (that bundle could not pass validation). Pick one from https://github.com/${REPO}/releases, or omit --pin to install the latest.` };
+  }
+  if (pin && version && pin !== version) return { error: `--pin ${pin} and --version ${version} disagree`, hint: 'Name one release.' };
+  if (pin) return { tag: pin, source: 'pinned' };
+  if (version) return { tag: version, source: 'forced' };
+  return null;
+}
+const NAMED_RELEASE = namedReleaseFromArgs(argv);
+const FORCED_VERSION = NAMED_RELEASE?.tag || null;
 
 // ── tiny narrating logger — every step says WHAT and WHY ─────────────────────────────────────────
 const c = {
@@ -335,7 +352,7 @@ function fetchJson(url, redirects = 0) {
 
 // ── step: resolve which Release to download (latest by default; safe fallback) ───────────────────
 // Default behavior: ask GitHub for the LATEST Release and use its ruvnet-brain.zip asset.
-// --version <tag> forces a tag; --pin skips the network check and uses the bundled known-good tag.
+// --version <tag> / --pin <tag> install exactly that tag; there is no built-in fallback release.
 // Any failure (offline / rate-limited / no releases) THROWS with the HTTP status or network error and
 // a retry hint; callers that must download stop on it, the staleness check reports "could not check".
 /**
@@ -370,14 +387,10 @@ async function resolveRelease() {
     'so a stranger always gets the most current brain — not whatever was hardcoded when this script shipped',
   );
 
-  if (FLAG_PIN) {
-    info(`--pin set: skipping the latest-check and using the bundled known-good ${c.bold(RELEASE_VERSION)}`);
-    return { tag: RELEASE_VERSION, url: fallbackUrl(RELEASE_VERSION), source: 'pinned' };
-  }
-
-  if (FORCED_VERSION) {
-    info(`--version set: forcing Release ${c.bold(FORCED_VERSION)} (no latest-check)`);
-    return { tag: FORCED_VERSION, url: fallbackUrl(FORCED_VERSION), source: 'forced' };
+  if (NAMED_RELEASE?.error) throw Object.assign(new Error(NAMED_RELEASE.error), { hint: NAMED_RELEASE.hint });
+  if (NAMED_RELEASE) {
+    info(`${NAMED_RELEASE.source === 'pinned' ? '--pin' : '--version'} set: installing Release ${c.bold(NAMED_RELEASE.tag)} (no latest-check)`);
+    return { tag: NAMED_RELEASE.tag, url: fallbackUrl(NAMED_RELEASE.tag), source: NAMED_RELEASE.source };
   }
 
   // Deterministic integration seam: stale/current behavior must not depend on GitHub API quota.
@@ -476,12 +489,13 @@ async function obtainBundle(release) {
     return { zipPath: localZip, downloaded: false };
   }
 
-  const downloadUrl = (release && release.url) || fallbackUrl(RELEASE_VERSION);
+  if (!release || !release.url) die('no release was resolved to download.', 'Re-run to look up the latest release, or name one with  --version <tag>.');
+  const downloadUrl = release.url;
   step(
     `Downloading the brain (${APPROX_SIZE})`,
     'the brain embeds source from dozens of RuvNet repos — too big for git, so it ships as a Release',
   );
-  info(`version: ${c.bold((release && release.tag) || RELEASE_VERSION)}`);
+  info(`version: ${c.bold(release.tag)}`);
   info(`from: ${downloadUrl}`);
   // Download into a PRIVATE, per-run temp DIR — never a predictable os.tmpdir()/ruvnet-brain-<pid>.zip
   // filename (CWE-377: a guessable path invites a pre-created or symlinked file at that location to be
@@ -623,6 +637,18 @@ export async function unzipInto(zipPath, cacheDir, sourceDir = null, { releaseTa
   );
 
   fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
+  // DISK-SPACE PREFLIGHT before staging: the whole unpacked bundle lands beside the brain (the prior
+  // generation is renamed, never copied). Refuse cleanly with the exact shortfall rather than ENOSPC
+  // half-way through an extraction.
+  if (zipPath && !sourceDir) {
+    let space;
+    try {
+      const { zipDeclaredBytes } = await import(new URL('../kb/zip-extract.mjs', import.meta.url).href);
+      space = checkDiskSpace([{ dir: path.dirname(cacheDir), bytes: zipDeclaredBytes(zipPath), purpose: 'unpacked brain' }],
+        { what: 'install the brain' });
+    } catch { space = { ok: true }; } // unmeasurable: extraction's own limits still apply
+    if (!space.ok) die(space.message.split('\n')[0], 'Nothing was installed and nothing was changed.');
+  }
   const stageDir = fs.mkdtempSync(path.join(path.dirname(cacheDir), `.${path.basename(cacheDir)}.install-stage-`));
   const localCopy = async () => `local directory copy — ${copyLocalBundleInto(sourceDir, stageDir)} top-level entries`;
   const nodeExtract = async () => {
@@ -2534,8 +2560,35 @@ async function smokeQuery(cacheDir) {
     'this warms the local model and checks that retrieval returns usable, cited evidence',
   );
   const Q = DOCTOR_SMOKE_QUERY;
+  const modelCache = resolveRuntimeModelCache();
+  // WARMING IS NOT ANSWERING. A cold cache means the first question also downloads and loads the
+  // models, so a timeout could not tell "still fetching" from "broken". Fetch them first, as their
+  // own step with their own bound and their own verdict; the question's limit then measures an
+  // answer. A warm cache (every later doctor run) skips this step entirely.
+  const cold = coldModels(cacheDir, modelCache);
+  if (cold.length) {
+    info(c.dim(`warming ${cold.length} local model(s) once: ${cold.join(', ')}`));
+    const warmStarted = Date.now();
+    const w = spawnSync(process.execPath, ['--input-type=module', '-e', MODEL_WARMUP_SCRIPT], {
+      cwd: cacheDir, encoding: 'utf8', timeout: MODEL_WARMUP_TIMEOUT_MS,
+      env: { ...process.env, KB_MODEL_CACHE: modelCache },
+    });
+    const warmSecs = ((Date.now() - warmStarted) / 1000).toFixed(1);
+    if (w.status === 0) {
+      ok(`local models ready in ${warmSecs}s (downloaded and loaded once; later questions skip this)`);
+    } else if (w.status === 3) {
+      info(c.dim('this bundle predates the separate warm-up step — the question below includes it'));
+    } else {
+      const why = w.error ? w.error.message
+        : w.signal ? `stopped by ${w.signal} after ${warmSecs}s (${MODEL_WARMUP_TIMEOUT_MS / 1000}s limit)`
+          : `exited ${w.status} after ${warmSecs}s`;
+      warn(`could not prepare the local models — ${why}`);
+      const err = `${w.stderr || ''}`.trim();
+      if (err) for (const line of err.split('\n').slice(0, 8)) info(c.dim(`    ${line.slice(0, 200)}`));
+      return { ran: true, grounded: false, reason: `model-warmup-failed: ${why}`, stderr: err.slice(0, 4000) };
+    }
+  }
   info(`Q: ${c.cyan(`"${Q}"`)}`);
-  info(c.dim('(first run downloads a small local model once — this can take a minute)'));
   const started = Date.now();
   let r;
   try {
@@ -2552,19 +2605,18 @@ async function smokeQuery(cacheDir) {
       // path here makes the install smoke warm the model cache the product will actually reopen,
       // instead of a second kb-local cache that can go green while the real door stays cold.
       //
-      // RUVNET_BRAIN_QUERY_DEADLINE_MS: this ONE probe is the very first query ever run against a
-      // freshly-installed cache — the model is cold and the cross-encoder "rerank" phase has to pay
-      // load cost that every later, warm query never pays again. Measured on macOS GitHub Actions
-      // runners 2026-09-27 (public-verification runs 36324328134 job 108636740357, 28.5-28.7s; and
-      // 36325803503 job 108638381147, 27.1-27.2s): this exact probe consistently needs ~27-29s on
-      // that platform, against the general 20s deadline (kb/query-deadline.mjs
-      // DEFAULT_QUERY_DEADLINE_MS) that is correct for every normal, warm query. 45s keeps this
-      // bounded (never unbounded — the module's core guarantee) while giving this one cold-start
-      // probe real margin, without touching the default that protects normal queries everywhere
-      // else. Only applied if the caller hasn't already set an explicit override.
+      // RUVNET_BRAIN_QUERY_DEADLINE_MS: 45s for this one probe, against the general 20s deadline
+      // (kb/query-deadline.mjs DEFAULT_QUERY_DEADLINE_MS) that protects every normal query. Still
+      // bounded — the module's core guarantee. The 27-29s once quoted here (public-verification runs
+      // 36324328134, 36325803503) were THREE doctors started at once on the 3-vCPU/7GB macOS runner,
+      // not one cold probe. Measured 2026-10-01 on that runner (ci-probe run 36882813925): model
+      // download+load 6-7s (now its own step above), this question alone 6.6-10.4s with a warm cache
+      // and 14-15s with the fetch inside it, three at once 24-34s; the real --doctor, alone, verified
+      // in 11.8s (4.4.1) and 15.4s (4.4.0). 45s is ~3x the measured single-doctor cost. Only applied
+      // if the caller hasn't already set an explicit override.
       env: {
         ...process.env,
-        KB_MODEL_CACHE: resolveRuntimeModelCache(),
+        KB_MODEL_CACHE: modelCache,
         RUVNET_BRAIN_QUERY_DEADLINE_MS: process.env.RUVNET_BRAIN_QUERY_DEADLINE_MS ?? '45000',
       },
     });
@@ -2582,11 +2634,10 @@ async function smokeQuery(cacheDir) {
     // crash, a timeout, and a missing module all read as "nothing is wrong, it will warm up".
     // Observed on this machine: a smoke query that produced no answer in 240s was reported as a
     // first-run download. spawnSync already tells us which it was; say that instead.
-    const cause = r.error ? `could not launch the reader: ${r.error.message}`
-      : r.signal === 'SIGTERM' ? `timed out after ${secs}s (240s limit) with no answer`
-        : r.signal ? `the reader was killed by ${r.signal} after ${secs}s`
-          : r.status !== 0 ? `the reader exited ${r.status} after ${secs}s`
-            : `the reader exited 0 after ${secs}s but printed nothing`;
+    const limitMs = Number(process.env.RUVNET_BRAIN_QUERY_DEADLINE_MS ?? 45000);
+    const failure = classifySmokeFailure({ error: r.error, signal: r.signal, status: r.status,
+      stderr: r.stderr, secs, limitSecs: Number.isFinite(limitMs) ? limitMs / 1000 : 45 });
+    const { cause } = failure;
     warn(`no answer came back — ${cause}`);
     // SHOW THE ACTUAL ERROR (issue #37 bug 2, Agentist-Elder, 2026-07-21).
     //
@@ -2609,7 +2660,8 @@ async function smokeQuery(cacheDir) {
     }
     // The reason travels with the verdict so the doctor's "Grounding NOT proven (<reason>)" line
     // names the real cause too, instead of the generic token.
-    return { ran: true, grounded: false, reason: `no-answer: ${cause}`, secs, stderr: err.slice(0, 4000) };
+    return { ran: true, grounded: false, reason: `no-answer: ${cause}`, secs, stderr: err.slice(0, 4000),
+      slow: failure.kind === 'slow' };
   }
 
   const verifier = await loadCitationVerifier(cacheDir);
@@ -2804,6 +2856,10 @@ async function doctor() {
   console.log(c.dim('Checking every part of the install and reporting green/red.\n'));
   const cacheDir = process.env.RUVNET_BRAIN_KB || path.join(os.homedir(), '.cache', 'ruvnet-brain', 'kb');
   info(`brain dir: ${c.bold(cacheDir)}`);
+  {
+    const where = brainLocation();
+    if (where.state === 'linked') ok(`the Brain lives on another disk: ${where.real} (${where.path} links to it; that disk is mounted)`);
+  }
   const present = fs.existsSync(path.join(cacheDir, 'forge-mcp-all.mjs'));
   if (!present) {
     warn('brain not found here — run the installer first:  npx ruvnet-brain');
@@ -2944,7 +3000,12 @@ async function doctor() {
     console.log(`    really exists in your local KB. Checked in ${smoke.secs}s, no cloud, no API key.`);
   } else if (smoke.grounded === false) {
     console.log(`  ${c.yellow('! Grounding NOT proven')} (${smoke.reason}). The install is present but the brain did not`);
-    console.log('    answer from a verifiable source. Re-run  npx ruvnet-brain  to repair the KB.');
+    // A timeout mid-answer is not a damaged KB, and reinstalling a working brain does not make the
+    // machine faster — so that case gets its own, true advice. Still NOT proven, still failing.
+    console.log(smoke.slow
+      ? '    answer inside the limit. The reader was working, not broken — a reinstall will not help. Run\n'
+        + '    npx ruvnet-brain --doctor  again when the machine is less busy.'
+      : '    answer from a verifiable source. Re-run  npx ruvnet-brain  to repair the KB.');
   } else if (smoke.grounded === null) {
     console.log(`  ${c.yellow('! Grounding not verifiable')} on this bundle — it predates the citation verifier.`);
     console.log('    Re-run  npx ruvnet-brain  to refresh, then --doctor will prove it.');
@@ -3344,6 +3405,11 @@ export function classifyUpdaterExit(status, { fallbackAllowed = true, result = n
   // the fallback would turn the refusal into +1 copy per run (measured: 2 -> 3, +1.3 GB). Report instead.
   if (/^unresolved rollback state exists/.test(String(result?.reason || ''))) {
     return { verdict: 'refused-retained-copies', fallback: false, exitCode: status || 1 };
+  }
+  // Exit 6 / "not enough free disk space": the updater measured before unpacking and touched nothing. A
+  // fresh-install fallback needs at least as much room, so it would only fail later and messier.
+  if (status === 6 || /^not enough free disk space/.test(String(result?.reason || ''))) {
+    return { verdict: 'refused-disk-space', fallback: false, exitCode: status || 6 };
   }
   // Exit 2 is "manifest unreachable, nothing touched". The fallback exists for a DEAD manifest URL (an old
   // bundle polling a path that 404s); a rate limit, a 5xx or no network is transient, and a full fresh
@@ -5536,7 +5602,9 @@ Usage:
                               opt-in prompt appears once at install; answer lives in a plain file:
                               ~/.cache/ruvnet-brain/.telemetry-consent)
   node bin/install.mjs --version <tag>     Install a specific Release tag (e.g. --version v0.5.0-dev)
-  node bin/install.mjs --pin               Skip the latest-check; use the bundled known-good version
+  node bin/install.mjs --pin <tag>         Same as --version <tag>: install exactly that release
+  node bin/install.mjs --move-brain <dir>  Move the whole Brain to <dir> (e.g. an external disk); ~/.cache/ruvnet-brain links to it
+  node bin/install.mjs --move-brain --back Bring the Brain back to ~/.cache/ruvnet-brain
   node bin/install.mjs --local             Install from a repo clone's assembled dist/ruvnet-brain/
   node bin/install.mjs --force             Re-fetch and reinstall even if already present
   node bin/install.mjs --no-verify         Skip the post-install verify + warm-up smoke test
@@ -5575,6 +5643,27 @@ the installer reports that boot-level declarations changed.
     && canonical(process.argv[1]) === canonical(fileURLToPath(import.meta.url));
   if (!invokedDirectly) return;
   if (FLAG_HELP) return showHelp();
+  // The Brain moved to another disk (a symlink at ~/.cache/ruvnet-brain) and that disk is not here:
+  // say so in one line and stop. Never re-create a fresh brain in ~/.cache over the dangling link, and
+  // never update one that is not there. --doctor reports it as its verdict.
+  {
+    const where = brainLocation();
+    if (where.state === 'unmounted' && !FLAG_MOVE_BRAIN) {
+      if (FLAG_DOCTOR) { printBanner('doctor'); warn(where.message); console.log(`\n  ${c.red('✗ FAILING')} — the Brain's disk is not mounted.`); process.exitCode = 1; return; }
+      die(where.message, 'Plug the disk in (or mount it), then run the same command again.');
+    }
+  }
+  if (FLAG_MOVE_BRAIN) {
+    printBanner('move the brain');
+    try {
+      const moved = moveBrain({ to: MOVE_BRAIN_TO, back: argv.includes('--back'), log: info });
+      ok(`the Brain is at ${moved.to}${moved.to === moved.link ? '' : ` (${moved.link} links to it)`} — ${(moved.bytes / 1024 ** 3).toFixed(2)} GB moved, verified byte for byte`);
+    } catch (error) {
+      if (error instanceof MoveRefused) die(error.message);
+      throw error;
+    }
+    return;
+  }
   // `process.exitCode`, not `return` — doctor()'s verdict is the whole point of running it in a
   // script. A bare `return await doctor()` discarded the number, which is how "! Needs attention"
   // and `echo $?` → 0 coexisted for so long.
@@ -5715,7 +5804,7 @@ the installer reports that boot-level declarations changed.
     // bundle cannot also swap the key it is checked against).
     //
     // SIGNING_REQUIRED was `false` transitionally, for releases that predated signing. That is over:
-    // every release from v2.0.0 on is signed, including the pinned offline fallback (RELEASE_VERSION).
+    // every release from v2.0.0 on is signed.
     // Leaving it false left a real downgrade path — strip or 404 the small .sig file and the missing-
     // signature branch printed a warning and extracted 800MB+ of executable .mjs anyway. No alarm
     // fired, because no signature was ever obtained. Now a missing signature fails closed like an

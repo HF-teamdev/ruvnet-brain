@@ -84,6 +84,24 @@ that only an already-preflighted head of `main` can be published, and `main` mov
 required checks that admins cannot bypass. Strengthening a gate is a code change to the workflow, never a person
 in the loop.
 
+The same holds for the two recovery rails. `recover-public-verification.yml` and `abandon-public-verification.yml`
+are started by `repository_dispatch`, which any token with write access can send, and both bind
+`Production – ruvnet-brain` (the environment holding `RUVNET_SIGNING_KEY` and `NPM_TOKEN`) with no human pause.
+Recover re-runs public verification on an already-published release and, if all three OS lanes pass, signs its
+`install-verified` aggregate — the receipt that arms the corpus nightly. Abandon records a published release as
+not verified. Neither can publish new bytes: both act only on a release `protected-release.yml` already sealed
+and published from a preflighted head of `main`.
+
+**Search deadlines in host verification.** The retrieval canaries each lane runs take a per-OS first-pass
+bound, `canarySearchDeadlineMs()` in `scripts/host-install-matrix.mjs`: the worst measured first-pass query on
+that OS's GitHub runner (`CANARY_WORST_FIRST_PASS_MS`, with its run IDs beside it) times 1.5, never below
+`RELEASE_SEARCH_DEADLINE_MS`. Today only macOS rises above the floor. Changing a bound means changing that
+evidence. This bounds a small CI runner's cold search so the gate fails on a broken search, not on a slow VM; it
+is **not** a product latency target. How long a customer's first answer takes on a small Mac is a separate,
+open 4.5 improvement, measured on its own and never loosened through this constant. Lanes keep one warm search
+worker; a case that times out fails alone and the next case gets a fresh, re-warmed worker
+(`createRestartingMcpSession`), and the three installed doctors run one at a time (`runHostDoctors`).
+
 ## The knowledge corpus
 
 **Built in CI only.** `corpus-seed.yml` observes every public rUv repository (exclusions are
@@ -165,6 +183,17 @@ scheduler on purpose; do not run both. That ownership (`kit.json` `ruvnetBrain:t
 while an update is proven within 36h (a successful refresh receipt or a CURRENT `--check` verdict); past
 that, the SessionStart self-heal runs the Brain's own update anyway, so no machine exceeds 48h. `--host-sync-only` repairs host wiring and **never** updates
 knowledge — do not use it as an update command.
+
+**Putting the Brain on another disk.** `npx ruvnet-brain --move-brain <dir>` (for example
+`/Volumes/SanDisk/ruvnet-brain`) checks the target has room, copies the whole Brain there, proves the copy
+byte-identical, and leaves `~/.cache/ruvnet-brain` as a symlink to it; `--move-brain --back` brings it home, and
+moving again to a new directory works the same way. That symlink is the one supported layout: every reader, hook,
+the MCP server and the nightly keep using the default path, so nothing else is configured (an environment
+variable would not reach GUI-launched hosts or launchd). If that disk is unplugged, install, `--update`,
+`--doctor`, SessionStart and `search_ruvnet` each say in one line that the Brain's disk is not mounted, and
+nothing re-creates a brain in `~/.cache` over the link. The knowledge root is always
+`realpath(~/.cache/ruvnet-brain/kb)`. Every install and update also measures free space first and refuses,
+naming the exact shortfall, rather than running out half-way.
 
 **Provenance (one ledger, one projection).** `kb/RVF-GENERATIONS.json` is the one per-store
 provenance record; `kb/SOURCE.json` is generated as a projection of it, never written

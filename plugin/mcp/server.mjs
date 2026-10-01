@@ -35,6 +35,7 @@ import os from 'node:os';
 import readline from 'node:readline';
 import { writeOwn as writeOwnReadiness } from '../scripts/mcp-readiness.mjs';
 import { callManagedCli, MANAGED_CLI_TOOLS } from './managed-cli-interface.mjs';
+import { unmountedNotice } from '../scripts/brain-location.mjs';
 
 const BRAIN_HOME = process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain');
 const KB = process.env.RUVNET_BRAIN_KB || path.join(BRAIN_HOME, 'kb');
@@ -366,7 +367,10 @@ async function handleClient(msg) {
         });
       }
       if (!c) {
-        return clientOk(id, { content: [{ type: 'text', text: `search_ruvnet error: the brain bundle is unavailable at ${KB}. Diagnose the active installation and KB path before choosing a repair.` }], isError: true });
+        // Moved to a disk that is not plugged in: one plain line, never 'diagnose the installation'.
+        const unmounted = unmountedNotice({ brainHome: BRAIN_HOME });
+        return clientOk(id, { content: [{ type: 'text', text: unmounted ? `search_ruvnet error: ${unmounted}`
+          : `search_ruvnet error: the brain bundle is unavailable at ${KB}. Diagnose the active installation and KB path before choosing a repair.` }], isError: true });
       }
       pendingCount++;
       try {
