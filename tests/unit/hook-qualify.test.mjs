@@ -282,6 +282,15 @@ describe.skipIf(process.platform === 'win32' || !BASH)('shell hooks stay silent 
     expect(run('ground-ruvnet.sh', { stdin: prompt, env: { HOME: null } }).stderr).toBe('');
     expect(run('ground-ruvnet.sh', { stdin: prompt, readOnlyHome: true }).stderr).toBe('');
   });
+  // 4.5, found by the full matrix (grok/PostToolUse/grounding-stamp, home-unset): on an ANSWERED search the
+  // stamp path read a bare $HOME under `set -u` and wrote "HOME: unbound variable" to stderr.
+  it('grounding-stamp.sh: an answered search with HOME unset produces no stderr', () => {
+    const answered = JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'mcp__ruvnet_brain__search_ruvnet', tool_input: { query: 'what is ruflo' },
+      tool_response: { content: [{ type: 'text', text: 'Searched 1 RuvNet repos (ruflo).\n#1  repo=ruflo\npath : ruflo/docs/x.md' }] } });
+    const r = run('grounding-stamp.sh', { stdin: answered, env: { HOME: null } });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
   // EVERY shell hook that combines `set -u` with a timed `read` (4.4.0: the hand-kept list of four missed
   // learn-capture.sh, kling-preflight.sh and route-dispatch.sh — measured red on macOS /bin/bash 3.2).
   const TIMED_READ_HOOKS = fs.readdirSync(path.join(ROOT, 'plugin', 'scripts')).filter((f) => f.endsWith('.sh')).filter((f) => {
