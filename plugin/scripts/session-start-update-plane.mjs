@@ -51,7 +51,10 @@ export const knowledgeAutoUpdate = ({ env, home, now, hookDir, emit = () => {}, 
   const hoursAgo = (iso) => (now - Date.parse(iso || '')) / 3_600_000;
   if (announce && attempt?.outcome === 'succeeded' && !attempt.reported) {
     const built = facts.builtMs;
-    const tag = facts.source?.releaseTag ? `corpus ${facts.source.releaseTag}` : 'the latest corpus';
+    // A corpus-only release carries its identity in corpusReleaseTag; releaseTag is the code release beside it.
+    const id = facts.source?.corpusReleaseTag || facts.source?.releaseTag;
+    const short = id && id.length > 28 ? `${id.slice(0, 26)}…` : id;
+    const tag = !id ? 'the latest corpus' : id.startsWith('corpus-') ? short : `corpus ${short}`;
     emit(`${KNOWLEDGE_LINE_PREFIX}UPDATED] automatic update finished ${Math.round(hoursAgo(attempt.finishedAt))}h ago: ${tag}, `
       + `knowledge base built ${Number.isFinite(built) ? `${Math.round(facts.hours(built))}h ago` : 'at an UNKNOWN time'}.`);
     writeJsonAtomic(attemptFile, { ...attempt, reported: true });
