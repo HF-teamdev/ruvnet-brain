@@ -200,9 +200,9 @@ process.exit(f.exit);
   });
 
   it('decides by the recorded verdict, not the exit code: UPDATE_AVAILABLE with exit 0 (no profile stores) still updates', async () => {
-    await worker(setup({ exit: 0, verdict: 'UPDATE_AVAILABLE', tag: 'v4.5.1' }));
+    await worker(setup({ exit: 0, verdict: 'UPDATE_AVAILABLE', tag: 'v9.9.9' }));
     expect(npxCalls()).toHaveLength(1);
-    expect(readJson(attemptFile())).toMatchObject({ outcome: 'succeeded', targetTag: 'v4.5.1' });
+    expect(readJson(attemptFile())).toMatchObject({ outcome: 'succeeded', targetTag: 'v9.9.9' });
   });
 
   it('offline: recorded quietly, no update, no attempt failure', async () => {
