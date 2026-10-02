@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { json, exists, mtimeMs, read } from './session-start-fsutil.mjs';
 import { unmountedNotice } from './brain-location.mjs';
+import { assessMoveLeftovers } from './footprint-io.mjs';
 import {
   describeFailedRefreshRun, readNightlyRegistration, refreshHistory, updateOwnedByAgenticKit,
 } from './nightly-scheduler.mjs';
@@ -33,6 +34,15 @@ export const brainState = (env, home) => {
   return { off, since, stateDir, file };
 };
 
+// An interrupted --move-brain may hold the ONLY Brain at <home>.old-<pid>: "reinstall" there would build a
+// second, public-only Brain beside it (4.5.2). Names only; consulted only when the KB is missing or empty.
+const restoreNotice = (home) => {
+  try {
+    const lo = assessMoveLeftovers({ brainHome: path.join(home, '.cache', 'ruvnet-brain') }).find((l) => l.onlyCopy);
+    return lo ? `the Brain is not at its path — an interrupted move left the ONLY copy at ${lo.path}; restore it, do NOT reinstall: ${lo.fix}` : '';
+  } catch { return ''; }
+};
+
 export const health = (home, off) => {
   // Moved to another disk that is not plugged in: say exactly that — not "MISSING, reinstall", which
   // would re-create a fresh brain in ~/.cache over the link. A problem also stands the self-heal down.
@@ -45,8 +55,8 @@ export const health = (home, off) => {
   catch { /* absent */ }
   const absentByChoice = off && (!exists(kb) || !rvf);
   if (absentByChoice) return { problem: '', absentByChoice };
-  if (!exists(kb)) return { problem: `the brain cache directory is MISSING (${kb}) — reinstall: npx github:stuinfla/ruvnet-brain`, absentByChoice };
-  if (!rvf) return { problem: `NO vector stores (.rvf) found in ${kb} — the brain is empty; reinstall: npx github:stuinfla/ruvnet-brain --force`, absentByChoice };
+  if (!exists(kb)) return { problem: restoreNotice(home) || `the brain cache directory is MISSING (${kb}) — reinstall: npx github:stuinfla/ruvnet-brain`, absentByChoice };
+  if (!rvf) return { problem: restoreNotice(home) || `NO vector stores (.rvf) found in ${kb} — the brain is empty; reinstall: npx github:stuinfla/ruvnet-brain --force`, absentByChoice };
   if (!exists(path.join(kb, 'node_modules', '@xenova', 'transformers', 'package.json'))) {
     return { problem: `reader dependencies are MISSING (node_modules gone) — every search WILL fail. Fix: cd ${kb} && npm i`, absentByChoice };
   }
