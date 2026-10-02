@@ -85,11 +85,15 @@ if (knowledgeAt >= 0) {
       const candidateTag = fresh?.candidateTag || /canonical built:\s+(\S+)/.exec(out)?.[1] || null;
       const verdict = fresh?.currencyVerdict || /currency verdict:\s+([A-Z_]+)/.exec(out)?.[1] || null;
       const reason = (out.split('\n').map((l) => l.trim()).filter(Boolean).find((l) => /error|refus|incompatible|fail/i.test(l)) || '').slice(0, 200);
-      if (check.status === 0) {
+      // Decide by the recorded IDENTITY verdict whenever this run wrote one; the exit code only when it did
+      // not (a network failure or an incompatible release dies before recording). Measured against the real
+      // API: an install whose profile selects no stores exits 0 on UPDATE_AVAILABLE ("All stores current").
+      const newer = verdict ? ['UPDATE_AVAILABLE', 'UNKNOWN'].includes(verdict) : check.status === 10;
+      if (!newer && (verdict || check.status === 0)) {
         note({ outcome: verdict === 'REFUSED' ? 'refused' : 'current', verdict: verdict || 'CURRENT', candidateTag, reason: '' });
         stop();
       }
-      if (check.status !== 10) {
+      if (!newer) {
         note({ outcome: check.status === 2 ? 'offline' : check.status === 5 ? 'incompatible' : 'failed',
           verdict: null, candidateTag, reason: reason || `check exited ${check.error ? check.error.message : check.status}` });
         stop();

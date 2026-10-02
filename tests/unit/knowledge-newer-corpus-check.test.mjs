@@ -199,6 +199,12 @@ process.exit(f.exit);
     expect(readJson(checkFile())).toMatchObject({ outcome: 'refused', verdict: 'REFUSED' });
   });
 
+  it('decides by the recorded verdict, not the exit code: UPDATE_AVAILABLE with exit 0 (no profile stores) still updates', async () => {
+    await worker(setup({ exit: 0, verdict: 'UPDATE_AVAILABLE', tag: 'v4.5.1' }));
+    expect(npxCalls()).toHaveLength(1);
+    expect(readJson(attemptFile())).toMatchObject({ outcome: 'succeeded', targetTag: 'v4.5.1' });
+  });
+
   it('offline: recorded quietly, no update, no attempt failure', async () => {
     await worker(setup({ exit: 2, verdict: null, tag: TAG_B }));
     expect(npxCalls()).toEqual([]);
