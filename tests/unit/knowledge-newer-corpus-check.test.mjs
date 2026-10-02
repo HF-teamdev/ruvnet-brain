@@ -141,7 +141,9 @@ describe('newer-published check — the knowledge line and the doctor say it onc
 
 // The detached half, as a REAL process: host-update.mjs --knowledge ... --if-newer runs the INSTALLED
 // kb/forge-update.mjs --check, and only a newer verdict reaches npx. The fake updater replays a recorded
-// verdict (fake-check.json) exactly as forge-update.mjs prints and records it.
+// verdict (fake-check.json) exactly as forge-update.mjs prints and records it. The two cases that reach npx
+// skip on win32 like their siblings in session-start-knowledge-auto-update.test.mjs: host-update.mjs spawns
+// `npx.cmd` without a shell, which recent Node versions are documented to refuse (EINVAL) — NOT verified on Windows here.
 describe('host-update --if-newer (real process, stub npx)', () => {
   let server; let probe;
   beforeAll(async () => {
@@ -199,7 +201,7 @@ process.exit(f.exit);
     expect(readJson(checkFile())).toMatchObject({ outcome: 'refused', verdict: 'REFUSED' });
   });
 
-  it('decides by the recorded verdict, not the exit code: UPDATE_AVAILABLE with exit 0 (no profile stores) still updates', async () => {
+  it.skipIf(process.platform === 'win32')('decides by the recorded verdict, not the exit code: UPDATE_AVAILABLE with exit 0 (no profile stores) still updates', async () => {
     await worker(setup({ exit: 0, verdict: 'UPDATE_AVAILABLE', tag: 'v9.9.9' }));
     expect(npxCalls()).toHaveLength(1);
     expect(readJson(attemptFile())).toMatchObject({ outcome: 'succeeded', targetTag: 'v9.9.9' });
@@ -212,7 +214,7 @@ process.exit(f.exit);
     expect(fs.existsSync(attemptFile())).toBe(false);
   });
 
-  it('UPDATE_AVAILABLE: runs the ONE existing updater once, records the target; the same target is not re-run within 6h', async () => {
+  it.skipIf(process.platform === 'win32')('UPDATE_AVAILABLE: runs the ONE existing updater once, records the target; the same target is not re-run within 6h', async () => {
     const bin = setup({ exit: 10, verdict: 'UPDATE_AVAILABLE', tag: TAG_B });
     await worker(bin);
     expect(npxCalls()).toEqual(['--yes ruvnet-brain@latest --update --no-nightly-prompt']);

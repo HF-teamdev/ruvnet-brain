@@ -14,7 +14,7 @@
 // ruvnet-brain@latest from npm (it IS this code). The fixture bundle's kb entry points are stubs, so the stub
 // npx re-places the package's real updater files after an update (production bundles carry them), and the
 // reader dependency marker (kb/node_modules/@xenova/transformers/package.json) is placed once, as `npm i`
-// would; the search worker is a 20-line stand-in that reports the corpus tag of the KB it opened (RUVNET_BRAIN_CHILD_MCP).
+// would; POSIX only (the npx stand-in is a /bin/sh script); the search worker is a 20-line stand-in that reports the corpus tag of the KB it opened (RUVNET_BRAIN_CHILD_MCP).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -151,7 +151,7 @@ afterAll(async () => {
 });
 
 describe('a newly published corpus reaches an install automatically — SessionStart and the long-lived MCP server', () => {
-  it('A → B by SessionStart (no age trigger), throttled after; → C by the server timer, served without restart; offline, lock, older, tampered all keep the live KB', async () => {
+  it.skipIf(process.platform === 'win32')('A → B by SessionStart (no age trigger), throttled after; → C by the server timer, served without restart; offline, lock, older, tampered all keep the live KB', async () => {
     const { seed, generations } = await buildChain(4);
     const [A, B, C, D] = generations;
     const pkg = harness();
