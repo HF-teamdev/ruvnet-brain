@@ -8,11 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { resolveProjectStore } from '../../plugin/scripts/project-store-resolver.mjs';
 import { normalizeTransition, buildTransitionProgression, runProjectTransitionHook, selectedUserIntent, readTransitionHistory, captureNormalizedTransition } from '../../plugin/scripts/project-transition-hook.mjs';
 import { queueCapture, runOutboxReplay, queuedWork } from '../../plugin/scripts/session-snapshot-hook.mjs';
+import { createStore } from '../helpers/continuity-fixture.mjs';
 import { createProgressionSnapshot } from '../../plugin/scripts/project-progression-contract.mjs';
 const dirs = [];
 afterEach(() => vi.restoreAllMocks());
 afterEach(() => dirs.splice(0).forEach((p) => fs.rmSync(p, { recursive: true, force: true })));
-function project() { const p = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'transition-'))); fs.mkdirSync(path.join(p, '.swarm')); dirs.push(p); return p; }
+function project() { const p = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'transition-'))); fs.mkdirSync(path.join(p, '.swarm')); createStore(path.join(p, '.swarm', 'memory.db')); dirs.push(p); return p; }
 const opts = { now: () => '2026-10-03T00:00:00.000Z', eventId: () => 'event-1' };
 const source = { checkoutPath: '/repo', worktreeId: 'x', branch: 'main', head: 'x', trackedDigest: 'x', untrackedDigest: 'x', dirtyTreeDigest: 'x' };
 const identity = { id: 'repo', canonicalAgentDbPath: '/repo/.swarm/memory.db' };
@@ -65,11 +66,11 @@ describe('minimal non-authoritative transitions', () => {
   it('durable queue drops raw host payload and redacts before write, freezing origin', () => {
     const p = project();
     const fsync = vi.spyOn(fs, 'fsyncSync');
-    const file = queueCapture({ projectDir: p, originProjectDir: '/original-checkout', event: 'Stop', host: 'claude', payload: { session_id: 's', prompt: 'raw private prompt', transcript_path: '/secret/transcript', tool_input: { password: 'private' }, projectProgression: { occurredAt: opts.now(), dedupId: 'original-event', sourceIdentity: source, completeProjectState: { token: 'secret-value' } } } });
+    const file = queueCapture({ projectDir: p, originProjectDir: p, event: 'Stop', host: 'claude', payload: { session_id: 's', prompt: 'raw private prompt', transcript_path: '/secret/transcript', tool_input: { password: 'private' }, projectProgression: { occurredAt: opts.now(), dedupId: 'original-event', sourceIdentity: source, completeProjectState: { token: 'secret-value' } } } });
     expect(fsync).toHaveBeenCalledOnce();
     const bytes = fs.readFileSync(file, 'utf8');
     expect(bytes).not.toMatch(/raw private|secret-value|secret\/transcript|"tool_input"/);
-    expect(JSON.parse(bytes)).toMatchObject({ originProjectDir: '/original-checkout', payload: { projectProgression: { dedupId: 'original-event', occurredAt: opts.now(), sourceIdentity: source } } });
+    expect(JSON.parse(bytes)).toMatchObject({ originProjectDir: p, payload: { projectProgression: { dedupId: 'original-event', occurredAt: opts.now(), sourceIdentity: source } } });
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   });
   it('actual snapshot CLI completes prompt dispatch rather than deadlocking on a cyclic await', () => {
@@ -85,7 +86,7 @@ describe('minimal non-authoritative transitions', () => {
   it('513 valid records retain complete ancestry and capture a new observation instead of a lifetime cutoff', () => {
     const p = project(); const resolution = resolveProjectStore({ projectDir: p });
     const database = new DatabaseSync(resolution.canonicalAgentDbPath);
-    database.exec(`CREATE TABLE memory_entries (id TEXT PRIMARY KEY, key TEXT, namespace TEXT, content TEXT, type TEXT, embedding BLOB, embedding_model TEXT, embedding_dimensions INTEGER, tags TEXT, metadata TEXT, owner_id TEXT, created_at INTEGER, updated_at INTEGER, expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER, status TEXT, provenance_type TEXT)`);
+    database.exec(`CREATE TABLE IF NOT EXISTS memory_entries (id TEXT PRIMARY KEY, key TEXT, namespace TEXT, content TEXT, type TEXT, embedding BLOB, embedding_model TEXT, embedding_dimensions INTEGER, tags TEXT, metadata TEXT, owner_id TEXT, created_at INTEGER, updated_at INTEGER, expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER, status TEXT, provenance_type TEXT)`);
     const insert = database.prepare('INSERT INTO memory_entries (id,key,namespace,content,status) VALUES (?,?,?,?,?)');
     let parent = [];
     const base = snapshot('current owner objective', 'chain');

@@ -20,6 +20,7 @@ import {
   replayOutboxDetached, runOutboxReplay, runSessionSnapshotHook, takeReplayLock, queuedWork, REPLAY_LOCK_ABANDON_MS,
   processStart, reclaimOrphans, adoptReplayLock,
 } from '../../plugin/scripts/session-snapshot-hook.mjs';
+import { createStore } from '../helpers/continuity-fixture.mjs';
 import { ProgressionOutbox } from '../../plugin/scripts/project-progression-outbox.mjs';
 import { ProjectProgressionStore } from '../../plugin/scripts/project-progression-store.mjs';
 
@@ -29,6 +30,7 @@ afterEach(() => { for (const r of roots.splice(0)) fs.rmSync(r, { recursive: tru
 function project() {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'snap-budget-')));
   fs.mkdirSync(path.join(root, '.swarm'));
+  createStore(path.join(root, '.swarm', 'memory.db'));
   roots.push(root);
   return root;
 }

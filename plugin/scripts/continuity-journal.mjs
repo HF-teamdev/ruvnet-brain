@@ -39,7 +39,7 @@ import { withProgressionReader } from './project-progression-reader.mjs';
 import { rufloRunDir } from './project-progression-store.mjs';
 import { resolveRuflo, rufloInvocation } from './ruflo-bin.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
-import { readSettledTranscript } from './turn-outcome-capture.mjs';
+import { resolveTurnDb, readSettledTranscript } from './turn-outcome-capture.mjs';
 import {
   CONTINUITY_NAMESPACE, INITIAL_LOOKBACK_MS, collectCommits, collectReleases, collectTurnEvents, eventIdOf, eventKey,
 } from './continuity-events.mjs';
@@ -72,9 +72,11 @@ const ms = (iso) => Date.parse(iso || '') || 0;
 
 export class ContinuityJournal {
   /** `ruflo`: the binary (string), null = not installed, undefined = resolve it. */
-  constructor({ projectRoot, fsync = fs.fsyncSync, now = Date.now, ruflo } = {}) {
+  constructor({ projectRoot, projectDir = projectRoot, env = process.env, fsync = fs.fsyncSync, now = Date.now, ruflo } = {}) {
     if (typeof projectRoot !== 'string' || !projectRoot) throw new TypeError('projectRoot is required');
     this.projectRoot = projectRoot;
+    this.projectDir = projectDir;
+    this.brainHome = env.RUVNET_BRAIN_HOME || path.join(env.HOME || os.homedir(), '.cache', 'ruvnet-brain');
     this.swarm = path.join(projectRoot, '.swarm');
     this.path = path.join(this.swarm, OUTBOX_NAME);
     this.db = path.join(this.swarm, 'memory.db');
@@ -169,15 +171,21 @@ export class ContinuityJournal {
     return ids;
   }
 
+  captureConsent(projectDir = this.projectDir, unknownOriginalPath = false) {
+    return resolveTurnDb({ projectDir, brainHome: this.brainHome, requestedStorePath: this.db, unknownOriginalPath });
+  }
+
   /** Journal the events this boundary observed that are not already known. Returns what was added. */
   record(events) {
+    const consent = this.captureConsent();
+    if (consent.skipped) throw new Error(`event capture suspended: ${consent.skipped}`);
     const known = this.knownIds();
     const fresh = [];
     for (const event of events) {
       const id = `${event.kind}:${event.id}`;
       if (known.has(id)) continue;
       known.add(id);
-      fresh.push({ type: 'event', key: eventKey(event), digest: digestCanonical(event), journaledAt: new Date(this.now()).toISOString(), event });
+      fresh.push({ type: 'event', capturePath: consent.capturePath, key: eventKey(event), digest: digestCanonical(event), journaledAt: new Date(this.now()).toISOString(), event });
     }
     this.appendRecords(fresh);
     return fresh;
@@ -378,6 +386,11 @@ export function drain(journal, {
     let attempts = 0;
     let last = null;
     for (let attempt = 0; !done && now() < deadline; attempt += 1) {
+      let consent;
+      try { consent = journal.captureConsent(rec.capturePath || journal.projectRoot, !rec.capturePath); }
+      catch (error) { consent = { skipped: `capture consent unavailable: ${error.message}` }; }
+      if (consent.skipped) return { committed, failed, remaining: journal.pending().length, skipped: consent.skipped };
+      if (now() >= deadline) break;
       attempts += 1;
       const result = store({ ruflo, db: journal.db, key: rec.key, value });
       const back = readBack({ ruflo, db: journal.db, key: rec.key });
@@ -452,7 +465,11 @@ export function captureContinuityEvents({
   if (String(env.RUVNET_CONTINUITY_CAPTURE || '').toLowerCase() === 'off') return { ...report, skipped: 'RUVNET_CONTINUITY_CAPTURE=off' };
   let resolution;
   try { resolution = resolveProjectStore({ projectDir }); } catch { return { ...report, skipped: 'project store could not be resolved' }; }
-  const journal = new ContinuityJournal({ projectRoot: resolution.projectRoot, now, ruflo });
+  const journal = new ContinuityJournal({ projectRoot: resolution.projectRoot, projectDir, env, now, ruflo });
+  try {
+    const consent = journal.captureConsent();
+    if (consent.skipped) return { ...report, skipped: consent.skipped.startsWith('no project memory db') ? `not applicable: ${consent.skipped}` : consent.skipped };
+  } catch (error) { return { ...report, skipped: `capture consent unavailable: ${error.message}` }; }
   try {
     const st = fs.lstatSync(journal.swarm);
     if (!st.isDirectory() || st.isSymbolicLink()) return { ...report, skipped: '.swarm is not a real directory' };
@@ -487,7 +504,7 @@ export function captureContinuityEvents({
 
 /** The detached worker body. */
 export function runDrain(projectRoot, options = {}) {
-  const journal = new ContinuityJournal({ projectRoot, ...(options.ruflo !== undefined ? { ruflo: options.ruflo } : {}) });
+  const journal = new ContinuityJournal({ projectRoot, ...(options.env ? { env: options.env } : {}), ...(options.ruflo !== undefined ? { ruflo: options.ruflo } : {}) });
   const release = takeLock(journal);
   if (!release) return { skipped: 'another drainer holds the lock' };
   try { return drain(journal, options); } finally { release(); }

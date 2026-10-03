@@ -378,13 +378,17 @@ export class ProjectProgressionStore {
     if (!verdict.ok) throw new Error(`invalid progression snapshot: ${verdict.errors.join(', ')}`);
   }
 
-  appendExact(snapshot, { onPhase = () => {} } = {}) {
-    this.validateSnapshot(snapshot);
+  requireCaptureConsent(snapshot) {
     const capturePath = snapshot.sourceIdentity.capturePath;
     const target = resolveTurnDb({ projectDir: capturePath ?? snapshot.sourceIdentity.checkoutPath,
       brainHome: this.brainHome, requestedStorePath: this.resolution.canonicalAgentDbPath,
       unknownOriginalPath: !capturePath });
     if (target.skipped) throw new Error(`progression capture suspended: ${target.skipped}`);
+  }
+
+  appendExact(snapshot, { onPhase = () => {} } = {}) {
+    this.validateSnapshot(snapshot);
+    this.requireCaptureConsent(snapshot);
     const stored = this.run([
       'memory', 'store', '--key', snapshot.eventKey, '--value', JSON.stringify(snapshot),
       '--namespace', PROGRESSION_NAMESPACE, '--no-upsert', '--provenance', 'system_observation',
@@ -438,6 +442,7 @@ export class ProjectProgressionStore {
 
   capture(snapshot, { onPhase = () => {} } = {}) {
     this.validateSnapshot(snapshot);
+    this.requireCaptureConsent(snapshot);
     this.outbox.appendSnapshot(snapshot);
     onPhase('outbox-fsynced');
     const receipt = this.appendExact(snapshot, { onPhase });

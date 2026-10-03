@@ -46,7 +46,12 @@ const mtimeOf = (projectDir, name) => { try { return fs.statSync(path.join(proje
  * ORDER OF EXCLUSIVE CREATION: the name is the next sequence number after every queued or claimed one,
  * created with O_EXCL and retried on collision — never a clock, which can step backwards or wrap.
  */
-export function queueCapture({ projectDir, originProjectDir = projectDir, event, host, payload }) {
+export function queueCapture({ projectDir, originProjectDir = projectDir, event, host, payload, env = process.env }) {
+  try {
+    const consent = resolveTurnDb({ projectDir: originProjectDir, requestedStorePath: path.join(projectDir, '.swarm', 'memory.db'),
+      brainHome: env.RUVNET_BRAIN_HOME || path.join(env.HOME || os.homedir(), '.cache', 'ruvnet-brain') });
+    if (consent.skipped) return null;
+  } catch { return null; }
   // Freeze legacy callers at the original boundary too, before dropping host payload.
   let progression = payload?.projectProgression;
   if (!progression && !payload?.normalizedTransition) {

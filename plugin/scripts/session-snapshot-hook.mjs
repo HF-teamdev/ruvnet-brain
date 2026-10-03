@@ -2,6 +2,7 @@ import { DETACHED_REPLAY_BUDGET_MS, REPLAY_LOCK_STALE_MS, REPLAY_LOCK_ABANDON_MS
 export { DETACHED_REPLAY_BUDGET_MS, REPLAY_LOCK_STALE_MS, REPLAY_LOCK_ABANDON_MS, pidAlive, queueCapture, queuedCaptures, queuedWork, processStart, reclaimOrphans, takeReplayLock, refreshReplayLock, adoptReplayLock, releaseReplayLock, replayOutboxDetached, runOutboxReplay, drainCaptureQueue } from './project-capture-queue.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ProgressionOutbox } from './project-progression-outbox.mjs';
@@ -14,7 +15,7 @@ import { projectDirectory } from './project-identity.mjs';
 import { buildProjectProgression } from './project-progression-producer.mjs';
 import { ProjectProgressionStore } from './project-progression-store.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
-import { captureTurnOutcome } from './turn-outcome-capture.mjs';
+import { resolveTurnDb, captureTurnOutcome } from './turn-outcome-capture.mjs';
 import { captureContinuityEvents, stopNotice } from './continuity-journal.mjs';
 
 /**
@@ -115,6 +116,7 @@ export function boundedStoreFactory(deadlineAt) {
  */
 export function runSessionSnapshotHook(projectDir, event, {
   rawInput = '',
+  env = process.env,
   host = process.env.RUVNET_HOOK_HOST || 'claude',
   captureProgression = captureProjectTransition,
   produce = buildProjectProgression,
@@ -127,6 +129,16 @@ export function runSessionSnapshotHook(projectDir, event, {
   ordered = null,
   captureEvents = captureContinuityEvents,
 } = {}) {
+  const suspended = (reason) => ({ metadataWritten: false, progressionCaptured: false, receipt: null, skipped: reason,
+    turn: { event, recorded: false, skipped: reason }, continuity: { event, recorded: 0, launched: false, skipped: reason } });
+  // Consent is checked before metadata, transcript inspection or any durable capture queue.
+  try {
+    const consent = resolveTurnDb({ projectDir, brainHome: env.RUVNET_BRAIN_HOME || path.join(env.HOME || os.homedir(), '.cache', 'ruvnet-brain'),
+      gitTimeoutMs: Math.max(1, Math.min(500, budgetMs)) });
+    if (consent.skipped) return suspended(consent.skipped);
+  } catch (error) {
+    return suspended(`capture consent unavailable: ${error.message}`);
+  }
   // The detached worker re-runs a QUEUED boundary; its session receipt was already written then.
   const metadataWritten = writeMetadata ? writeSessionSnapshot(projectDir, event) : false;
   let payload;
@@ -135,14 +147,14 @@ export function runSessionSnapshotHook(projectDir, event, {
   // (a project without a store requires persisted opt-in — turn-outcome-capture.mjs).
   // It only reads and spawns a detached writer, so it costs the progression budget below nothing.
   let turn;
-  try { turn = captureTurn({ projectDir, event, payload, host }); } catch (error) {
+  try { turn = captureTurn({ projectDir, event, payload, host, env }); } catch (error) {
     turn = { recorded: false, skipped: `turn capture failed: ${error.message}` };
   }
   // MATERIAL EVENTS (continuity-journal.mjs): commits, releases, gates, findings, decisions, lessons —
   // journalled to the durable outbox with one fsync and committed by a detached drainer. Like turn
   // capture it is independent of the progression lock below and costs this boundary only a read.
   let continuity;
-  try { continuity = captureEvents({ projectDir, event, payload, host }); } catch (error) {
+  try { continuity = captureEvents({ projectDir, event, payload, host, env }); } catch (error) {
     continuity = { recorded: 0, skipped: `continuity capture failed: ${error.message}` };
   }
   const idle = { metadataWritten, progressionCaptured: false, receipt: null, turn, continuity };
@@ -151,7 +163,7 @@ export function runSessionSnapshotHook(projectDir, event, {
     if (payload.hook_event_name !== event) {
       throw new Error(`progression boundary mismatch: expected ${event}, received ${payload.hook_event_name}`);
     }
-    const result = captureProgression({ host, payload, projectDir, storeFactory: makeStoreFactory(now() + budgetMs) });
+    const result = captureProgression({ host, payload, projectDir, storeFactory: (options) => makeStoreFactory(now() + budgetMs)({ ...options, env }) });
     return { ...idle, progressionCaptured: true, receipt: result.receipt };
   }
 
@@ -191,7 +203,7 @@ export function runSessionSnapshotHook(projectDir, event, {
   const handOff = (why) => {
     let frozen;
     try { frozen = produce({ resolution, projectDir, payload, host, trigger: event }); } catch { frozen = null; }
-    const queued = frozen?.projectProgression ? queueCapture({ projectDir: root, originProjectDir: projectDir, event, host,
+    const queued = frozen?.projectProgression ? queueCapture({ projectDir: root, originProjectDir: projectDir, env, event, host,
       payload: { session_id: payload.session_id, hook_event_name: event, projectProgression: frozen.projectProgression } }) : null;
     const handed = queued ? spawnReplay({ projectDir: root, token }) : false;
     if (!handed && token && token !== ordered) releaseReplayLock(root, token);
@@ -213,7 +225,7 @@ export function runSessionSnapshotHook(projectDir, event, {
   let handedLock = false;
   try {
     const deadlineAt = now() + budgetMs;
-    const storeFactory = makeStoreFactory(deadlineAt);
+    const storeFactory = (options) => makeStoreFactory(deadlineAt)({ ...options, env });
     let replayed = 0;
     if (budgetMs >= REPLAY_MIN_BUDGET_MS) {
       try {
@@ -295,7 +307,12 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-
   // independently is what let this hook write a receipt the Console then reported as missing (#85).
   const rawInput = fs.readFileSync(0, 'utf8');
   try {
-    const result = runSessionSnapshotHook(projectDirectory(), process.argv[2] || 'SessionEnd', { rawInput });
+    let originProjectDir = projectDirectory();
+    try {
+      const cwd = JSON.parse(rawInput || '{}').cwd;
+      if (typeof cwd === 'string' && path.isAbsolute(cwd)) originProjectDir = cwd;
+    } catch { /* malformed input keeps the host's project fallback */ }
+    const result = runSessionSnapshotHook(originProjectDir, process.argv[2] || 'SessionEnd', { rawInput });
     // FAIL LOUDLY, NEVER SILENTLY — AND ONCE. When recording is stuck (events pending past STUCK_AFTER_MS,
     // a quarantined conflict, a corrupt outbox line, a cap drop) Claude Code shows this systemMessage, at
     // most once per session per condition (stopNotice; it used to repeat at every turn). "Not applicable"
