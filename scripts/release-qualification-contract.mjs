@@ -169,6 +169,7 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/turn-transport-security.test.mjs",
         "tests/unit/turn-durable-transport.test.mjs",
         "tests/integration/automatic-progression-continuation.test.mjs",
+        "tests/integration/capture-consent-boundary.test.mjs",
         "tests/integration/session-start-turn-replay.test.mjs"
       ]
     },
