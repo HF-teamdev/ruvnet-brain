@@ -53,7 +53,7 @@ describe('canonical prompt-time AgentDB recall', () => {
     expect(parseSearchJson(`[INFO] Searching\n${JSON.stringify({ results: rows })}\n[WARN] other store`)).toEqual(rows);
     expect(parseSearchJson('[INFO] fail')).toEqual([]);
   });
-  it('thresholds relevance, preserves Ruflo order on equally ranked family hits and represents both namespaces', () => {
+  it('thresholds relevance and preserves ranked substantive evidence across namespaces', () => {
     const picks = pickRows([{ namespace: 'proj', rows }, { namespace: 'default', rows }]);
     expect(picks.map(r => r.key)).toEqual(['decision-requirements', 'decision-agentdb-hidden', 'scorecard-rubric']);
     expect(picks.some(p => p.key === 'unrelated')).toBe(false);
@@ -62,6 +62,16 @@ describe('canonical prompt-time AgentDB recall', () => {
     expect(evidenceExcerpt('Owner statement: You should be writing to it ALL THE TIME and reading from it ALL THE TIME.', 'decision-agentdb-read-write-always')).toContain('writing to it ALL THE TIME and reading');
     expect(evidenceExcerpt('Long measurement provenance.\nOps 15 · Continuity 20 · DevLoop 34', 'scorecard-measured')).toBe('Ops 15 · Continuity 20 · DevLoop 34');
     expect(evidenceExcerpt('Long history. OVERALL 34.375/100 = measured', 'scorecard-measured')).toContain('OVERALL 34.375/100');
+  });
+  it('quotes the remedy from a structured exact lesson and keeps targeted checkpoints ahead of generic lessons', () => {
+    expect(evidenceExcerpt('TASK: backup. TRIED(failed): cp dropped rows. WORKED: use WAL-safe backup. CRITIQUE: inspect restore.', 'lesson-backup')).toContain('WORKED: use WAL-safe backup');
+    expect(evidenceExcerpt(JSON.stringify({ source: 'a'.repeat(40), version: '4.5.4', automaticMemory: 'Recall canonical useful history before every prompt.', nextAction: 'Review pending work.' }),
+      'project-state-current-1', 'automatic useful recall')).toBe('automaticMemory: Recall canonical useful history before every prompt.');
+    const selected = pickRows([
+      { namespace: 'lessons', rows: [{ key: 'lesson-status', namespace: 'lessons', score: 0.9 }] },
+      { namespace: 'proj', family: 'project-state-current', rows: [{ key: 'project-state-current-1', namespace: 'proj', score: 0.8 }] },
+    ]);
+    expect(selected[0].key).toBe('project-state-current-1');
   });
   it('labels untrusted evidence, redacts secrets BEFORE truncation, and bounds multibyte bytes', () => {
     const token = 'ghp_' + 'z'.repeat(35);
@@ -85,6 +95,22 @@ describe('canonical prompt-time AgentDB recall', () => {
       expect(agentdbStores(wt).stores.map(s => s.path)).toEqual([path.join(w.proj, '.swarm', 'memory.db')]);
       const store = path.join(w.proj, '.swarm', 'memory.db'); fs.unlinkSync(store); fs.symlinkSync(path.join(w.dir, 'rows.json'), store);
       expect(() => agentdbStores(wt)).toThrow(/escape/);
+    } finally { w.cleanup(); }
+  });
+  it('searches curated lessons and patterns, excluding transcript telemetry despite its high score', async () => {
+    const w = world();
+    try {
+      fs.writeFileSync(w.env.RECALL_ROWS, JSON.stringify([
+        ...rows,
+        { key: 'lesson-wal-backup', namespace: 'lessons', score: 0.76, preview: 'misleading preview', content: 'TASK: preserve AgentDB. WORKED: use managed WAL-safe backup.' },
+        { key: 'pattern-memory-backup', namespace: 'patterns', score: 0.74, preview: 'misleading preview', content: 'WAL-safe backup preserves committed and pending database changes.' },
+        { key: 'session-precompact-old', namespace: 'proj', score: 0.99, content: 'RECENT USER ASKS: thanks and good to know.' },
+      ]));
+      const r = await recall({ prompt: 'Preserve AgentDB with a safe backup', projectDir: w.proj, env: w.env });
+      expect(r.picks.map(p => p.key)).toContain('lesson-wal-backup');
+      expect(r.picks.map(p => p.key)).toContain('pattern-memory-backup');
+      expect(r.block).not.toContain('session-precompact-old');
+      expect(r.block).toContain('WAL-safe backup'); expect(r.block).not.toContain('misleading preview');
     } finally { w.cleanup(); }
   });
   it('runs real child processes for both namespaces and full-value recall in isolated cwd with daemon off', async () => {
@@ -175,14 +201,38 @@ describe('canonical prompt-time AgentDB recall', () => {
       expect(context.additionalContext).toContain('untrusted historical evidence');
     } finally { w.cleanup(); }
   });
-  it.skipIf(process.platform === 'win32')('delivers through the real shell hook, dedupes within a session, and never displaces safety', () => {
+  it.skipIf(process.platform === 'win32')('registered commands recall from nested cwd and a linked worktree without local memory', () => {
+    const w = world();
+    try {
+      execFileSync('git', ['init', '-q', w.proj]);
+      execFileSync('git', ['-C', w.proj, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'test']);
+      const wt = path.join(w.dir, 'worktree'); execFileSync('git', ['-C', w.proj, 'worktree', 'add', '-qb', 'test-recall', wt]);
+      const nested = path.join(wt, 'docs'); fs.mkdirSync(nested);
+      const plugin = path.resolve('plugin');
+      const active = path.join(w.env.RUVNET_BRAIN_HOME, 'versions', 'candidate'); fs.mkdirSync(active, { recursive: true });
+      fs.cpSync(path.join(plugin, 'scripts'), path.join(active, 'scripts'), { recursive: true });
+      fs.copyFileSync(path.join(plugin, 'scripts', 'codex-hook-wrapper.mjs'), path.join(w.env.RUVNET_BRAIN_HOME, 'codex-hook.mjs'));
+      fs.writeFileSync(path.join(w.env.RUVNET_BRAIN_HOME, 'active.json'), JSON.stringify({ codeRoot: active, version: getVersion(), generation: 'candidate' }));
+      for (const file of ['plugin/hooks/hooks.json', 'plugin/hooks/codex-hooks.json']) {
+        const command = JSON.parse(fs.readFileSync(file)).hooks.UserPromptSubmit.flatMap(g => g.hooks).find(h => / ground-ruvnet(?: \|\| true)?$/.test(h.command)).command;
+        for (const cwd of [wt, nested]) {
+          const r = spawnSync('bash', ['-c', command], { cwd, env: { ...w.env, CLAUDE_PLUGIN_ROOT: plugin, CODEX_HOME: path.join(w.dir, 'codex') },
+            input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'Why?', cwd, session_id: 'nested-' + path.basename(cwd) + file }), encoding: 'utf8', timeout: 10000 });
+          expect(r.status).toBe(0); expect(r.stdout, file + ' cwd=' + cwd + ' stderr=' + r.stderr).toContain('decision-requirements');
+        }
+      }
+      for (const c of w.calls()) expect(c.args[c.args.indexOf('--path') + 1]).toBe(path.join(w.proj, '.swarm', 'memory.db'));
+      expect(fs.existsSync(path.join(wt, '.swarm', 'memory.db'))).toBe(false);
+    } finally { w.cleanup(); }
+  });
+  it.skipIf(process.platform === 'win32')('delivers useful recall on repeated prompts within a session and never displaces safety', () => {
     const w = world();
     try {
       const payload = { prompt: 'Fix the ruflo parser', cwd: w.proj, session_id: 'same-session' };
       const run = (session = payload.session_id) => spawnSync('bash', [ground], { cwd: w.proj, env: { ...w.env, RUVNET_PROMPT_INJECTION_BUDGET: '1' }, input: JSON.stringify({ ...payload, session_id: session }), encoding: 'utf8', timeout: 15000 });
       const a = run(), b = run(), c = run('different-session');
       expect(a.status).toBe(0); expect(a.stdout).toContain('AgentDB recall'); expect(a.stdout).toContain('ground');
-      expect(b.stdout).not.toContain('AgentDB recall'); expect(c.stdout).toContain('AgentDB recall');
+      expect(b.stdout).toContain('AgentDB recall'); expect(c.stdout).toContain('AgentDB recall');
       const r = spawnSync(process.execPath, [script], { cwd: w.proj, env: w.env, input: JSON.stringify(payload), encoding: 'utf8' });
       expect(Buffer.byteLength(r.stdout.split('\n').slice(1).join('\n'))).toBeLessThanOrEqual(BLOCK_MAX_BYTES);
     } finally { w.cleanup(); }

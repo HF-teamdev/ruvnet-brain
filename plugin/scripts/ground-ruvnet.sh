@@ -146,7 +146,7 @@ inj_seen() {
 inj_mark() { [ -n "$INJ_DIR" ] && mkdir -p "$INJ_DIR" 2>/dev/null && : > "$INJ_DIR/$1" 2>/dev/null; return 0; }
 
 # ── Canonical AgentDB recall (ADR-101): every nontrivial human prompt. ──────────────
-# Priority 0 and digest dedupe preserve safety output and avoid re-sending evidence.
+# Priority 0 preserves safety output. Recall is delivered on every eligible prompt.
 if [ -n "$_ADB_OUT" ]; then
   _ADB_ID=$(printf '%s\n' "$_ADB_OUT" | head -n 1 | tr -cd 'A-Za-z0-9' | cut -c1-12)
   [ -n "$_ADB_ID" ] && printf '%s\n' "$_ADB_OUT" | sed '1d' | out_to "0-0-agentdb-recall-$_ADB_ID"
@@ -652,7 +652,7 @@ if [ -n "$BLK" ]; then
   INJ_USED=0
   for _f in $(cd "$BLK" 2>/dev/null && ls | grep -v '\.' | sort -t- -k2,2n -k1,1n); do
     _rest=${_f#*-}; _prio=${_rest%%-*}; _id=${_rest#*-}
-    if [ "$_id" != "resume" ] && inj_seen "$_id"; then
+    if [ "$_id" != "resume" ] && [ "${_id#agentdb-recall-}" = "$_id" ] && inj_seen "$_id"; then
       if [ -f "$BLK/$_f.short" ]; then echo short > "$BLK/$_f.pick"; INJ_SHORTENED=$((INJ_SHORTENED + 1)); fi
       continue
     fi
@@ -665,7 +665,7 @@ if [ -n "$BLK" ]; then
     if [ "$_id" = "flywheel" ]; then claim_flywheel_day || continue; fi
     echo full > "$BLK/$_f.pick"
     [ "$_prio" != "0" ] && INJ_USED=$((INJ_USED + _size))
-    [ "$_id" != "resume" ] && inj_mark "$_id"
+    [ "$_id" != "resume" ] && [ "${_id#agentdb-recall-}" = "$_id" ] && inj_mark "$_id"
   done
   for _f in $(cd "$BLK" 2>/dev/null && ls | grep -v '\.' | sort -n); do
     case "$(cat "$BLK/$_f.pick" 2>/dev/null)" in

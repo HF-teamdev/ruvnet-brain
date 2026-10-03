@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /** Prompt-time canonical AgentDB recall (ADR-101, G-022).
- * Every nontrivial prompt searches the project and legacy default namespaces in
+ * Every nontrivial prompt searches curated signal and project/default namespaces in
  * .swarm/memory.db. Recalled records are untrusted evidence, never instructions.
  * Global Ruflo executes in isolated scratch directories; all processes share one
- * <=2s deadline. ground-ruvnet.sh delivers <=600 bytes with session digest dedupe.
+ * <=2s deadline. ground-ruvnet.sh delivers <=600 bytes on each eligible prompt.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -79,12 +79,39 @@ function clean(value, limit) {
   return out;
 }
 
-const NOISE_KEY = /^(?:verify[-_]|probe[-_]|test[-_]|rnb-quality-probe)/i;
-/** Prefer the substantive passage in long rubric/requirement records, never a generated summary. */
-export function evidenceExcerpt(value, key) {
+const NOISE_KEY = /^(?:verify[-_]|probe[-_]|test[-_]|rnb-quality-probe|session[-_]|turn[-_]|project-progress[-_]|cevt[-_])/i;
+const SIGNAL_NAMESPACES = new Set(['lessons', 'patterns', 'pattern']);
+/** Quote a substantive exact-value passage, including the remedy in structured lessons. */
+export function evidenceExcerpt(value, key, prompt = '') {
   const text = redactText(value);
+  if (/^project-state-current/i.test(key)) {
+    // Checkpoints often lead with version/hash metadata. Quote one actual field,
+    // selected by task terms, instead of spending the evidence budget on identity.
+    const first = text.indexOf('{'); const last = text.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      const json = text.slice(first, last + 1);
+      for (const candidate of [json, json.replace(/\\"/g, '"')]) {
+        try {
+          const object = JSON.parse(candidate);
+          if (!object || Array.isArray(object) || typeof object !== 'object') continue;
+          const terms = promptKeywords(prompt, 14);
+          const fields = Object.entries(object).filter(([name, field]) => typeof field === 'string'
+            && !/^(?:source|sha|version|candidate|shipped|host|timestamp|at)$/i.test(name));
+          fields.sort(([a, av], [b, bv]) => {
+            const weight = (name, field) => terms.filter(t => (name + ' ' + field).toLowerCase().includes(t)).length
+              + (/^(?:next|nextAction|blockers?|automaticMemory|status|scope)$/i.test(name) ? 0.25 : 0);
+            return weight(b, bv) - weight(a, av);
+          });
+          if (fields.length) return clean(fields[0][0] + ': ' + fields[0][1], 110);
+        } catch { /* An unparseable historical value is quoted as text below. */ }
+      }
+    }
+  }
   let start = -1;
-  if (/^scorecard/i.test(key)) {
+  if (/^lesson[-_]/i.test(key)) {
+    const match = /\bWORKED(?:\([^)]*\))?\s*:/i.exec(text);
+    if (match) start = match.index;
+  } else if (/^scorecard/i.test(key)) {
     const match = /\b(?:OVERALL\s*[:=]?\s*\d|Ops\s+\d|Brain.Score overall\s+\d|Continuity\s*=\s*\d)/i.exec(text);
     if (match) start = match.index;
   } else if (/^decision-agentdb-read-write/i.test(key)) {
@@ -96,14 +123,11 @@ export function evidenceExcerpt(value, key) {
 export function pickRows(results) {
   const candidates = results.flatMap((r) => r.rows.filter((p) => p.namespace === r.namespace && !NOISE_KEY.test(p.key)
     && (!r.family || p.key.toLowerCase().includes(r.family))
-    && Number.isFinite(p.score) && p.score >= MIN_RELEVANCE));
-  const ranked = candidates.sort((a, b) => b.score - a.score);
-  // Represent both namespaces when relevant; neither may hide historical requirements.
+    && Number.isFinite(p.score) && p.score >= MIN_RELEVANCE).map((p) => ({ ...p, targeted: Boolean(r.family) })));
+  const ranked = candidates.sort((a, b) => Number(b.targeted) - Number(a.targeted) || Number(SIGNAL_NAMESPACES.has(b.namespace)) - Number(SIGNAL_NAMESPACES.has(a.namespace)) || b.score - a.score);
+  // Curated lessons and patterns are signal; lifecycle transcript telemetry is not.
+  // Do not reserve a slot for a weak match just because its namespace was searched.
   const chosen = [];
-  for (const ns of [...new Set(results.map((r) => r.namespace))]) {
-    const row = ranked.find((r) => r.namespace === ns);
-    if (row) chosen.push(row);
-  }
   for (const row of ranked) {
     if (chosen.length >= 3) break;
     if (!chosen.some((r) => r.key === row.key && r.namespace === row.namespace)) chosen.push(row);
@@ -179,13 +203,13 @@ export async function recall({ prompt, projectDir = process.cwd(), env = process
     const store = stores[0];
     const query = recallQuery(prompt);
     const scratchFor = scratch || ((storePath) => rufloCwdFor(storePath, { root: rufloScratchRoot(env) }));
-    const namespaces = [...new Set([path.basename(root), 'default'])];
+    const namespaces = [...new Set(['lessons', 'patterns', 'pattern', path.basename(root), 'default'])];
     const family = /score|grade|north.star/i.test(prompt) ? 'scorecard'
       : /where are we|status|catch me up/i.test(prompt) ? 'project-state-current'
       : /releas|publish|workflow run|dispatch/i.test(prompt) ? 'release'
       : /requirement|always|every prompt/i.test(prompt) ? 'decision-agentdb' : null;
     const jobs = namespaces.flatMap((namespace) => [{ namespace, family: null, args: ['--format', 'json', '-q', query, '-n', namespace, '--limit', '12'] },
-      ...(family ? [{ namespace, family, args: ['--format', 'json', '-q', family, '-n', namespace, '-t', 'keyword', '--limit', '4'] }] : [])]);
+      ...(family && !SIGNAL_NAMESPACES.has(namespace) ? [{ namespace, family, args: ['--format', 'json', '-q', family, '-n', namespace, '-t', 'keyword', '--limit', '4'] }] : [])]);
     const results = await Promise.all(jobs.map(async ({ namespace, family: recordFamily, args }) => ({ namespace, family: recordFamily,
       ...await searchOnce({ ruflo: bin, store, deadline, env, scratch: scratchFor, args }) })));
     let status = results.every((r) => r.state === 'ok') ? 'ok'
@@ -196,7 +220,7 @@ export async function recall({ prompt, projectDir = process.cwd(), env = process
     const retrieved = await Promise.all(candidates.map(async (p) => {
       const r = await searchOnce({ ruflo: bin, store, deadline, env, scratch: scratchFor, operation: 'retrieve',
         args: ['-k', p.key, '-n', p.namespace, '--value-only'] });
-      if (r.state === 'ok' && r.value && !r.value.startsWith('[WARN]')) return { pick: { ...p, preview: evidenceExcerpt(r.value, p.key) }, state: 'ok' };
+      if (r.state === 'ok' && r.value && !r.value.startsWith('[WARN]')) return { pick: { ...p, preview: evidenceExcerpt(r.value, p.key, prompt) }, state: 'ok' };
       return { pick: null, state: r.state === 'ok' ? 'unavailable' : r.state };
     }));
     const picks = retrieved.flatMap((r) => r.pick ? [r.pick] : []);
