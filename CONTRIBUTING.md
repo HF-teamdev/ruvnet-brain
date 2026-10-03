@@ -39,7 +39,9 @@ Nothing else publishes. `scripts/release-authority.mjs` fails CI if any file oth
 git switch -c release/X.Y.Z origin/main
 npm run version:set -- X.Y.Z && npm run convergence:write      # commit these first
 # …merge the reviewed work for this release onto the branch…
-npm test && npx vitest run && npm run single-source:check    # both suites assert different things
+npm run release:qualify -- --suite source --report /tmp/source-qualification-UNIQUE.json
+npm run release:qualify -- --suite integration --report /tmp/integration-qualification-UNIQUE.json
+npm test && npm run single-source:check                    # distinct grounding and rule checks
 git push origin release/X.Y.Z                                # triggers release-candidate-preflight
 ```
 
@@ -332,13 +334,22 @@ explicitly. `RUVNET_CONTINUITY_CAPTURE=off` disables event capture. `npm run hoo
 ## Tests
 
 ```bash
+npm run release:qualify -- --suite source --report /tmp/source-qualification-UNIQUE.json
+npm run release:qualify -- --suite integration --report /tmp/integration-qualification-UNIQUE.json
 npm test                        # plugin battery over real JSON-RPC
-npx vitest run                  # unit + integration
-node scripts/full-suite-gate.mjs  # the same run, judged against tests/known-red.json (canonical-qa blocks on it)
-npm run qa:release              # release-scope checks
+npm run qa:release              # distinct packed-artifact release QE
 npm run single-source:check     # one version of every rule and fact
 npm run wired:check             # every module has a caller or a stated reason
 ```
+
+The reviewed requirement-to-test inventory in `scripts/release-qualification-contract.mjs` is
+the candidate gate. Each retained test must be read against the changed architecture before
+running it; changed behaviors and their failure cases must join that inventory. Integration
+qualification runs on Linux/POSIX with the global Ruflo, native Codex and KB dependencies present;
+missing prerequisites or skipped cases fail qualification. Use new receipt paths for every run.
+The historical whole suite (`npx vitest run` / `scripts/full-suite-gate.mjs`) remains an explicit
+developer diagnostic, not a second release gate. Public, signed-artifact, native-host and OS
+verification remain required independently; a local subset never means shipped.
 
 ## The fail-closed private fence
 
