@@ -26,8 +26,8 @@ const roots = [];
 // its own state as a source change — the Linux probe failure of 2026-10-01.
 const gitIsolation = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'restore-semantics-gitcfg-')));
 fs.writeFileSync(path.join(gitIsolation, 'empty.gitconfig'), '');
-const savedGitEnv = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
-beforeAll(() => { Object.assign(process.env, { GIT_CONFIG_GLOBAL: path.join(gitIsolation, 'empty.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }); });
+const savedGitEnv = { RUVNET_BRAIN_HOME: process.env.RUVNET_BRAIN_HOME, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
+beforeAll(() => { Object.assign(process.env, { RUVNET_BRAIN_HOME: path.join(gitIsolation, 'brain'), GIT_CONFIG_GLOBAL: path.join(gitIsolation, 'empty.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }); });
 afterAll(() => {
   for (const [key, value] of Object.entries(savedGitEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   fs.rmSync(gitIsolation, { recursive: true, force: true });
@@ -36,6 +36,11 @@ afterAll(() => {
 function temporaryProject() {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'restore-semantics-')));
   roots.push(root);
+  const policyFile = path.join(process.env.RUVNET_BRAIN_HOME, 'turn-capture', 'policy.json');
+  fs.mkdirSync(path.dirname(policyFile), { recursive: true });
+  const policy = fs.existsSync(policyFile) ? JSON.parse(fs.readFileSync(policyFile, 'utf8')) : { schemaVersion: 1, projects: {}, paths: {} };
+  policy.projects[root] = 'on';
+  fs.writeFileSync(policyFile, JSON.stringify(policy));
   execFileSync('git', ['init', '-q'], { cwd: root });
   fs.writeFileSync(path.join(root, 'package.json'), '{"name":"restore-semantics"}\n');
   return root;

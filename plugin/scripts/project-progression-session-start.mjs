@@ -222,6 +222,7 @@ export function restoreProgressionForSession({
     };
     const makeStore = storeFactory ?? ((options) => new ProjectProgressionStore({
       ...options,
+      env,
       runner: boundedRunner,
     }));
     store = makeStore({

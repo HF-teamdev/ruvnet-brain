@@ -120,6 +120,7 @@ function uniqueStrings(values) {
  */
 export function buildProjectProgression({
   resolution,
+  projectDir = resolution?.checkoutRoot,
   payload = {},
   host = 'claude',
   env = process.env,
@@ -128,6 +129,7 @@ export function buildProjectProgression({
 } = {}) {
   if (!resolution || typeof resolution !== 'object') throw new TypeError('resolution must be a project store resolution');
   const source = readSourceIdentity({ checkoutRoot: resolution.checkoutRoot, kind: resolution.kind });
+  source.identity.capturePath = fs.realpathSync.native(projectDir);
   const ledger = readWorkLedger({ projectId: resolution.projectIdentity.id, env });
   const note = readOwnerNote(() => ownerNoteRows(resolution.canonicalAgentDbPath, path.basename(resolution.projectRoot)));
   const transcript = readTranscriptReference(payload.transcript_path, { host });
@@ -178,9 +180,25 @@ export function buildProjectProgression({
     record('decisions', 'owner-note');
   } else record('decisions', 'prior-head');
 
-  record('plan', ledger.present ? 'ledger' : 'prior-head');
-  record('completed', ledger.present ? 'ledger' : 'prior-head');
-  record('inProgress', ledger.present ? 'ledger' : 'prior-head');
+  // A partial ledger speaks only for its own matching items; absence is not deletion.
+  const priorPlan = priorState?.plan ?? [];
+  const doneIds = new Set(ledger.done.map((text) => text.slice(0, 64)));
+  const openIds = new Set(ledger.open.map((text) => text.slice(0, 64)));
+  const ownedDone = new Set(priorPlan.filter((item) => item?.source === 'ledger' && doneIds.has(item.id)).map((item) => item.id));
+  const plan = priorPlan.map((item) => item?.source !== 'ledger' ? item
+    : doneIds.has(item.id) ? { ...item, status: 'done' }
+      : openIds.has(item.id) ? { ...item, status: 'open' } : item);
+  for (const text of ledger.open) {
+    const id = text.slice(0, 64);
+    if (!plan.some((item) => item?.source === 'ledger' && item.id === id)) plan.push({ id, status: 'open', source: 'ledger' });
+  }
+  const completed = [...(priorState?.completed ?? [])];
+  for (const text of ledger.done) if (!completed.includes(text)) completed.push(text);
+  const inProgress = uniqueStrings([...(priorState?.inProgress ?? []).filter((text) => !ownedDone.has(text.slice(0, 64))), ...ledger.open]);
+  for (const field of ['plan', 'completed', 'inProgress']) {
+    record(field, ledger.open.length || ledger.done.length ? 'ledger' : 'prior-head');
+    if (priorState && (ledger.open.length || ledger.done.length)) provenance[field] = { source: 'prior-head', authoritative: priorState.provenance?.[field]?.authoritative ?? true, sources: ['prior-head', 'ledger'] };
+  }
   record('changedFiles', 'git');
   record('sourceIdentity', 'git');
 
@@ -193,9 +211,9 @@ export function buildProjectProgression({
     acceptanceContract: priorState?.acceptanceContract ?? null,
     activeProcess: priorState ? priorState.activeProcess : 'ProjectContinuity',
     activeStep: priorState ? priorState.activeStep : trigger ?? 'unknown',
-    plan: ledger.present ? ledger.open.map((text) => ({ id: text.slice(0, 64), status: 'open', source: 'ledger' })) : priorState?.plan ?? [],
-    completed: ledger.present ? uniqueStrings(ledger.done) : priorState?.completed ?? [],
-    inProgress: ledger.present ? uniqueStrings(ledger.open) : priorState?.inProgress ?? [],
+    plan,
+    completed,
+    inProgress,
     blockers: priorState?.blockers ?? [],
     failures: priorState?.failures ?? [],
     decisions: [...new Map(decisions.map((decision) => [digestCanonical(decision), decision])).values()],

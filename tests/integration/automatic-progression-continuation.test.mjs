@@ -11,7 +11,7 @@ import { restoreProgressionForSession } from '../../plugin/scripts/project-progr
 function fixture() {
   const f = adoptedProject();
   const cli = fakeRuflo();
-  const store = new ProjectProgressionStore({ projectDir: f.dir, rufloBinary: cli.bin });
+  const store = new ProjectProgressionStore({ projectDir: f.dir, rufloBinary: cli.bin, env: f.env });
   return { ...f, cli, store, resolution: store.resolution };
 }
 function snapshot(f, host, changes = {}, parents = []) {
@@ -55,6 +55,63 @@ describe('automatic progression preserves durable work', () => {
       expect(produced.completeProjectState[field], field).toEqual(prior.completeProjectState[field]);
     }
     expect(captureProduced(f, produced).blockers).toEqual(prior.completeProjectState.blockers);
+  });
+
+  it('retains full work when a present ledger has no items', () => {
+    const f = fixture(); const prior = snapshot(f, 'claude'); f.store.capture(prior);
+    f.env.RUVNET_WORK_LEDGER = `${f.home}/ledger.json`;
+    fs.writeFileSync(f.env.RUVNET_WORK_LEDGER, JSON.stringify({ items: [] }));
+    const restored = captureProduced(f, automatic(f));
+    for (const field of ['plan', 'completed', 'inProgress']) expect(restored[field]).toEqual(prior.completeProjectState[field]);
+  });
+
+  it('updates only ledger-owned matching work and retains unmentioned work', () => {
+    const f = fixture(); f.store.capture(snapshot(f, 'claude', {
+      plan: [{ id: 'owned', status: 'open', source: 'ledger' }, { id: 'unowned', status: 'in-progress' }],
+      completed: ['older completion'], inProgress: ['owned', 'unowned'],
+    }));
+    f.env.RUVNET_WORK_LEDGER = `${f.home}/ledger.json`;
+    fs.writeFileSync(f.env.RUVNET_WORK_LEDGER, JSON.stringify({ items: [{ text: 'owned', done: true }, { text: 'new', done: false }] }));
+    const state = automatic(f).completeProjectState;
+    expect(state.plan).toEqual([{ id: 'owned', status: 'done', source: 'ledger' }, { id: 'unowned', status: 'in-progress' }, { id: 'new', status: 'open', source: 'ledger' }]);
+    expect(state.completed).toEqual(['older completion', 'owned']);
+    expect(state.inProgress).toEqual(['unowned', 'new']);
+    expect(state.provenance.plan.sources).toEqual(['prior-head', 'ledger']);
+  });
+
+  it('suspends an outbox snapshot when its original nested capture path opts out', () => {
+    const f = fixture(); const origin = `${f.dir}/private`; fs.mkdirSync(origin);
+    const pending = snapshot(f, 'claude'); pending.sourceIdentity.capturePath = origin;
+    // Recreate to bind the additive origin to the payload digest.
+    const row = createProgressionSnapshot({ ...pending, dedupId: 'nested-consent' });
+    f.store.outbox.appendSnapshot(row);
+    const brainHome = `${f.home}/.cache/ruvnet-brain`;
+    fs.mkdirSync(`${brainHome}/turn-capture`, { recursive: true });
+    fs.writeFileSync(`${brainHome}/turn-capture/policy.json`, JSON.stringify({ schemaVersion: 1, projects: { [f.dir]: 'on' }, paths: { [origin]: 'off' } }));
+    expect(() => f.store.replay()).toThrow(/opt-out/);
+    expect(f.cli.calls()).toEqual([]);
+    expect(f.store.outbox.pendingSnapshots()).toEqual([row]);
+    expect(() => f.store.restoreLatest()).toThrow(/opt-out/);
+    const startup = restoreProgressionForSession({ env: { ...f.env, CLAUDE_PROJECT_DIR: f.dir }, cwd: f.dir, storeFactory: () => f.store });
+    expect(startup.status).toBe('unknown');
+    expect(startup.context).not.toContain('Keep all unfinished work');
+    expect(f.cli.calls()).toEqual([]);
+    expect(f.store.outbox.pendingSnapshots()).toEqual([row]);
+    fs.writeFileSync(`${brainHome}/turn-capture/policy.json`, JSON.stringify({ schemaVersion: 1, projects: { [f.dir]: 'on' }, paths: { [origin]: 'on' } }));
+    expect(f.store.replay()).toHaveLength(1);
+    expect(f.store.retrieveSnapshots([row.eventKey]).snapshots).toEqual([row]);
+    expect(f.store.outbox.pendingSnapshots()).toEqual([]);
+  });
+
+  it('retains legacy outbox debt whose nested capture origin cannot be verified', () => {
+    const f = fixture(); const origin = `${f.dir}/private`; fs.mkdirSync(origin);
+    const row = snapshot(f, 'claude'); f.store.outbox.appendSnapshot(row);
+    const brainHome = `${f.home}/.cache/ruvnet-brain`;
+    fs.mkdirSync(`${brainHome}/turn-capture`, { recursive: true });
+    fs.writeFileSync(`${brainHome}/turn-capture/policy.json`, JSON.stringify({ schemaVersion: 1, projects: { [f.dir]: 'on' }, paths: { [origin]: 'off' } }));
+    expect(() => f.store.replay()).toThrow(/origin.*opt-out/);
+    expect(f.cli.calls()).toEqual([]);
+    expect(f.store.outbox.pendingSnapshots()).toEqual([row]);
   });
 
   it('preserves concurrent conflicts after an automatic capture joins their heads', () => {
