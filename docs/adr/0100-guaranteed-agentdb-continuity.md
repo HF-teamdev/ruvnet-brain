@@ -8,6 +8,7 @@ authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [agentdb, continuity, hooks, durability, memory]
 supersedes: []
 relates: [ADR-073, ADR-076]
+version: 1.0.0
 ---
 
 # ADR-100 — Guaranteed AgentDB continuity
@@ -96,7 +97,9 @@ whole-image mutator (access_count bump) — `ruflo/v3/@claude-flow/cli/src/memor
   corrupt lines and cap drops are reported for 7 days or until `continuity-brief.mjs --clear`; the Claude
   Stop line shows once per session per condition. Failures are one record per event; `compact()` rewrites
   the outbox atomically (append lock plus a size re-check so a concurrent append is never lost), ages out
-  committed events after 7 days and caps the file at 2000 events. Measured before the fix: 300 pending
+  committed events after 7 days. The 2000-event target is a soft limit when accepted events remain
+  pending: pending events and their failure counts survive, capacity pressure is reported, and a
+  prolonged outage can grow disk usage. Measured before the fix: 300 pending
   events with no ruflo grew to 1200 / 2100 / 3000 lines over three simulated days; after: constant.
 
 ## Alternatives considered
@@ -138,3 +141,7 @@ line. Historical raw records and owner-managed user-level capture hooks are not 
 Evidence: `tests/e2e/closure/G-001.probe.mjs`, `G-002.probe.mjs`, and `G-014.probe.mjs` run the real
 detached process boundary against the global Ruflo CLI in isolated homes (synthetic credentials only).
 These local process results are not published closure receipts.
+
+## Candidate durability correction (2026-10-03)
+
+The bounded candidate stops deleting accepted pending events to satisfy the former cap and preserves complete final progression-outbox records without a newline. Torn-tail append fails explicitly without changing existing bytes; recovery remains manual. This supersedes the old cap claim and does not change Proposed status or establish published all-host acceptance.

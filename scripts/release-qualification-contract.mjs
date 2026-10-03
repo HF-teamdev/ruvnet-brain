@@ -100,6 +100,23 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/no-real-store-path-in-tests.test.mjs",
         "tests/unit/managed-memory-no-raw-sql.test.mjs"
       ]
+    },
+    {
+      "id": "citation-producer-boundaries",
+      "reason": "Actual CLI, card and MCP outputs reject document-injected citation headers; packed verifier and source mutants bind the changed boundary",
+      "files": [
+        "tests/unit/verify-citation.test.mjs",
+        "tests/unit/citation-producers.test.mjs",
+        "tests/mutation/citation-binding-mutation.test.mjs"
+      ]
+    },
+    {
+      "id": "pending-memory-durability",
+      "reason": "Complete outbox tails replay and accepted pending journal events survive capacity pressure without silent deletion",
+      "files": [
+        "tests/unit/project-progression-outbox.test.mjs",
+        "tests/unit/project-progression-durability.test.mjs"
+      ]
     }
   ],
   "integration": [
@@ -141,6 +158,13 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/integration/continuity-journal.test.mjs",
         "tests/integration/changed-memory-process-probes.test.mjs",
         "tests/unit/managed-memory-boundary.test.mjs"
+      ]
+    },
+    {
+      "id": "pending-continuity-capacity",
+      "reason": "POSIX non-root permission refusal, capacity-pressure reporting and recovery preserve all accepted pending continuity events",
+      "files": [
+        "tests/unit/continuity-journal-bounds.test.mjs"
       ]
     }
   ]

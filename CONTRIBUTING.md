@@ -1,3 +1,6 @@
+Updated: 2026-10-03 14:33:51 EDT | Version 1.0.0
+Created: 2026-07-07 09:22:01 EDT
+
 # Contributing to RuvNet Brain — the one rulebook
 
 Updated: 2026-10-03
@@ -324,7 +327,9 @@ boundary, and a stuck one is shown (`AgentDB: recording stuck …`, an advisory 
 session per condition), at SessionStart and in `--doctor`. No initialized store or no ruflo reads `recording n/a`,
 and launches no drainer; a quarantined key or corrupt line is reported for 7 days or until
 `continuity-brief.mjs --clear`; failures are one record per event and the outbox is compacted (committed
-events leave after 7 days, hard cap 2000 events). SessionStart prints a bounded `[RuvNet Brain — COME UP TO SPEED …]` brief before the progression
+events leave after 7 days; 2000 is a soft cap when accepted events remain pending. Pending events
+are never evicted to satisfy that cap; capacity pressure is reported and a prolonged outage can grow
+the pending journal). SessionStart prints a bounded `[RuvNet Brain — COME UP TO SPEED …]` brief before the progression
 restore; everything it quotes from the repository (commit subjects, `.swarm` rows) sits inside a fenced
 `PROJECT RECORD` marked as untrusted data, and only lessons recorded with `--record` on this machine (an
 ownership ledger outside the repo) are shown as standing rules; `/ruvnet-brain:rnb-brief` (`continuity-brief.mjs --full | --record`) pulls history or records

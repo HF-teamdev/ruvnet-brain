@@ -1,4 +1,4 @@
-Updated: 2026-10-03 14:26:32 EDT | Version 1.0.1
+Updated: 2026-10-03 14:35:18 EDT | Version 1.1.1
 Created: 2026-10-03 14:26:32 EDT
 
 # Independent concurrent reconciliation review
@@ -66,3 +66,31 @@ No fresh score assigned. Historical eight-dimension arithmetic belongs in the ro
 ## Not tested
 
 No published package/corpus installation, live full MCP retrieval, Linux/Windows execution, owner-hook migration, old-data scrubbing, live ntfy delivery, signing-key lifecycle, full revised governance gate, or atomic hostile-process race protection. No claim all eighteen added descriptions are independently reproduced; direct source confirmations are identified above, other rows are classified as evidence/acceptance proposals requiring their own source-bound probes.
+
+## Follow-up independent review: e23fc56 and 39883f3
+
+The two concrete source residuals identified above were addressed in `e23fc56c6ba8dee51e4af035269eb29a319268c8`; the truncation test was strengthened in `39883f324fc0b192ff38d10932bddcb8befb1e2b`. This section supersedes those two source-blocker findings for this candidate; publication and atomic-TOCTOU limitations remain.
+
+- Both actual product producers (`renderCardHit` and MCP heavy formatter) now frame the exact rendered body length, preserve the separate full structured text, sanitize metadata lines, and use the parser's exact terminator. Tests exercise the real card renderer and real MCP JSON-RPC formatter subprocess; retrieval/background collaborators are substituted. Removing product framing makes forged EVIL rank2 observable. The final truncated fixture explicitly retains the entire hostile header/path/title and its own body/terminator while truncating later content; the frame-removal mutant also fails for that truncated case.
+- Captured store/distill steps bind canonical root, original checkout, and policy home. Worker refuses missing bindings, re-resolves canonical store with finite Git timeout, re-reads project/path policy using original checkout, checks memory.db and SQLite WAL/SHM/journal regular-file/link properties, and rejects root/DB identity drift before spawning. Tests show directory replacement causes status1/verifiedfalse, no launch, preserved foreign bytes, and later retry; malformed/off policy and side-file aliases also refuse. Removing the product guard reaches the forbidden launch marker in a real worker-module subprocess. Existing content-readback failure checks remain live.
+- Independently executed on e23fc56: citation-producers and turn-outcome-capture suites, **2 files / 38 tests passed in14.76s**. Read final39883f3 test diff; worker reports strengthened producer3/3PASS. No new source blocker found in these bounded changes.
+
+Remaining scope: fast-lane CARD identity resolution G-056 is separate and unchanged; parser retains legacy unframed compatibility. The guard narrows queue-to-launch replacement risk and does not establish atomic filesystem isolation against a simultaneous malicious replacement after validation. No authenticated published install proof is claimed.
+
+## Independent durability review: 66fb8233
+
+Reviewed clean `66fb8233efcd686c2ff48553287222fbb72ed8bd` in memory-durability-reconciliation. Five-file diff: two product modules, two existing unit suites, one focused product-bridge suite. No source blocker found for the bounded G-054/G-055 correction.
+
+G-054 now retains a complete final JSON snapshot or commit with no trailing newline. Appending validates the tail on the opened nofollow descriptor and writes the missing separator plus new record, preserving record boundaries. A genuinely torn final suffix remains readable as an ignored suffix for prior-record replay, but attempted append throws an actionable error before changing bytes. Tests cover reopened recovery, exact readback commit, no second replay, preserved torn bytes/prefix, and malformed terminated-line rejection. The focused ProjectProgressionStore bridge uses the actual outbox/store boundary and an explicitly fake managed CLI with exact content; it is not native Ruflo execution evidence.
+
+G-055 compaction now prunes only committed event history at the limit, retains every pending event and its aggregated failure count, reports capacityPressure above2000 pending, and avoids automatic rewriting when the backlog cannot shrink. Tests preserve2500 accepted pending records byte-for-record after reopening; drain2005 exact-content events successfully after recovery; retain aggregate failure counts; clear pressure and restore committed-history cap/age expiry. Existing append-during-compaction protection remains tested.
+
+Independent execution: `npm exec -- vitest run tests/unit/project-progression-outbox.test.mjs tests/unit/continuity-journal-bounds.test.mjs tests/unit/project-progression-durability.test.mjs` => **3 files,25 tests passed,24.67s**, no skips.
+
+Tradeoffs/remaining work:
+- During prolonged refusal the accepted pending backlog can grow without a hard byte bound. This intentionally exchanges silent data loss for disk pressure; no new admission rejection policy was added. This does not prove unlimited-scale throughput or recovery from ENOSPC.
+- Torn progression tails still need deliberate recovery before new append/commit markers. Prefix data is preserved; the patch does not autonomously repair the suffix.
+- Previously dropped records cannot be reconstructed by this fix.
+- Worker reported native global Ruflo initializer aborts reproduced on the baseline; those were not independently rerun here and are not explained away by passing the fake CLI bridge.
+- Source documentation still needs correction: CONTRIBUTING.md:327 says hard cap2000; ADR0100:99 records the old2000 file cap. Operating rulebook must describe pending soft-cap/pressure and committed-history retention. Historical ADR wording should receive a clearly dated superseding note, not a claim that the old design always preserved pending events.
+- Candidate-source tests do not establish published installation or cross-OS acceptance.
