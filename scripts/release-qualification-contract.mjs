@@ -68,6 +68,7 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       "reason": "Canonical project isolation, persisted consent and truthful capture status",
       "files": [
         "tests/unit/turn-outcome-capture.test.mjs",
+        "tests/unit/turn-journal-platform.test.mjs",
         "tests/unit/project-store-resolver.test.mjs"
       ]
     },

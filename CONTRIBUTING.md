@@ -303,7 +303,9 @@ default; a project without one records nothing until explicitly opted in. The br
 `agentdb-turns.jsonl` holds only `{ts,key,hash,len}`, never outcome text. A separate permission-restricted
 project-local transport journal fsyncs the redacted outcome and canonical binding before the detached
 writer starts. Startup replays eligible pending entries; exact key/content readback, with no upsert,
-commits transport. Recent explicit failures and historical unverified receipts are diagnosed separately
+commits transport. File fsync is mandatory. Where Windows directory handles cannot be flushed,
+the capture report explicitly records the missing directory flush; namespace survival across power
+loss is unproven. Unexpected I/O failures remain errors. Recent explicit failures and historical unverified receipts are diagnosed separately
 at SessionStart and in `--doctor`, independently
 of material-event recording status. `RUVNET_TURN_CAPTURE=off` disables it.
 
