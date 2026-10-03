@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { ProjectProgressionStore } from './project-progression-store.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { withProgressionReader } from './project-progression-reader.mjs';
+import { drainCaptureQueue, queuedWork } from './session-snapshot-hook.mjs';
+import { replayTurnQueue } from './turn-outcome-capture.mjs';
 import { STAGE_BUDGETS_MS } from './session-start-budget.mjs';
 
 const PROGRESSION_NAMESPACE = 'project-progression';
@@ -225,15 +228,42 @@ export function restoreProgressionForSession({
       projectDir,
       requestedStorePath: resolution.canonicalAgentDbPath,
     });
+    const home = env.HOME || env.USERPROFILE || os.homedir();
+    const turns = replayTurnQueue({ projectDir, env, home, synchronous: true, runner: boundedRunner, deadlineMs: deadlineAt });
+    if (turns.pending > 0 || turns.failed > 0) {
+      const failed = miss('outbox-replay');
+      return { ...failed, pendingTurns: turns.pending,
+        context: `${failed.context} Durable turn recording remains pending; no older checkpoint was injected.` };
+    }
+    const suspended = ['persisted turn capture opt-out', 'turn capture policy unreadable or invalid'].includes(turns.skipped);
+    if (turns.skipped && !suspended && !['RUVNET_TURN_CAPTURE=off',
+      'no project memory db; persisted opt-in required'].includes(turns.skipped)) return miss('outbox-replay');
+    if (suspended && initializing) return {
+      status: 'unavailable', reason: 'capture-suspended', severity: 'info',
+      context: '[RuvNet Brain — PROJECT CONTINUITY UNAVAILABLE]\nCapture consent suspends replay; no canonical store was created.',
+    };
+    if (suspended && (store.pendingReplayCount?.() > 0 || queuedWork(resolution.projectRoot) > 0)) {
+      const failed = miss('outbox-replay');
+      return { ...failed, context: `${failed.context} Replay is suspended by capture consent; no older checkpoint was injected.` };
+    }
     if (initializing) {
       fs.mkdirSync(path.dirname(resolution.canonicalAgentDbPath), { recursive: true, mode: 0o700 });
       initializeCanonicalStore(store, resolution);
+    }
+    if (!suspended) {
+      const queue = drainCaptureQueue({ projectDir, budgetMs: Math.max(0, deadlineAt - Date.now()),
+        makeStoreFactory: () => () => store });
+      if (queue.state !== 'settled') {
+        const failed = miss('outbox-replay');
+        return { ...failed, pendingReplay: queue.pending,
+          context: `${failed.context} Durable capture work remains pending; no older checkpoint was injected.` };
+      }
     }
     // A pending snapshot is newer observable work. Never label an older committed head restored
     // while that work remains unverified. Replay uses the same managed exact-readback store path.
     let restored;
     try {
-      restored = store.restoreLatest({ maxOutputBytes: payloadLimit, replayPending: true, projectToBound: true });
+      restored = store.restoreLatest({ maxOutputBytes: payloadLimit, replayPending: !suspended, projectToBound: true });
     } catch (error) {
       if (store.pendingReplayCount?.() > 0) {
         const failed = miss('outbox-replay');

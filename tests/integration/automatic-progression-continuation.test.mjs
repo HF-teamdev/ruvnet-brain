@@ -5,6 +5,7 @@ import { adoptedProject, cleanup, fakeRuflo } from '../helpers/continuity-fixtur
 import { ProjectProgressionStore } from '../../plugin/scripts/project-progression-store.mjs';
 import { buildProjectProgression } from '../../plugin/scripts/project-progression-producer.mjs';
 import { createProgressionSnapshot, restoreProjectProgression } from '../../plugin/scripts/project-progression-contract.mjs';
+import { queueCapture, queuedWork } from '../../plugin/scripts/session-snapshot-hook.mjs';
 import { restoreProgressionForSession } from '../../plugin/scripts/project-progression-session-start.mjs';
 
 function fixture() {
@@ -93,6 +94,20 @@ describe('automatic progression preserves durable work', () => {
     const receipt = f.store.outbox.records().find((row) => row.type === 'commit' && row.eventKey === pending.eventKey);
     expect(receipt.payloadDigest).toBe(pending.payloadDigest);
     expect(f.store.retrieveSnapshots([pending.eventKey]).snapshots).toEqual([pending]);
+  });
+
+  it('drains a frozen capture queue before restoring its first startup state', () => {
+    const f = fixture(); f.store.capture(snapshot(f, 'claude'));
+    const produced = automatic(f); produced.completeProjectState.blockers = ['queued failure evidence'];
+    expect(queueCapture({ projectDir: f.dir, event: 'Stop', host: 'codex', payload: {
+      session_id: 'queued-fixture', hook_event_name: 'Stop', projectProgression: produced,
+    } })).toBeTruthy();
+    const result = restoreProgressionForSession({ env: { ...f.env, CLAUDE_PROJECT_DIR: f.dir }, cwd: f.dir,
+      storeFactory: () => f.store });
+    expect(result.status).toBe('restored');
+    expect(result.context).toContain('queued failure evidence');
+    expect(queuedWork(f.dir)).toBe(0);
+    expect(f.cli.calls().filter((call) => call.argv[1] === 'store')).toHaveLength(2);
   });
 
   it('does not inject an older head when pending replay is refused', () => {
