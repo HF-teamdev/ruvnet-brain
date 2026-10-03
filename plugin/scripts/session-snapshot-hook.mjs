@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { developmentHooksSuspended } from './development-maintenance.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ProgressionOutbox } from './project-progression-outbox.mjs';
@@ -12,7 +14,8 @@ import { projectDirectory } from './project-identity.mjs';
 import { buildProjectProgression } from './project-progression-producer.mjs';
 import { ProjectProgressionStore } from './project-progression-store.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
-import { captureTurnOutcome } from './turn-outcome-capture.mjs';
+import { redactProgression } from './project-progression-contract.mjs';
+import { captureTurnOutcome, resolveTurnDb } from './turn-outcome-capture.mjs';
 import { captureContinuityEvents, stopNotice } from './continuity-journal.mjs';
 
 /**
@@ -149,7 +152,7 @@ export function runSessionSnapshotHook(projectDir, event, {
     if (payload.hook_event_name !== event) {
       throw new Error(`progression boundary mismatch: expected ${event}, received ${payload.hook_event_name}`);
     }
-    const result = captureProgression({ host, payload, projectDir });
+    const result = captureProgression({ host, payload, projectDir, storeFactory: makeStoreFactory(now() + budgetMs) });
     return { ...idle, progressionCaptured: true, receipt: result.receipt };
   }
 
@@ -187,7 +190,10 @@ export function runSessionSnapshotHook(projectDir, event, {
   // `ordered` is the worker's own re-entry: it already holds the lock and is draining in order.
   let token = ordered;
   const handOff = (why) => {
-    const queued = queueCapture({ projectDir: root, event, host, payload });
+    let frozen;
+    try { frozen = produce({ resolution, payload, host, trigger: event }); } catch { frozen = null; }
+    const queued = frozen?.projectProgression ? queueCapture({ projectDir: root, originProjectDir: projectDir, event, host,
+      payload: { session_id: payload.session_id, hook_event_name: event, projectProgression: frozen.projectProgression } }) : null;
     const handed = queued ? spawnReplay({ projectDir: root, token }) : false;
     if (!handed && token && token !== ordered) releaseReplayLock(root, token);
     return { ...idle, replayed: 0, progressionCaptured: false, deferredToReplayer: Boolean(queued),
@@ -304,12 +310,25 @@ const mtimeOf = (projectDir, name) => { try { return fs.statSync(path.join(proje
  * ORDER OF EXCLUSIVE CREATION: the name is the next sequence number after every queued or claimed one,
  * created with O_EXCL and retried on collision — never a clock, which can step backwards or wrap.
  */
-export function queueCapture({ projectDir, event, host, payload }) {
-  const body = JSON.stringify({ event, host, payload });
+export function queueCapture({ projectDir, originProjectDir = projectDir, event, host, payload }) {
+  // Freeze legacy callers at the original boundary too, before dropping host payload.
+  let progression = payload?.projectProgression;
+  if (!progression) {
+    try { progression = buildProjectProgression({ resolution: resolveProjectStore({ projectDir: originProjectDir }), payload, host, trigger: event }).projectProgression; } catch { return null; }
+  }
+  // This queue is durable: never serialize arbitrary host prompts, tool input or output.
+  const minimized = { session_id: payload?.session_id, hook_event_name: event,
+    ...(progression ? { projectProgression: progression } : {}) };
+  const body = JSON.stringify(redactProgression({ event, host, originProjectDir,
+    queuedAt: new Date().toISOString(), payload: minimized }).value);
   for (let attempt = 0; attempt < 64; attempt += 1) {
     const seq = Math.max(0, ...swarmEntries(projectDir).filter((n) => n.startsWith(QUEUE_PREFIX) || n.startsWith(CLAIM_PREFIX)).map(seqOf)) + 1;
     const file = path.join(projectDir, '.swarm', `${QUEUE_PREFIX}${String(seq).padStart(12, '0')}.json`);
-    try { fs.writeFileSync(file, body, { flag: 'wx', mode: 0o600 }); return file; } catch (error) {
+    try {
+      const fd = fs.openSync(file, 'wx', 0o600);
+      try { fs.writeFileSync(fd, body); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      return file;
+    } catch (error) {
       if (error?.code !== 'EEXIST') return null;
     }
   }
@@ -493,20 +512,29 @@ export function replayOutboxDetached({ projectDir, token = null, spawnFn = spawn
  */
 export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_LOCK_TOKEN || null, budgetMs = DETACHED_REPLAY_BUDGET_MS,
   makeStoreFactory = boundedStoreFactory, now = Date.now, runCapture = runSessionSnapshotHook, onClaim = null } = {}) {
+  const deadlineAt = now() + budgetMs;
+  if (developmentHooksSuspended(projectDir)) return 0;
+  const brainHome = process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain');
+  try {
+    const consent = resolveTurnDb({ projectDir, brainHome });
+    if (consent.skipped && !consent.skipped.startsWith('no project memory db')) return 0;
+  } catch { return 0; }
   let held = token || takeReplayLock(projectDir);
   let replayed = 0;
-  for (let round = 0; held && round < 8; round += 1) {
+  for (let round = 0; held && round < 8 && now() < deadlineAt; round += 1) {
     try {
       if (!adoptReplayLock(projectDir, held)) return replayed;
       reclaimOrphans(projectDir);
       const resolution = resolveProjectStore({ projectDir });
-      const store = makeStoreFactory(now() + budgetMs)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath });
+      const store = makeStoreFactory(deadlineAt)({ projectDir, requestedStorePath: resolution.canonicalAgentDbPath });
       for (const snapshot of store.outbox.pendingSnapshots()) {
+        if (now() >= deadlineAt) return replayed;
         if (!refreshReplayLock(projectDir, held)) return replayed;
         store.outbox.markCommitted(store.appendExact(snapshot));
         replayed += 1;
       }
       for (const file of queuedCaptures(projectDir)) {
+        if (now() >= deadlineAt) return replayed;
         if (!refreshReplayLock(projectDir, held)) return replayed;
         const claimed = claimQueued(file);
         if (!claimed) continue;
@@ -517,24 +545,57 @@ export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_
         }
         let job = null;
         try { job = JSON.parse(fs.readFileSync(claimed, 'utf8')); } catch { /* torn: dropped below */ }
+        let committed = false;
         try {
-          if (job) runCapture(projectDir, job.event, { rawInput: JSON.stringify(job.payload), host: job.host,
-            budgetMs, makeStoreFactory, now, ordered: held, writeMetadata: false,
-            captureTurn: () => ({ recorded: false, skipped: 'detached replay' }),
-            captureEvents: () => ({ recorded: 0, skipped: 'detached replay' }) });
-        } catch { /* a failed capture leaves its own snapshot durable in the outbox */ }
+          if (job) {
+            // Pre-upgrade raw queues lack origin identity and cannot be truthfully reconstructed.
+            if (runCapture === runSessionSnapshotHook && (!job.originProjectDir || !job.payload?.projectProgression)) { returnClaim(claimed); return replayed; }
+            const consent = resolveTurnDb({ projectDir: job.originProjectDir || projectDir, brainHome });
+            if (developmentHooksSuspended(job.originProjectDir || projectDir)
+              || (consent.skipped && !consent.skipped.startsWith('no project memory db'))) { returnClaim(claimed); return replayed; }
+            const result = runCapture(job.originProjectDir || projectDir, job.event, { rawInput: JSON.stringify(job.payload), host: job.host,
+              budgetMs: Math.max(0, deadlineAt - now()), makeStoreFactory: () => makeStoreFactory(deadlineAt), now, ordered: held, writeMetadata: false,
+              captureTurn: () => ({ recorded: false, skipped: 'detached replay' }),
+              captureEvents: () => ({ recorded: 0, skipped: 'detached replay' }) });
+            committed = result?.progressionCaptured === true && Boolean(result.receipt);
+          }
+        } catch { /* retain the queue until an exact-readback receipt exists */ }
+        if (!committed) { returnClaim(claimed); return replayed; }
         try { fs.rmSync(claimed, { force: true }); } catch { /* best effort */ }
       }
     } catch { /* the debt stays durable; the next boundary hands it on again */ } finally {
       releaseReplayLock(projectDir, held);
     }
-    held = queuedWork(projectDir) ? takeReplayLock(projectDir) : null;
+    held = now() < deadlineAt && queuedWork(projectDir) ? takeReplayLock(projectDir) : null;
   }
+  if (held) releaseReplayLock(projectDir, held);
   return replayed;
+}
+
+
+/** Synchronous bounded startup drain. Pending debt must downgrade restore, never disappear. */
+export function drainCaptureQueue({ projectDir, budgetMs = 1000, ...options } = {}) {
+  const startedAt = Date.now();
+  const resolution = resolveProjectStore({ projectDir, gitTimeoutMs: Math.max(1, Math.min(300, budgetMs)) });
+  const root = resolution.projectRoot;
+  const replayed = runOutboxReplay({ ...options, projectDir: root, budgetMs: Math.max(0, budgetMs - (Date.now() - startedAt)) });
+  let outboxPending = 0;
+  try { outboxPending = new ProgressionOutbox({ projectRoot: root }).pendingSnapshots().length; } catch { return { state: 'degraded', replayed, pending: null }; }
+  const pending = queuedWork(root) + outboxPending;
+  return { state: pending ? 'pending' : 'settled', replayed, pending };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs') && process.argv[2] === '--replay-outbox') {
   try { runOutboxReplay({ projectDir: process.cwd() }); } catch { /* the debt stays durable in the outbox */ }
+} else if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs')
+  && ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SubagentStop'].includes(process.argv[2])) {
+  // Compatibility entrypoint uses the same minimized transition producer as direct registrations.
+  try {
+    const { runProjectTransitionHook } = await import('./project-transition-hook.mjs');
+    const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+    const result = runProjectTransitionHook(payload.cwd || projectDirectory(), process.argv[2], { payload });
+    if (result.state === 'pending') process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition remains pending; exact readback was not verified.' }));
+  } catch { process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition capture degraded; exact readback was not verified.' })); }
 } else if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs')) {
   // projectDirectory() is the SAME derivation the Console's detector uses. Deriving it here
   // independently is what let this hook write a receipt the Console then reported as missing (#85).
