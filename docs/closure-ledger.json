@@ -60,7 +60,7 @@
       "status": "open",
       "tier": "opus",
       "effort": "1d",
-      "probeState": "planned"
+      "probeState": "implemented"
     },
     {
       "id": "G-002",
@@ -88,7 +88,7 @@
       "status": "open",
       "tier": "sonnet+opus-review",
       "effort": "2h",
-      "probeState": "planned"
+      "probeState": "implemented"
     },
     {
       "id": "G-003",
@@ -413,7 +413,7 @@
       "status": "open",
       "tier": "sonnet",
       "effort": "2h",
-      "probeState": "planned"
+      "probeState": "implemented"
     },
     {
       "id": "G-015",
