@@ -1,12 +1,12 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "adr": "ADR-102",
   "generated": "2026-10-03",
   "baseline": {
     "commit": "3ddeb1fd",
     "version": "4.5.2"
   },
-  "note": "DRAFT. status is a claim checked by scripts/closure-gate.mjs (proposed); a row is closed only by a published proof receipt of evidence class EXECUTED. Severity order: SECURITY, PRIVACY, DATA-LOSS, FALSE-GREEN, DOES-NOT-FIRE, CUSTOMER-VISIBLE, HYGIENE.",
+  "note": "DRAFT, NOT ENFORCING. Status is a planning claim; candidate proof never closes a row. Only authenticated EXECUTED published proof after install-verified derives CLOSED. Decision status means unresolved DECISION-PENDING, never an approved waiver. All target versions and acceptance assertions are retained.",
   "issueDispositions": {
     "198": "ALREADY FIXED (4 named tests pass on 3ddeb1fd; fixing commit not identified)",
     "232": "ALREADY FIXED by removal 40166baf",
@@ -59,7 +59,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "opus",
-      "effort": "1d"
+      "effort": "1d",
+      "probeState": "planned"
     },
     {
       "id": "G-002",
@@ -86,7 +87,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet+opus-review",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-003",
@@ -115,7 +117,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "opus",
-      "effort": "1d"
+      "effort": "1d",
+      "probeState": "planned"
     },
     {
       "id": "G-004",
@@ -142,7 +145,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "opus",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-005",
@@ -165,7 +169,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-006",
@@ -190,7 +195,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "opus",
-      "effort": "3h"
+      "effort": "3h",
+      "probeState": "planned"
     },
     {
       "id": "G-007",
@@ -213,7 +219,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "opus",
-      "effort": "1d"
+      "effort": "1d",
+      "probeState": "planned"
     },
     {
       "id": "G-008",
@@ -241,7 +248,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "opus",
-      "effort": "1.5d"
+      "effort": "1.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-009",
@@ -272,7 +280,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "opus",
-      "effort": "1.5d"
+      "effort": "1.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-010",
@@ -297,7 +306,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-011",
@@ -323,7 +333,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "3h"
+      "effort": "3h",
+      "probeState": "planned"
     },
     {
       "id": "G-012",
@@ -348,7 +359,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-013",
@@ -372,11 +384,12 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet+owner-seat",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-014",
-      "gap": "Failed turn-capture writes are invisible: the receipt records status 1 with error null, stderr is discarded, nothing reads the receipts, and SessionStart still says \"recording ✓\".",
+      "gap": "Failed turn-capture writes are invisible: the receipt records status 1 with error null, stderr is discarded, nothing reads the receipts, and SessionStart still says \"recording \u2713\".",
       "severity": "FALSE-GREEN",
       "issues": [
         370
@@ -399,7 +412,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-015",
@@ -423,11 +437,12 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-016",
-      "gap": "The installer prints \"✓ 11 router tools\" while 7 of 10 installed tools fail with ERR_MODULE_NOT_FOUND.",
+      "gap": "The installer prints \"\u2713 11 router tools\" while 7 of 10 installed tools fail with ERR_MODULE_NOT_FOUND.",
       "severity": "FALSE-GREEN",
       "issues": [
         341
@@ -443,14 +458,15 @@
         "evidenceClass": "EXECUTED",
         "asserts": [
           "from the published tarball every installed tool loads with --help from a temp cwd",
-          "installer ✓ is computed from that load check"
+          "installer \u2713 is computed from that load check"
         ]
       },
       "proofArtifact": "closure-receipts/<version>/G-016.json",
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-017",
@@ -476,7 +492,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "opus",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-018",
@@ -487,7 +504,7 @@
         "R16",
         "R15"
       ],
-      "evidence": "fork-A: only signal is the SessionStart \"recording ✓ (last write …)\" line, continuity events only",
+      "evidence": "fork-A: only signal is the SessionStart \"recording \u2713 (last write \u2026)\" line, continuity events only",
       "acceptanceTest": {
         "probe": "tests/e2e/closure/G-018.probe.mjs",
         "realProcess": true,
@@ -501,7 +518,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-019",
@@ -524,7 +542,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "opus",
-      "effort": "1.5d"
+      "effort": "1.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-020",
@@ -548,7 +567,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-021",
@@ -574,7 +594,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "3h"
+      "effort": "3h",
+      "probeState": "planned"
     },
     {
       "id": "G-022",
@@ -600,7 +621,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "opus",
-      "effort": "2d"
+      "effort": "2d",
+      "probeState": "planned"
     },
     {
       "id": "G-023",
@@ -624,7 +646,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "opus",
-      "effort": "1d"
+      "effort": "1d",
+      "probeState": "planned"
     },
     {
       "id": "G-024",
@@ -649,7 +672,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "opus",
-      "effort": "1d"
+      "effort": "1d",
+      "probeState": "planned"
     },
     {
       "id": "G-025",
@@ -672,7 +696,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "opus",
-      "effort": "1d+owner-decision"
+      "effort": "1d+owner-decision",
+      "probeState": "planned"
     },
     {
       "id": "G-026",
@@ -695,7 +720,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "opus+sonnet",
-      "effort": "3h"
+      "effort": "3h",
+      "probeState": "planned"
     },
     {
       "id": "G-027",
@@ -720,7 +746,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "opus",
-      "effort": "1d"
+      "effort": "1d",
+      "probeState": "planned"
     },
     {
       "id": "G-028",
@@ -746,7 +773,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "opus",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-029",
@@ -771,7 +799,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "opus",
-      "effort": "0.5d (policy) + 4h (triage, 4.6.1)"
+      "effort": "0.5d (policy) + 4h (triage, 4.6.1)",
+      "probeState": "planned"
     },
     {
       "id": "G-030",
@@ -796,7 +825,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "opus",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-031",
@@ -821,7 +851,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-032",
@@ -846,7 +877,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "sonnet",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-033",
@@ -858,7 +890,7 @@
       "requirement": [
         "R13"
       ],
-      "evidence": "fork-B probe: \"staged ReleaseCoverage failed integrity — release version 4.5.2 differs from 4.3.40\"",
+      "evidence": "fork-B probe: \"staged ReleaseCoverage failed integrity \u2014 release version 4.5.2 differs from 4.3.40\"",
       "acceptanceTest": {
         "probe": "tests/e2e/closure/G-033.probe.mjs",
         "realProcess": true,
@@ -871,7 +903,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "opus",
-      "effort": "2d"
+      "effort": "2d",
+      "probeState": "planned"
     },
     {
       "id": "G-034",
@@ -894,7 +927,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-035",
@@ -918,7 +952,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "sonnet",
-      "effort": "3h"
+      "effort": "3h",
+      "probeState": "planned"
     },
     {
       "id": "G-036",
@@ -944,7 +979,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-037",
@@ -967,7 +1003,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-038",
@@ -990,7 +1027,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "opus",
-      "effort": "2d"
+      "effort": "2d",
+      "probeState": "planned"
     },
     {
       "id": "G-039",
@@ -1016,7 +1054,8 @@
       "release": "4.6.0",
       "status": "open",
       "tier": "opus",
-      "effort": "with G-038"
+      "effort": "with G-038",
+      "probeState": "planned"
     },
     {
       "id": "G-040",
@@ -1041,7 +1080,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-041",
@@ -1064,7 +1104,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-042",
@@ -1089,7 +1130,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-043",
@@ -1112,7 +1154,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "2h"
+      "effort": "2h",
+      "probeState": "planned"
     },
     {
       "id": "G-044",
@@ -1135,7 +1178,8 @@
       "release": "4.6.1",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-045",
@@ -1158,7 +1202,8 @@
       "release": "4.6.1",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-046",
@@ -1181,7 +1226,8 @@
       "release": "4.5.3",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-047",
@@ -1206,7 +1252,8 @@
       "release": "4.6.1",
       "status": "open",
       "tier": "sonnet",
-      "effort": "3h"
+      "effort": "3h",
+      "probeState": "planned"
     },
     {
       "id": "G-048",
@@ -1229,7 +1276,8 @@
       "release": "4.6.0",
       "status": "decision",
       "tier": "opus",
-      "effort": "0.5d"
+      "effort": "0.5d",
+      "probeState": "planned"
     },
     {
       "id": "G-049",
@@ -1254,7 +1302,8 @@
       "release": "4.5.4",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-050",
@@ -1279,7 +1328,8 @@
       "release": "4.6.1",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-051",
@@ -1304,7 +1354,8 @@
       "release": "4.6.1",
       "status": "open",
       "tier": "sonnet",
-      "effort": "1h"
+      "effort": "1h",
+      "probeState": "planned"
     },
     {
       "id": "G-052",
@@ -1329,7 +1380,28 @@
       "release": "4.6.1",
       "status": "decision",
       "tier": "owner",
-      "effort": "15m"
+      "effort": "15m",
+      "probeState": "planned"
     }
-  ]
+  ],
+  "implementationState": "NOT ENFORCING",
+  "qualificationContract": {
+    "phases": [
+      "candidate",
+      "published"
+    ],
+    "dueSet": "Freeze ledgerDigest and target release; select unresolved rows with release <= target, complete requirement probes whose fullRequirementTarget <= target, and established published regressions. Target or contract changes require a new candidate and reviewed provenance; no automatic deferral.",
+    "candidate": "Fresh EXECUTED passing receipts against exact sealed tarball sha512; negative controls required. Missing, skipped, stale, failed or UNKNOWN selected evidence blocks. No future npm lookup.",
+    "published": "Repeat frozen due/regression sets on public bytes; npm dist.integrity must equal candidate sha512; bind releaseTransactionId and authenticated install-verified aggregate before closure.",
+    "requirementRegressions": "Every previously MET complete requirement and contract-required previously CLOSED gap remains regression-blocking. Partial gap evidence cannot make a full requirement MET.",
+    "futureDebt": "Retain future planned probes and unresolved decisions as OPEN / NOT-PROVEN / DECISION-PENDING; no qualification credit.",
+    "reportLists": [
+      "due",
+      "futureDebt",
+      "regressions",
+      "decisionsPending",
+      "candidateEvidence",
+      "publishedEvidence"
+    ]
+  }
 }

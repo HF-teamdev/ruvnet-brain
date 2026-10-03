@@ -1,9 +1,10 @@
 ---
 id: ADR-102
-title: Completion and the closure ledger — every gap and every owner requirement proven on the published package, or the release does not ship
+title: Completion and the closure ledger — release-scoped proof, persistent North Star debt, and published closure
 status: Proposed
 date: 2026-10-03
 updated: 2026-10-03
+version: 0.1.1
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [governance, release, requirements, issues, agentdb, privacy, closure]
 supersedes: []
@@ -38,11 +39,15 @@ governs:
 > on the project."
 
 The answer to the second question is a mechanism, not a promise. This ADR defines it, and lists the
-work it will force.
+work it is intended to force. **Implementation state: NOT ENFORCING.** The gate, probe runner and
+planned probes described here do not exist at this baseline. This amendment implements no release
+gate, qualifies no candidate, closes no gap or issue, and marks no requirement MET. CONTRIBUTING.md
+remains the operating rulebook; the contracts below are proposed additions, not current enforcement.
 
 ## How this review was done
 
-AgentDB first (R15). Recalled before any finding:
+AgentDB first (R15). The following is the original review's historical recall record; this
+amendment requires canonical-only authoritative recall, as specified in (d). Recalled before any finding:
 
 - **Project store** `.swarm/memory.db` (ns `default`): `plan-4.4-4.5-20260930`, `plan-4.4-4.5-20260930-v2`,
   `north-star-audit-2026-10-02-1790957160000`, `north-star-reconciliation-2026-10-02-1790961540000`,
@@ -53,7 +58,7 @@ AgentDB first (R15). Recalled before any finding:
   `decision-release-canary-integrity-vs-quality-20260930`,
   `lesson-agentdb-first-before-any-score-status-or-plan`, `lesson-automation-cannot-ack-itself`,
   `scorecard-2026-07-10-evening`, `scorecard-gpt56-27aae9e-20260728-1254`.
-- **MCP store** `.swarm/agentdb-memory.db`: semantic search on the 4.5 auto-update and nightly topics
+- **MCP store (noncanonical diagnostic history)** `.swarm/agentdb-memory.db`: semantic search on the 4.5 auto-update and nightly topics
   (hits were `turns` records and two older `project-state-current` rows; nothing contradicting the above).
 - **Global store** `~/.claude/global-memory/.swarm/memory.db` (ns `global`):
   `lesson-audit-the-answer-not-the-wiring`, `lesson-capture-and-enforcement-must-share-a-store`,
@@ -110,13 +115,17 @@ did not fire on the owner's Mac for three reasons:
   left off after the release window.
 - Nothing proves the behaviour on published bytes after release.
 
-All three are structural. All three are closed by the mechanism below.
+All three are structural. All three remain obligations for the proposed mechanism below; this document does not close them.
 
 ## Decision
 
-**A release ships only when every gap targeted at it is proven closed, and every owner requirement is
-proven met, by an executed probe against the bytes customers install.** Proof is a receipt bound to
-the package's npm integrity. It is never a document someone edits. The mechanism has seven parts.
+A release candidate qualifies only when every gap due for that release has an executed passing
+candidate receipt against the exact sealed package, and the candidate passes the established
+requirement regression probes. Future-target gaps and unproven requirements remain visible as open
+North Star debt; they neither become MET nor disappear when a patch qualifies. Publication does not
+itself close a gap. Closure requires passing public verification against the same package integrity
+after the release reaches install-verified. The full North Star is achieved only when every owner
+requirement has current complete published proof. The proposed mechanism has seven parts.
 
 ### (a) The closure ledger and its gate
 
@@ -124,39 +133,59 @@ the package's npm integrity. It is never a document someone edits. The mechanism
   severity, issues[], requirement[], evidence, acceptanceTest{probe, realProcess, evidenceClass, asserts[]},
   proofArtifact, release, status, tier, effort}`. The draft committed with this ADR holds 52 rows
   (G-001…G-052) and a disposition for each of the 22 open issues.
-- `scripts/closure-gate.mjs` has four modes. All are deterministic and none needs a model:
-  - `--check` (every PR to a release branch and `canonical-qa`):
-    - the schema is valid;
-    - every open GitHub issue appears in some row's `issues[]`;
-    - every probe path exists and has a recorded mutant run (the guarded behaviour removed → probe red);
-    - every requirement R1–R17 has at least one probe;
-    - no `status: closed` row lacks a published receipt;
-    - no `decision` row lacks a decision key;
-    - severity order holds (DDD-0022 invariant 4).
-  - `--release X.Y.Z` (preflight and `protected-release` identity job): every row with `release ≤ X.Y.Z`
-    and every requirement probe must have an **EXECUTED** receipt from this run, bound to the candidate.
-    Preflight binds to the `npm pack` sha512. Public verification binds to npm `dist.integrity`. Any
-    missing or red receipt fails the job. Evidence classes follow rUv's agentic-qe quality gate, which
-    "block[s] only on EXECUTED/STATIC" (`agentic-qe/assets/agents/v3/qe-quality-gate.md`). Here, only
-    EXECUTED closes a row.
-  - `--published` (daily, `requirements-probe.yml`, after the corpus nightly): runs every requirement
-    probe against npm `latest` on ubuntu, macOS and Windows in isolated homes. A red result fails the
-    run, which pages through `ntfy-alerts`. This extends `published-surface-probe` beyond `--help`.
-  - `--status`: prints the table of rows and requirements with derived state. This is the only status
-    surface. `WORK-REGISTER.md` and the status paragraphs in `PROGRESS.md` become generated or retired
-    (G-047).
-- **Closed is derived.** Receipts are release assets, signed alongside
-  `public-verification-aggregate.json` (the existing pattern). The committed `status` field is a claim.
-  The gate compares it with the derivation and fails on any mismatch, so nobody can mark a row done by
-  editing a file.
+- Proposed `scripts/closure-gate.mjs` modes (deterministic; none needs a model):
+  - `--check` validates the complete ledger: unique immutable IDs; valid severity and target version;
+    issue-to-gap links; requirement-to-gap and requirement-to-probe declarations; provenance for
+    target or disposition changes; and consistency between stored claims and derived evidence.
+    A planned future probe may be absent, but remains explicitly PLANNED and cannot produce
+    qualification or closure. A claimed executable or complete probe must exist. This mode never
+    claims a release qualified.
+  - `--release X.Y.Z --phase candidate` computes the due set from all unresolved rows with target
+    `release <= X.Y.Z`, plus complete requirement probes explicitly due at this version. It also
+    selects previously closed rows whose regression probes are required by the current contract,
+    and all previously MET requirement probes. Each selected probe must exist, have a valid
+    negative-control/mutant result, and produce a fresh EXECUTED receipt in this qualification run
+    against the sealed candidate's sha512 integrity. Missing, failed, skipped, stale or UNKNOWN
+    evidence blocks qualification. Future-target rows remain OPEN, NOT-PROVEN or DECISION-PENDING,
+    never PASS. Passing gap-level evidence does not make a whole requirement MET.
+  - `--release X.Y.Z --phase published` runs the same frozen due and regression sets against the
+    public installation, requires npm `dist.integrity` to equal the candidate sha512 integrity,
+    and binds results to the release transaction and authenticated install-verified aggregate.
+    Only then can due rows derive CLOSED and linked issues become eligible for closure. A failed
+    public probe retains historical candidate evidence, derives public verification FAILED and
+    enters the existing recovery rail; candidate evidence never becomes published proof by relabeling.
+  - `--published` schedules probes implemented and published for the current version. Declared,
+    not-yet-due probes remain PLANNED / NOT-PROVEN in the complete report. Missing or failed due
+    probes and regressions page; future planned work remains visible debt, not a fabricated pass
+    or a nightly failure without a runnable probe.
+  - `--status` reports due, futureDebt, regressions, decisionsPending, candidateEvidence and
+    publishedEvidence separately. The proposed generated/retired status surfaces are G-047 work.
+
+The due set is frozen in the candidate receipt using the ledger digest and target version. A change
+to target version, requirement scope or probe selection requires a new candidate and review. The
+release process cannot defer a row automatically or mutate the ledger to turn a failure green.
+Security and privacy items due now cannot be deferred merely to admit lower-severity work. Unresolved
+decision rows remain open obligations unless an actual owner decision retrieved from the canonical
+AgentDB path changes their scope.
+
+**States are phase-specific.** OPEN describes unresolved debt; CANDIDATE-PROVEN describes passing
+exact-candidate execution; CLOSED describes passing exact-public execution after install-verified.
+Candidate proof never authorizes an issue-closure comment. Historical published closure remains
+traceable; a current regression is REGRESSED and cannot be hidden by an older receipt. Only
+receipt-authenticated derived states are displayed as proof; editable ledger status remains a claim.
+Receipts are proposed signed release assets alongside `public-verification-aggregate.json`.
 
 ### (b) The requirements ledger — "shipped but doesn't fire" cannot recur
 
 `docs/requirements-ledger.json` lists R1–R17 in the owner's words, each with its source AgentDB key,
-its gaps and its probe(s) under `tests/e2e/requirements/`. A requirement is **MET** only while its
-newest published receipt is green and younger than 36h (daily) or bound to the current npm `latest`.
-New: **R16** (READ-ALWAYS / WRITE-ALWAYS AgentDB, 2026-10-03) and **R17** (this mechanism itself; the
-gate proves itself).
+its gaps and its complete probe contract under `tests/e2e/requirements/`. R1–R17 remain the complete
+owner contract. A requirement is **MET** only when every assertion in its complete acceptance contract
+has current passing published proof (daily: younger than 36h; release: current public identity).
+Passing G-001 and G-002 supplies evidence toward R11 and R6 but does not make either requirement MET.
+A patch can qualify with future requirements NOT-PROVEN when its complete due set and regression
+obligations pass. Existing MET requirements cannot regress. Requirements without a full implemented
+probe remain NOT-PROVEN; narrower gap probes cannot be relabeled as the full requirement probe.
+R16 is READ-ALWAYS / WRITE-ALWAYS AgentDB; R17 is the enforcement mechanism itself.
 
 Probe contract (`scripts/requirement-probe.mjs`):
 
@@ -165,8 +194,20 @@ Probe contract (`scripts/requirement-probe.mjs`):
 - Use an isolated home.
 - Drive real hook payloads through the installed `hook-shim.mjs`, or the host CLI where CI has one
   (preflight already installs host CLIs). Drive the real MCP server and the real updater.
-- Write `{probeId, command, exitCode, version, integrity, os, node, startedAt, outputDigest,
-  assertions[]}`.
+- Write immutable receipts with: schemaVersion, phase (`candidate | published`), releaseVersion,
+  sourceIdentity, ledgerDigest, requirementContractDigest, probeId, probeDigest, command, exitCode,
+  artifactIntegrity, installationSource, os, node, host, startedAt, finishedAt, outputDigest,
+  assertions, qualificationRunId and negativeControlEvidence. Candidate artifactIntegrity is sha512
+  of the exact packed/sealed tarball installed by the probe. Published artifactIntegrity is registry
+  `dist.integrity` and must equal the candidate integrity. Published receipts additionally bind
+  releaseTransactionId and the authenticated install-verified aggregate identity. A candidate receipt
+  never needs a nonexistent future npm release.
+
+**Baseline** is the separately identified currently published package and its known debt, not a
+passing candidate. Baseline and candidate receipts carry distinct identities. Baseline failures
+cannot satisfy candidate obligations; baseline successes cannot be replayed as current candidate
+proof. A promised fix must expose its defect on the baseline or defined mutant and satisfy every
+acceptance assertion on the candidate.
 
 A probe that imports from the source checkout is a unit test and cannot close anything.
 
@@ -183,8 +224,10 @@ The R3 probe is the one that would have caught 4.5:
 
 - install the packed candidate through the public-lane path;
 - run `--doctor --hooks` in the claudeOnly, codexOnly and dual modes (the 4.5.0 failure);
-- run every requirement probe;
-- run `closure-gate --release`.
+- run the frozen due gap probes, complete requirement probes explicitly due at this version, and
+  all established requirement regression probes against the packed candidate;
+- run `closure-gate --release X.Y.Z --phase candidate`; public verification repeats the same
+  obligations with `--phase published`, showing every remaining requirement and gap as persistent debt.
 
 Re-introducing the 4.5.0 defect must turn preflight red. That is this job's own mutant. A pending
 release transaction is checked first, so a run fails in about a minute instead of after the build (G-046).
@@ -192,9 +235,12 @@ release transaction is checked first, so a run fails in about a minute instead o
 ### (d) AgentDB first — applied to every review, every score, and to the product (R15, R16)
 
 - **Reviews and scores.** Every review, score or audit committed under `docs/reviews/` or `docs/audits/`
-  after this ADR carries `agentdbRecall: {stores: [...], keys: [...]}` naming both project stores, and
-  `closure-gate --check` rejects one without it. Reviewer and auditor prompts are given the recalled
-  records as input; this ADR's own "How this review was done" is the template.
+  after this ADR carries `agentdbRecall: {stores: [...], keys: [...]}` naming the canonical `<project>/.swarm/memory.db` and exact keys retrieved through global Ruflo, and
+  the proposed `closure-gate --check` would reject one without it. Reviewer and auditor prompts use the recalled
+  records as input. The secondary MCP store is diagnostic history only; it cannot override canonical
+  decisions or satisfy authoritative recall. The historical review above records what was read, not
+  a requirement to consult both stores. Source: [CONTRIBUTING hook boundaries](../../CONTRIBUTING.md#hooks-what-runs-automatically);
+  exact-path store/read-back pattern: [continuity journal](../../plugin/scripts/continuity-journal.mjs).
 - **Ledger mirror.** Every ledger state change is mirrored append-only to AgentDB, namespace
   `closure-ledger`, key `ledger-<id>-<epochms>`, with `ruflo memory store --no-upsert --path
   <project>/.swarm/memory.db` and an exact-key read-back. The owner's 2026-10-03 requirement is stored
@@ -202,8 +248,8 @@ release transaction is checked first, so a run fails in about a minute instead o
 - **The product (G-022, G-023, G-024, G-006, G-018).** ADR-101's branch (`fix-agentdb-gate` @adbcd75f,
   unpublished) is the base, widened from keyword-triggered recall (10.9% of 266 real prompts in fork A's
   replay) to:
-  - **READ-ALWAYS:** on every non-trivial prompt (acks skipped), a relevance-thresholded block from both
-    stores, ≤600 B, ≤2 s, silent on failure, deduped per session by content hash, never displacing a
+  - **READ-ALWAYS:** on every non-trivial prompt (acks skipped), a relevance-thresholded block from the explicit canonical
+    `<project>/.swarm/memory.db` through global Ruflo, ≤600 B, ≤2 s, silent on failure, deduped per session by content hash, never displacing a
     safety block. SessionStart surfaces `plan-*`, `decision-*` and `scorecard-*`. PreToolUse(Bash) recall
     runs before `gh workflow run`, `npm publish`, `rm -rf` and `git push`. Spawn-time injection of the
     recalled keys goes into subagent prompts.
@@ -256,10 +302,18 @@ Every row's acceptance test is in the ledger. Release targets:
 | **4.6.0** | The product the owner asked for | G-007, G-025 (owner decision on advocacy default), G-026, G-027 (or owner no-go), G-032, G-033, G-035, G-037, G-038, G-039, G-048 (decision) |
 | **4.6.1** | Hygiene and currency | G-029 backlog triage, G-044, G-045, G-047, G-050, G-051, G-052 |
 
-4.5.3 is the largest because the mechanism must exist before it can force anything. If it must be
-split, the cut is: privacy rows (G-001, G-002, G-003) plus the gate in `--check` mode ship first, and
-`--release` becomes blocking in the very next release. The gate never ships in a report-only mode for
-more than one release.
+The existing targets remain unchanged: 19 rows are due at 4.5.3. This amendment does not narrow that
+release to privacy alone or silently defer any row. If the next patch is narrowed, amend the target
+table and ledger together before qualification, record each deferral and reason, and freeze the
+smaller due set. The integration owner must state the actual bounded patch target set. Candidate and
+published gates must enforce that due set from the first release claiming this mechanism. A
+schema-only ledger may ship as scaffolding labeled **NOT ENFORCING**; it cannot claim R17, issue
+closure or release qualification. No generic report-only waiver turns a due privacy/security failure
+green. Future full North Star goals do not block an otherwise qualified patch, but remain debt.
+
+The ledgers retain every existing acceptance assertion. Broad phrases such as “every requirement
+probe” mean all selected due complete probes and established regressions in the phase-specific
+contract above, never nonexistent future probes or permission to omit a due gap assertion.
 
 ### (g) What the independent adversarial reviewers check next
 
@@ -290,7 +344,7 @@ above as input:
 - **Costs and trade-offs.**
   - Preflight and public verification get slower by the requirement-probe runtime (not measured yet).
   - CI cannot read AgentDB (`.swarm/` is local and gitignored). So decision keys and recall manifests are
-    verified in the release agent's local `closure-gate --check --local`, and CI checks only that they
+    verified in the release agent's local `closure-gate --check --local`, and CI would check only that they
     are present. A reviewer could cite a key that does not exist and CI would not catch it; the local run
     would.
   - Hook probes in CI drive the installed `hook-shim.mjs` and the host CLIs that are present. Live model
