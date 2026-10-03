@@ -10,6 +10,7 @@ import { buildProjectProgression } from './project-progression-producer.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { redactProgression } from './project-progression-contract.mjs';
 import { ProgressionOutbox } from './project-progression-outbox.mjs';
+import { captureNormalizedTransition } from './project-transition-hook.mjs';
 import { boundedStoreFactory, runSessionSnapshotHook } from './session-snapshot-hook.mjs';
 
 /**
@@ -48,12 +49,13 @@ const mtimeOf = (projectDir, name) => { try { return fs.statSync(path.join(proje
 export function queueCapture({ projectDir, originProjectDir = projectDir, event, host, payload }) {
   // Freeze legacy callers at the original boundary too, before dropping host payload.
   let progression = payload?.projectProgression;
-  if (!progression) {
-    try { progression = buildProjectProgression({ resolution: resolveProjectStore({ projectDir: originProjectDir }), payload, host, trigger: event }).projectProgression; } catch { return null; }
+  if (!progression && !payload?.normalizedTransition) {
+    try { progression = buildProjectProgression({ resolution: resolveProjectStore({ projectDir: originProjectDir }), projectDir: originProjectDir, payload, host, trigger: event }).projectProgression; } catch { return null; }
   }
   // This queue is durable: never serialize arbitrary host prompts, tool input or output.
   const minimized = { session_id: payload?.session_id, hook_event_name: event,
-    ...(progression ? { projectProgression: progression } : {}) };
+    ...(progression ? { projectProgression: progression } : {}),
+    ...(payload?.normalizedTransition ? { normalizedTransition: payload.normalizedTransition } : {}) };
   const body = JSON.stringify(redactProgression({ event, host, originProjectDir,
     queuedAt: new Date().toISOString(), payload: minimized }).value);
   for (let attempt = 0; attempt < 64; attempt += 1) {
@@ -246,7 +248,8 @@ export function replayOutboxDetached({ projectDir, token = null, spawnFn = spawn
  * queued while it held it.
  */
 export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_LOCK_TOKEN || null, budgetMs = DETACHED_REPLAY_BUDGET_MS,
-  makeStoreFactory = boundedStoreFactory, now = Date.now, runCapture = runSessionSnapshotHook, onClaim = null } = {}) {
+  makeStoreFactory = boundedStoreFactory, now = Date.now, runCapture = runSessionSnapshotHook, onClaim = null,
+  captureNormalized = captureNormalizedTransition, onCaptured = null } = {}) {
   const deadlineAt = now() + budgetMs;
   if (developmentHooksSuspended(projectDir)) return 0;
   const brainHome = process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain');
@@ -284,15 +287,18 @@ export function runOutboxReplay({ projectDir, token = process.env.RUVNET_REPLAY_
         try {
           if (job) {
             // Pre-upgrade raw queues lack origin identity and cannot be truthfully reconstructed.
-            if (runCapture === runSessionSnapshotHook && (!job.originProjectDir || !job.payload?.projectProgression)) { returnClaim(claimed); return replayed; }
+            if (runCapture === runSessionSnapshotHook && (!job.originProjectDir || (!job.payload?.projectProgression && !job.payload?.normalizedTransition))) { returnClaim(claimed); return replayed; }
             const consent = resolveTurnDb({ projectDir: job.originProjectDir || projectDir, brainHome });
             if (developmentHooksSuspended(job.originProjectDir || projectDir)
               || (consent.skipped && !consent.skipped.startsWith('no project memory db'))) { returnClaim(claimed); return replayed; }
-            const result = runCapture(job.originProjectDir || projectDir, job.event, { rawInput: JSON.stringify(job.payload), host: job.host,
+            const options = { rawInput: JSON.stringify(job.payload), host: job.host,
               budgetMs: Math.max(0, deadlineAt - now()), makeStoreFactory: () => makeStoreFactory(deadlineAt), now, ordered: held, writeMetadata: false,
               captureTurn: () => ({ recorded: false, skipped: 'detached replay' }),
-              captureEvents: () => ({ recorded: 0, skipped: 'detached replay' }) });
+              captureEvents: () => ({ recorded: 0, skipped: 'detached replay' }) };
+            const result = job.payload?.normalizedTransition ? captureNormalized(job, options)
+              : runCapture(job.originProjectDir || projectDir, job.event, options);
             committed = result?.progressionCaptured === true && Boolean(result.receipt);
+            if (committed) onCaptured?.(result);
           }
         } catch { /* retain the queue until an exact-readback receipt exists */ }
         if (!committed) { returnClaim(claimed); return replayed; }

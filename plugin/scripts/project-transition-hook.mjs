@@ -11,8 +11,8 @@ import { redactText } from './continuity-events.mjs';
 import { normalizeHostEvent } from './hook-input.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { withProgressionReader } from './project-progression-reader.mjs';
-import { redactProgression, restoreProjectProgression } from './project-progression-contract.mjs';
-import { runSessionSnapshotHook, effectiveBudgetMs, queueCapture, replayOutboxDetached } from './session-snapshot-hook.mjs';
+import { redactProgression, restoreProjectProgression, digestCanonical, validateProgressionSnapshot } from './project-progression-contract.mjs';
+import { runSessionSnapshotHook, effectiveBudgetMs, queueCapture, replayOutboxDetached, runOutboxReplay } from './session-snapshot-hook.mjs';
 
 const EVENTS = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SubagentStop']);
 const TOPICS = [
@@ -84,19 +84,22 @@ export function normalizeTransition(payload, event, { now = () => new Date().toI
     ...(event !== 'PreToolUse' && Number.isSafeInteger(exitCode) ? { exitCode } : {}) };
 }
 
-export function readTransitionHistory(resolution) {
+export function readTransitionHistory(resolution, { deadlineAt = Infinity } = {}) {
+  const remaining = () => { if (Date.now() >= deadlineAt) throw new Error('transition history deadline exceeded'); };
+  remaining();
   const result = withProgressionReader(resolution.canonicalAgentDbPath, (reader) => {
     const keys = reader.listKeys('project-progression');
-    // Never silently take the latest N: that would erase concurrent or missing parents.
-    if (keys.length > 512) throw new Error('transition history exceeds bounded structural read');
-    return keys.map((key) => JSON.parse(reader.readContent('project-progression', key)));
+    // Complete ancestry under the shared deadline; never a lifetime row cap or latest-N window.
+    remaining();
+    return keys.map((key) => { remaining(); return JSON.parse(reader.readContent('project-progression', key)); });
   });
   if (!result.ok) throw new Error('canonical transition history unavailable');
   return result.value;
 }
 
-export function buildTransitionProgression({ resolution, observation, snapshots = [], sessionIdentity, host }) {
+export function buildTransitionProgression({ resolution, observation, snapshots = [], sessionIdentity, host, sourceIdentity: originalSourceIdentity }) {
   const restored = restoreProjectProgression(snapshots, { expectedProjectIdentity: resolution.projectIdentity });
+  if (snapshots.length && !restored.ok) throw new Error('nonempty transition journal has no coherent ancestry');
   const heads = snapshots.filter((snapshot) => restored.heads.includes(snapshot.eventKey));
   const prior = restored.state;
   const empty = Object.fromEntries(['plan', 'completed', 'inProgress', 'blockers', 'failures', 'decisions', 'changedFiles', 'commands', 'proofArtifacts', 'untested', 'resumeConflicts'].map((key) => [key, []]));
@@ -111,15 +114,53 @@ export function buildTransitionProgression({ resolution, observation, snapshots 
   }
   state.evidence = { ...(state.evidence ?? {}), transition: { originalEventId: observation.id, originalOccurredAt: observation.occurredAt,
     sourceMeasurement: 'head-only; tree digests not measured at this boundary', authoritative: false } };
-  // A child or observed prompt never replaces the parent's durable goal or next action.
-  const matching = heads.find((head) => head.sourceIdentity.checkoutPath === resolution.checkoutRoot)?.sourceIdentity;
-  let head = 'unmeasured';
-  try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolution.checkoutRoot, encoding: 'utf8', timeout: 300, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* explicitly unmeasured */ }
-  const sourceIdentity = { checkoutPath: resolution.checkoutRoot, worktreeId: crypto.createHash('sha256').update(resolution.checkoutRoot).digest('hex'),
-    branch: matching?.branch ?? 'unmeasured', head, trackedDigest: 'unmeasured-at-transition', untrackedDigest: 'unmeasured-at-transition', dirtyTreeDigest: 'unmeasured-at-transition' };
+  // Source identity was measured at observation time, never reconstructed by a later drainer.
+  const sourceIdentity = originalSourceIdentity || observeTransitionSource(resolution);
   return redactProgression({ canonicalAgentDbPath: resolution.canonicalAgentDbPath, sourceIdentity,
     sequence: Math.max(0, ...heads.map((item) => item.sequence)) + 1, occurredAt: observation.occurredAt,
     parentEventKeys: restored.heads, dedupId: `${host}:${sessionIdentity}:${observation.id}`, completeProjectState: state }).value;
+}
+
+export function observeTransitionSource(resolution, projectDir = resolution.checkoutRoot) {
+  let head = 'unmeasured';
+  try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolution.checkoutRoot, encoding: 'utf8', timeout: 300, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* explicitly unmeasured */ }
+  return { checkoutPath: resolution.checkoutRoot, capturePath: fs.realpathSync.native(projectDir),
+    worktreeId: crypto.createHash('sha256').update(resolution.checkoutRoot).digest('hex'), branch: 'unmeasured', head,
+    trackedDigest: 'unmeasured-at-transition', untrackedDigest: 'unmeasured-at-transition', dirtyTreeDigest: 'unmeasured-at-transition' };
+}
+
+/** Called only by the fenced queue drainer; current heads merge, original observations stay fixed. */
+export function captureNormalizedTransition(job, { readHistory = readTransitionHistory, capture = runSessionSnapshotHook,
+  budgetMs = 6500, makeStoreFactory, now = Date.now } = {}) {
+  const deadlineAt = now() + budgetMs;
+  const resolution = resolveProjectStore({ projectDir: job.originProjectDir, gitTimeoutMs: Math.max(1, Math.min(500, budgetMs)) });
+  const normalized = job.payload.normalizedTransition;
+  if (!normalized || normalized.observation?.authoritative !== false || !normalized.observation?.id
+    || normalized.sourceIdentity?.checkoutPath !== resolution.checkoutRoot) throw new Error('invalid normalized transition binding');
+  const snapshots = readHistory(resolution, { deadlineAt });
+  if (snapshots.length && !restoreProjectProgression(snapshots, { expectedProjectIdentity: resolution.projectIdentity }).ok) {
+    throw new Error('nonempty transition journal has no coherent ancestry');
+  }
+  // A failed first store already fsynced a snapshot to the outbox. If startup/replay committed
+  // that snapshot before returning to its observation job, verify the same event rather than
+  // turn one observed action into a second event at a new sequence.
+  const dedupId = `${job.host}:${job.payload.session_id}:${normalized.observation.id}`;
+  const committed = snapshots.find((snapshot) => snapshot.dedupId === dedupId
+    && validateProgressionSnapshot(snapshot, { expectedProjectIdentity: resolution.projectIdentity }).ok
+    && digestCanonical(snapshot.sourceIdentity) === digestCanonical(normalized.sourceIdentity)
+    && snapshot.completeProjectState.observations?.some((value) => digestCanonical(value) === digestCanonical(normalized.observation)));
+  if (committed) return { progressionCaptured: true, eventId: normalized.observation.id,
+    receipt: { eventKey: committed.eventKey, payloadDigest: committed.payloadDigest,
+      readbackDigest: committed.payloadDigest, readPath: 'canonical progression reader' } };
+  const progression = buildTransitionProgression({ resolution, observation: normalized.observation,
+    snapshots, sessionIdentity: job.payload.session_id, host: job.host,
+    sourceIdentity: normalized.sourceIdentity });
+  const result = capture(job.originProjectDir, job.event, { host: job.host, budgetMs: Math.max(0, deadlineAt - now()),
+    ...(makeStoreFactory ? { makeStoreFactory } : {}), writeMetadata: false,
+    rawInput: JSON.stringify({ session_id: job.payload.session_id, hook_event_name: job.event, projectProgression: progression }),
+    captureTurn: () => ({ recorded: false, skipped: 'transition boundary' }),
+    captureEvents: () => ({ recorded: 0, skipped: 'transition boundary' }) });
+  return { ...result, eventId: normalized.observation.id };
 }
 
 export function runProjectTransitionHook(projectDir, event, { payload = {}, host = process.env.RUVNET_HOOK_HOST || 'claude',
@@ -132,21 +173,19 @@ export function runProjectTransitionHook(projectDir, event, { payload = {}, host
   if (consent.skipped) return { state: 'skipped', reason: consent.skipped };
   const resolution = resolveProjectStore({ projectDir, gitTimeoutMs: 500 });
   if (!fs.existsSync(resolution.canonicalAgentDbPath)) return { state: 'skipped', reason: 'no adopted canonical store' };
-  const progression = buildTransitionProgression({ resolution, observation, snapshots: readHistory(resolution), sessionIdentity: payload.session_id, host });
-  // Root owns native event support. Failed tool boundaries retain their original trigger as
-  // evidence, while the existing writer receives its supported post-tool transport boundary.
   const transportEvent = event === 'PostToolUseFailure' ? 'PostToolUse' : event;
-  let result;
-  try { result = capture(projectDir, transportEvent, { host, budgetMs: Math.min(6500, effectiveBudgetMs(env)), writeMetadata: false,
-    rawInput: JSON.stringify({ session_id: payload.session_id, hook_event_name: transportEvent, projectProgression: progression }),
-    captureTurn: () => ({ recorded: false, skipped: 'transition boundary' }),
-    captureEvents: () => ({ recorded: 0, skipped: 'transition boundary' }) }); } catch {
-    const queued = queueCapture({ projectDir: resolution.projectRoot, originProjectDir: projectDir, event: transportEvent, host,
-      payload: { session_id: payload.session_id, hook_event_name: transportEvent, projectProgression: progression } });
-    if (queued) replayOutboxDetached({ projectDir: resolution.projectRoot });
-    result = { progressionCaptured: false, queued: Boolean(queued) };
-  }
-  return { state: result.progressionCaptured && result.receipt ? 'committed' : 'pending', eventId: observation.id, result };
+  // Fsync the selected observation BEFORE any history enumeration/merge. A deadline, corruption,
+  // or long-lived project must leave it pending rather than erase it or fabricate root ancestry.
+  const queued = queueCapture({ projectDir: resolution.projectRoot, originProjectDir: projectDir, event: transportEvent, host,
+    payload: { session_id: payload.session_id, hook_event_name: transportEvent,
+      normalizedTransition: { observation, sourceIdentity: observeTransitionSource(resolution, projectDir) } } });
+  if (!queued) return { state: 'degraded', reason: 'normalized observation queue unwritable', eventId: observation.id };
+  let result = null;
+  runOutboxReplay({ projectDir: resolution.projectRoot, budgetMs: Math.min(6500, effectiveBudgetMs(env)),
+    captureNormalized: (job, options) => captureNormalizedTransition(job, { ...options, readHistory, capture }),
+    onCaptured: (captured) => { if (captured?.eventId === observation.id) result = captured; } });
+  if (!result?.receipt) replayOutboxDetached({ projectDir: resolution.projectRoot });
+  return { state: result?.progressionCaptured && result.receipt ? 'committed' : 'pending', eventId: observation.id, result };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

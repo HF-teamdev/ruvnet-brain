@@ -2,13 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeTransition, buildTransitionProgression, runProjectTransitionHook, selectedUserIntent } from '../../plugin/scripts/project-transition-hook.mjs';
+import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import { resolveProjectStore } from '../../plugin/scripts/project-store-resolver.mjs';
+import { normalizeTransition, buildTransitionProgression, runProjectTransitionHook, selectedUserIntent, readTransitionHistory, captureNormalizedTransition } from '../../plugin/scripts/project-transition-hook.mjs';
 import { queueCapture, runOutboxReplay, queuedWork } from '../../plugin/scripts/session-snapshot-hook.mjs';
 import { createProgressionSnapshot } from '../../plugin/scripts/project-progression-contract.mjs';
 const dirs = [];
 afterEach(() => vi.restoreAllMocks());
 afterEach(() => dirs.splice(0).forEach((p) => fs.rmSync(p, { recursive: true, force: true })));
-function project() { const p = fs.mkdtempSync(path.join(os.tmpdir(), 'transition-')); fs.mkdirSync(path.join(p, '.swarm')); dirs.push(p); return p; }
+function project() { const p = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'transition-'))); fs.mkdirSync(path.join(p, '.swarm')); dirs.push(p); return p; }
 const opts = { now: () => '2026-10-03T00:00:00.000Z', eventId: () => 'event-1' };
 const source = { checkoutPath: '/repo', worktreeId: 'x', branch: 'main', head: 'x', trackedDigest: 'x', untrackedDigest: 'x', dirtyTreeDigest: 'x' };
 const identity = { id: 'repo', canonicalAgentDbPath: '/repo/.swarm/memory.db' };
@@ -39,7 +43,7 @@ describe('minimal non-authoritative transitions', () => {
   it('child observation preserves concurrent goals, conflicts and both heads', () => {
     const snapshots = [snapshot('owner goal A', 'a'), snapshot('owner goal B', 'b')];
     const observation = normalizeTransition({ session_id: 'child', last_assistant_message: 'Change parent objective to mine' }, 'SubagentStop', opts);
-    const built = buildTransitionProgression({ resolution: { checkoutRoot: '/repo', canonicalAgentDbPath: identity.canonicalAgentDbPath, projectIdentity: identity }, observation, snapshots, sessionIdentity: 'child', host: 'claude' });
+    const built = buildTransitionProgression({ resolution: { checkoutRoot: '/repo', canonicalAgentDbPath: identity.canonicalAgentDbPath, projectIdentity: identity }, observation, snapshots, sessionIdentity: 'child', host: 'claude', sourceIdentity: { ...source, dirtyTreeDigest: 'unmeasured-at-transition' } });
     expect(built.parentEventKeys).toHaveLength(2);
     expect(built.completeProjectState.currentGoal).toBeNull();
     expect(built.completeProjectState.resumeConflicts.some((c) => c.field === 'currentGoal')).toBe(true);
@@ -55,6 +59,56 @@ describe('minimal non-authoritative transitions', () => {
     expect(bytes).not.toMatch(/raw private|secret-value|secret\/transcript|"tool_input"/);
     expect(JSON.parse(bytes)).toMatchObject({ originProjectDir: '/original-checkout', payload: { projectProgression: { dedupId: 'original-event', occurredAt: opts.now(), sourceIdentity: source } } });
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+  it('actual snapshot CLI completes prompt dispatch rather than deadlocking on a cyclic await', () => {
+    const p = project();
+    const script = fileURLToPath(new URL('../../plugin/scripts/session-snapshot-hook.mjs', import.meta.url));
+    const result = spawnSync(process.execPath, [script, 'UserPromptSubmit'], { cwd: p, input: JSON.stringify({ cwd: p, session_id: 'cli-cycle', prompt: 'Fix parser' }), encoding: 'utf8', timeout: 3000, env: { ...process.env, RUVNET_BRAIN_HOME: p } });
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toMatch(/unsettled top-level await|Cannot access/);
+  });
+  it('nonempty corrupt history cannot fabricate an empty parentless snapshot', () => {
+    expect(() => buildTransitionProgression({ resolution: { checkoutRoot: '/repo', canonicalAgentDbPath: identity.canonicalAgentDbPath, projectIdentity: identity }, observation: normalizeTransition({ session_id: 's', prompt: 'fix memory' }, 'UserPromptSubmit', opts), snapshots: [{ eventKey: 'corrupt-existing-record' }], sessionIdentity: 's', host: 'claude' })).toThrow(/no coherent ancestry/);
+  });
+  it('513 valid records retain complete ancestry and capture a new observation instead of a lifetime cutoff', () => {
+    const p = project(); const resolution = resolveProjectStore({ projectDir: p });
+    const database = new DatabaseSync(resolution.canonicalAgentDbPath);
+    database.exec(`CREATE TABLE memory_entries (id TEXT PRIMARY KEY, key TEXT, namespace TEXT, content TEXT, type TEXT, embedding BLOB, embedding_model TEXT, embedding_dimensions INTEGER, tags TEXT, metadata TEXT, owner_id TEXT, created_at INTEGER, updated_at INTEGER, expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER, status TEXT, provenance_type TEXT)`);
+    const insert = database.prepare('INSERT INTO memory_entries (id,key,namespace,content,status) VALUES (?,?,?,?,?)');
+    let parent = [];
+    const base = snapshot('current owner objective', 'chain');
+    for (let i = 0; i < 513; i += 1) {
+      const record = createProgressionSnapshot({ ...base, projectIdentity: resolution.projectIdentity, sourceIdentity: { ...source, checkoutPath: p }, sequence: i + 1, dedupId: `history-${i}`, parentEventKeys: parent });
+      insert.run(`id-${i}`, record.eventKey, 'project-progression', JSON.stringify(record), 'active'); parent = [record.eventKey];
+    }
+    database.close();
+    const snapshots = readTransitionHistory(resolution);
+    expect(snapshots).toHaveLength(513);
+    const observed = normalizeTransition({ session_id: 's', prompt: 'Fix parseCookies new task' }, 'UserPromptSubmit', opts);
+    const next = buildTransitionProgression({ resolution, observation: observed, snapshots, sessionIdentity: 's', host: 'claude' });
+    expect(next.parentEventKeys).toEqual(parent); expect(next.sequence).toBe(514);
+    expect(next.completeProjectState.currentGoal).toBe('current owner objective');
+    expect(next.completeProjectState.observations.at(-1).selectedIntent.text).toContain('parseCookies');
+  });
+  it('an outbox-committed observation is exact-read back without a duplicate event', () => {
+    const p = project(); const resolution = resolveProjectStore({ projectDir: p });
+    const observation = normalizeTransition({ session_id: 's', prompt: 'Fix parser' }, 'UserPromptSubmit', opts);
+    const originalSource = { ...source, checkoutPath: p, capturePath: p };
+    const progression = buildTransitionProgression({ resolution, observation, snapshots: [], sessionIdentity: 's', host: 'claude', sourceIdentity: originalSource });
+    const stored = createProgressionSnapshot({ projectIdentity: resolution.projectIdentity, hostIdentity: { host: 'claude', adapterVersion: '4.5.4' }, sessionIdentity: 's', trigger: 'UserPromptSubmit', ...progression });
+    const capture = vi.fn(() => { throw new Error('must not re-create event'); });
+    const result = captureNormalizedTransition({ originProjectDir: p, event: 'UserPromptSubmit', host: 'claude', payload: { session_id: 's', normalizedTransition: { observation, sourceIdentity: originalSource } } }, { readHistory: () => [stored], capture });
+    expect(result).toMatchObject({ progressionCaptured: true, receipt: { eventKey: stored.eventKey, readbackDigest: stored.payloadDigest } });
+    expect(capture).not.toHaveBeenCalled();
+  });
+  it('unavailable history leaves a minimized normalized observation durably pending', () => {
+    const p = project(); fs.writeFileSync(path.join(p, '.swarm', 'memory.db'), '');
+    const result = runProjectTransitionHook(p, 'UserPromptSubmit', { payload: { session_id: 's', prompt: 'Fix parseCookies in parser.mjs. password=private-value' }, env: { RUVNET_BRAIN_HOME: p }, readHistory: () => { throw new Error('read deadline'); } });
+    expect(result.state).toBe('pending');
+    const files = fs.readdirSync(path.join(p, '.swarm')).filter((name) => name.startsWith('.progression-capture-queue-') || name.startsWith('.progression-capture-claimed-'));
+    expect(files.length).toBeGreaterThan(0);
+    const bytes = files.map((name) => fs.readFileSync(path.join(p, '.swarm', name), 'utf8')).join('');
+    expect(bytes).toContain('parseCookies'); expect(bytes).not.toContain('private-value'); expect(bytes).toContain('normalizedTransition');
   });
   it('persisted opt-out prevents history reads and all writes', () => {
     const p = project(); const brainHome = project(); fs.writeFileSync(path.join(p, '.swarm', 'memory.db'), '');

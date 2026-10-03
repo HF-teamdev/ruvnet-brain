@@ -190,7 +190,7 @@ export function runSessionSnapshotHook(projectDir, event, {
   let token = ordered;
   const handOff = (why) => {
     let frozen;
-    try { frozen = produce({ resolution, payload, host, trigger: event }); } catch { frozen = null; }
+    try { frozen = produce({ resolution, projectDir, payload, host, trigger: event }); } catch { frozen = null; }
     const queued = frozen?.projectProgression ? queueCapture({ projectDir: root, originProjectDir: projectDir, event, host,
       payload: { session_id: payload.session_id, hook_event_name: event, projectProgression: frozen.projectProgression } }) : null;
     const handed = queued ? spawnReplay({ projectDir: root, token }) : false;
@@ -231,7 +231,7 @@ export function runSessionSnapshotHook(projectDir, event, {
 
     let produced;
     try {
-      produced = produce({ resolution, payload, host, trigger: event });
+      produced = produce({ resolution, projectDir, payload, host, trigger: event });
     } catch (error) {
       return { ...idle, replayed, skipped: `producer failed: ${error.message}` };
     }
@@ -281,12 +281,15 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-
 } else if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs')
   && ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SubagentStop'].includes(process.argv[2])) {
   // Compatibility entrypoint uses the same minimized transition producer as direct registrations.
+  // Finish evaluating this module before importing its transition consumer.
+  void (async () => {
   try {
     const { runProjectTransitionHook } = await import('./project-transition-hook.mjs');
     const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
     const result = runProjectTransitionHook(payload.cwd || projectDirectory(), process.argv[2], { payload });
     if (result.state === 'pending') process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition remains pending; exact readback was not verified.' }));
   } catch { process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition capture degraded; exact readback was not verified.' })); }
+  })();
 } else if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs')) {
   // projectDirectory() is the SAME derivation the Console's detector uses. Deriving it here
   // independently is what let this hook write a receipt the Console then reported as missing (#85).
