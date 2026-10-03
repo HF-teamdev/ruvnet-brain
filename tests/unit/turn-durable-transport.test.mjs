@@ -28,7 +28,7 @@ describe('durable turn transport with native global Ruflo over synthetic content
       const report = capture(f, (steps) => {
         const requests = steps.map((step) => ({ kind: 'journal', journalFile: step.journalFile, db: step.args[step.args.indexOf('--path') + 1] }));
         const source = `import {runSteps} from ${JSON.stringify(pathToFileURL(path.join(ROOT, 'plugin/scripts/turn-outcome-capture.mjs')).href)};
-runSteps(${JSON.stringify({ steps: requests })}, {run:()=>{process.stdout.write('ready');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30000);return {status:1};}});`;
+runSteps(${JSON.stringify({ steps: requests })}, {projectDir:${JSON.stringify(f.project)}, brainHome:${JSON.stringify(f.brainHome)}, run:()=>{process.stdout.write('ready');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30000);return {status:1};}});`;
         worker = spawn(process.execPath, ['--input-type=module', '-e', source], { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] });
         workerReady = new Promise((resolve, reject) => { worker.stdout.once('data', resolve); worker.once('error', reject); worker.once('exit', () => reject(new Error('worker exited before pause'))); });
         return { launched: true, pid: worker.pid };
@@ -38,7 +38,8 @@ runSteps(${JSON.stringify({ steps: requests })}, {run:()=>{process.stdout.write(
       fs.unlinkSync(transcript);
       const db = path.join(f.project, '.swarm', 'memory.db');
       const [file] = pendingTurnFiles(db); expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-      expect(readJournal(file, db).step.args).toContain('--no-upsert');
+      expect(readJournal(file, db).schemaVersion).toBe(2);
+      expect(readJournal(file, db)).not.toHaveProperty('step');
       expect(freshReplay(f)).toMatchObject({ failed: 0, verified: 1, pending: 0 });
       expect(f.retrieve(report.key)).toBe(report.value);
       const count = f.command('sqlite3', [db, `SELECT COUNT(*) FROM memory_entries WHERE namespace='turns' AND key='${report.key.replaceAll("'", "''")}';`]).stdout.trim();
@@ -54,7 +55,7 @@ runSteps(${JSON.stringify({ steps: requests })}, {run:()=>{process.stdout.write(
     const f = fixture(); try {
       f.initialize(); const report = capture(f); const db = path.join(f.project, '.swarm', 'memory.db');
       const [file] = pendingTurnFiles(db); const record = readJournal(file, db);
-      const rows = runSteps({ steps: [{ ...record.step, journalFile: file }] }, { env: f.env });
+      const rows = runSteps({ steps: [{ kind: 'journal', journalFile: file, db }] }, { env: f.env, projectDir: f.project });
       expect(rows[0].verified).toBe(true); expect(pendingTurnFiles(db)).toHaveLength(1);
       expect(freshReplay(f)).toMatchObject({ failed: 0, verified: 1, pending: 0 });
       const stores = fs.readFileSync(f.argvLog, 'utf8').trim().split('\n').map(JSON.parse)

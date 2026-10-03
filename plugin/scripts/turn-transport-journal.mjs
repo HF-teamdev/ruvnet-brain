@@ -13,12 +13,35 @@ function syncDirectory(dir) {
   const fd = fs.openSync(dir, 'r');
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
+// Legacy recipes are data extraction inputs only, never executable commands.
+export function storeData(step) {
+  if (step?.kind !== 'store' || !Array.isArray(step.args) || step.args[0] !== 'memory' || step.args[1] !== 'store') throw new Error('invalid turn store operation');
+  const fields = {}; const aliases = { '-k': 'key', '--key': 'key', '--value': 'value', '-n': 'namespace', '--namespace': 'namespace', '--path': 'db', '--tags': 'tags', '--provenance': 'provenance' };
+  let strict = false;
+  for (let i = 2; i < step.args.length; i++) {
+    const flag = step.args[i];
+    if (flag === '--no-upsert') { if (strict) throw new Error('duplicate turn store flag'); strict = true; continue; }
+    const field = aliases[flag];
+    if (!field || Object.hasOwn(fields, field) || typeof step.args[i + 1] !== 'string') throw new Error('unknown or duplicate turn store flag');
+    fields[field] = step.args[++i];
+  }
+  if (!fields.key || typeof fields.value !== 'string' || fields.namespace !== 'turns' || !path.isAbsolute(fields.db || '')) throw new Error('invalid turn store namespace or data');
+  return { key: fields.key, value: fields.value, db: fields.db };
+}
+const bindingOf = (step) => ({ projectRoot: step.projectRoot, projectDir: step.projectDir, rootIdentity: step.rootIdentity });
+function validateBinding(binding) {
+  if (!binding || Object.keys(binding).some((key) => !['projectRoot', 'projectDir', 'rootIdentity'].includes(key))
+    || !path.isAbsolute(binding.projectRoot || '') || !path.isAbsolute(binding.projectDir || '')
+    || typeof binding.rootIdentity !== 'string' || !/^\d+:\d+$/.test(binding.rootIdentity)) throw new Error('invalid turn canonical binding');
+}
 export function journalTurn(step, db, key) {
   const dir = turnQueueDirectory(db);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); regular(dir, true);
   const file = path.join(dir, `${digest(key)}.json`);
-  const value = step.args[step.args.indexOf('--value') + 1];
-  const record = { schemaVersion: 1, key, contentDigest: digest(value), consentScope: 'canonical-project-and-path', step };
+  const data = storeData(step);
+  if (data.db !== db || data.key !== key) throw new Error('turn journal identity mismatch');
+  const binding = bindingOf(step); validateBinding(binding);
+  const record = { schemaVersion: 2, key, value: data.value, contentDigest: digest(data.value), consentScope: 'canonical-project-and-path', binding };
   try {
     const fd = fs.openSync(file, 'wx', 0o600);
     try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -35,14 +58,22 @@ export function readJournal(file, db) {
   if (path.dirname(file) !== dir) throw new Error('foreign turn journal rejected');
   regular(file);
   const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const step = record.step;
-  if (record.schemaVersion !== 1 || record.consentScope !== 'canonical-project-and-path' || step?.kind !== 'store'
-    || !Array.isArray(step.args) || step.args.includes('--upsert') || step.args.includes('-u') || !step.args.includes('--no-upsert')
-    || step.args[step.args.indexOf('--path') + 1] !== db
-    || step.args[step.args.indexOf('-k') + 1] !== record.key
-    || digest(step.args[step.args.indexOf('--value') + 1]) !== record.contentDigest
-    || path.basename(file) !== `${digest(record.key)}.json`) throw new Error('invalid turn journal');
-  return record;
+  let normalized = record;
+  if (record.schemaVersion === 1) {
+    const data = storeData(record.step);
+    if (!record.step.args.includes('--no-upsert')) throw new Error('legacy turn journal requires strict insert');
+    if (data.db !== db || data.key !== record.key) throw new Error('legacy turn journal identity mismatch');
+    // Legacy job-selected consent settings are never consumed; caller policy governs replay.
+    normalized = { schemaVersion: 2, key: data.key, value: data.value, contentDigest: record.contentDigest,
+      consentScope: record.consentScope, binding: bindingOf(record.step), legacyBrainHome: record.step.brainHome };
+  } else if (Object.keys(record).some((key) => !['schemaVersion', 'key', 'value', 'contentDigest', 'consentScope', 'binding'].includes(key))) throw new Error('unknown turn journal field');
+  validateBinding(normalized.binding);
+  if (normalized.schemaVersion !== 2 || normalized.consentScope !== 'canonical-project-and-path'
+    || typeof normalized.key !== 'string' || !normalized.key.startsWith('turn-') || normalized.key.length > 250
+    || typeof normalized.value !== 'string' || normalized.value.length > 4000
+    || digest(normalized.value) !== normalized.contentDigest
+    || path.basename(file) !== `${digest(normalized.key)}.json`) throw new Error('invalid turn journal');
+  return normalized;
 }
 export function pendingTurnFiles(db, limit = 10) {
   const dir = turnQueueDirectory(db);
