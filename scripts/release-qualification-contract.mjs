@@ -161,6 +161,17 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       ]
     },
     {
+      "id": "automatic-memory-transition-durability",
+      "reason": "Reviewed POSIX automatic boundary capture, complete history, consent suspension, first-start recovery and data-only turn replay; real global Ruflo and filesystem prerequisites are required",
+      "files": [
+        "tests/unit/project-transition-hook.test.mjs",
+        "tests/unit/turn-transport-security.test.mjs",
+        "tests/unit/turn-durable-transport.test.mjs",
+        "tests/integration/automatic-progression-continuation.test.mjs",
+        "tests/integration/session-start-turn-replay.test.mjs"
+      ]
+    },
+    {
       "id": "pending-continuity-capacity",
       "reason": "POSIX non-root permission refusal, capacity-pressure reporting and recovery preserve all accepted pending continuity events",
       "files": [

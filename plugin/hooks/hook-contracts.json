@@ -486,6 +486,69 @@
       "matcher": "*",
       "reason": "Observe normalized lifecycle transitions independently of the write-refusal and grounding matchers; the body enforces canonical identity, consent and bounded non-authoritative semantic observations.",
       "retiredBy": "not retired - owner automatic AgentDB mandate 2026-10-03"
+    },
+    {
+      "layer": "codex",
+      "event": "PreToolUse",
+      "matcher": "*",
+      "reason": "Canonical observation owner sees tool transitions before normalization; bounded body selects substantive observations. The independent anchored decision and grounding matchers remain unchanged.",
+      "retiredBy": "not retired - automatic memory mandate 2026-10-03"
+    },
+    {
+      "layer": "codex",
+      "event": "PostToolUse",
+      "matcher": "*",
+      "reason": "Canonical observation owner sees tool transitions before normalization; bounded body selects substantive observations. The independent anchored decision and grounding matchers remain unchanged.",
+      "retiredBy": "not retired - automatic memory mandate 2026-10-03"
+    },
+    {
+      "layer": "codex",
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|compact|fork",
+      "reason": "Explicit supported Codex lifecycle registration, corresponding to the host-filtered continuity policy; its enforcing handler and live registration are checked independently.",
+      "retiredBy": "not retired - canonical continuity host parity"
+    },
+    {
+      "layer": "codex",
+      "event": "Stop",
+      "matcher": "*",
+      "reason": "Explicit supported Codex lifecycle registration, corresponding to the host-filtered continuity policy; its enforcing handler and live registration are checked independently.",
+      "retiredBy": "not retired - canonical continuity host parity"
+    },
+    {
+      "layer": "codex",
+      "event": "PreToolUse",
+      "matcher": "^(Write|Edit|MultiEdit|NotebookEdit|apply_patch)$",
+      "reason": "Explicit supported Codex lifecycle registration, corresponding to the host-filtered continuity policy; its enforcing handler and live registration are checked independently.",
+      "retiredBy": "not retired - canonical continuity host parity"
+    },
+    {
+      "layer": "codex",
+      "event": "PostToolUse",
+      "matcher": "^(?:.*__)?search_ruvnet$",
+      "reason": "Explicit supported Codex lifecycle registration, corresponding to the host-filtered continuity policy; its enforcing handler and live registration are checked independently.",
+      "retiredBy": "not retired - canonical continuity host parity"
+    },
+    {
+      "layer": "codex",
+      "event": "UserPromptSubmit",
+      "matcher": "*",
+      "reason": "Explicit supported Codex lifecycle registration, corresponding to the host-filtered continuity policy; its enforcing handler and live registration are checked independently.",
+      "retiredBy": "not retired - canonical continuity host parity"
+    },
+    {
+      "layer": "codex",
+      "event": "SessionEnd",
+      "matcher": "*",
+      "reason": "Explicit supported Codex lifecycle registration, corresponding to the host-filtered continuity policy; its enforcing handler and live registration are checked independently.",
+      "retiredBy": "not retired - canonical continuity host parity"
+    },
+    {
+      "layer": "codex",
+      "event": "SubagentStop",
+      "matcher": "*",
+      "reason": "Explicit supported Codex lifecycle registration, corresponding to the host-filtered continuity policy; its enforcing handler and live registration are checked independently.",
+      "retiredBy": "not retired - canonical continuity host parity"
     }
   ]
 }
