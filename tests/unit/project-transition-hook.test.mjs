@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeTransition, buildTransitionProgression, runProjectTransitionHook } from '../../plugin/scripts/project-transition-hook.mjs';
+import { normalizeTransition, buildTransitionProgression, runProjectTransitionHook, selectedUserIntent } from '../../plugin/scripts/project-transition-hook.mjs';
 import { queueCapture, runOutboxReplay, queuedWork } from '../../plugin/scripts/session-snapshot-hook.mjs';
 import { createProgressionSnapshot } from '../../plugin/scripts/project-progression-contract.mjs';
 const dirs = [];
@@ -19,6 +19,13 @@ describe('minimal non-authoritative transitions', () => {
     expect(observed.intent).toEqual({ action: 'fix', subjects: ['project memory'] });
     expect(JSON.stringify(observed)).not.toMatch(/supersecret|arbitrary private|password/);
     expect(observed.authoritative).toBe(false);
+  });
+  it('selected task clause preserves identifiers and excludes logs, fenced secrets and credentials', () => {
+    const intent = selectedUserIntent('```sh\nNPM_TOKEN=superprivate\n```\n> fix quoted instruction\nFix parseCookies in source/auth.mjs. Then examine logs.');
+    expect(intent).toMatchObject({ text: 'Fix parseCookies in source/auth.mjs.', authoritative: false, source: 'user-prompt-excerpt' });
+    expect(selectedUserIntent('Fix service --password=superprivate')).toBeNull();
+    expect(selectedUserIntent('```sh\nFix service NPM_TOKEN=private')).toBeNull();
+    expect(Buffer.byteLength(selectedUserIntent('Fix ' + '測'.repeat(200)).text)).toBeLessThanOrEqual(240);
   });
   it('pending intent cannot become success from a pre-tool response', () => {
     const payload = { session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test --token private-random-value' }, tool_response: { exit_code: 0, stdout: 'private output' } };

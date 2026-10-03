@@ -7,6 +7,7 @@ import { developmentHooksSuspended } from './development-maintenance.mjs';
 import { resolveTurnDb } from './turn-outcome-capture.mjs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { redactText } from './continuity-events.mjs';
 import { normalizeHostEvent } from './hook-input.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { withProgressionReader } from './project-progression-reader.mjs';
@@ -35,6 +36,28 @@ export function semanticIntent(text) {
   return { action, subjects: topics.length ? topics : ['project work'] };
 }
 
+/** Selected user task clause, not a raw prompt archive and never authority to resume. */
+export function selectedUserIntent(value) {
+  if (typeof value !== 'string') return null;
+  const bounded = value.slice(0, 64 * 1024);
+  const redacted = redactText(bounded);
+  const prose = redacted.replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, '');
+  const lines = prose.split(/\r?\n/).filter((line) => line.trim()
+    && !/^\s*(?:>|\{|\[|(?:tool|stdout|stderr|output|log|trace|result)\s*:|\d{4}-\d\d-\d\d)/i.test(line));
+  const selected = lines.find((line) => /\b(?:fix|repair|implement|add|remove|update|audit|review|verify|test|explain|build|why|how|what)\b/i.test(line));
+  if (!selected) return null;
+  const clause = selected.trim().split(/(?<=[.!?])\s/)[0].replace(/\s+/g, ' ');
+  if (/\[REDACTED|password|passwd|credential|private key|authorization|bearer|api.?key|secret|(?:access|auth)[-_ ]?token/i.test(clause)) return null;
+  let excerpt = '';
+  for (const character of clause) {
+    if (Buffer.byteLength(excerpt + character, 'utf8') > 240) break;
+    excerpt += character;
+  }
+  if (!excerpt) return null;
+  return { text: excerpt, source: 'user-prompt-excerpt', authoritative: false,
+    redacted: bounded !== redacted, truncated: excerpt !== clause || bounded !== value };
+}
+
 export function normalizeTransition(payload, event, { now = () => new Date().toISOString(), eventId = () => crypto.randomUUID() } = {}) {
   const input = normalizeHostEvent(payload);
   if (!EVENTS.has(event)) return { skipped: 'unsupported transition' };
@@ -43,7 +66,9 @@ export function normalizeTransition(payload, event, { now = () => new Date().toI
   if (event === 'UserPromptSubmit') {
     const text = input.prompt ?? input.user_prompt;
     if (typeof text !== 'string' || !text.trim()) return { skipped: 'no user intent supplied' };
-    return { ...common, kind: 'user-goal-observation', intent: semanticIntent(text), outcome: 'requested' };
+    const selectedIntent = selectedUserIntent(text);
+    return { ...common, kind: 'user-goal-observation', intent: semanticIntent(text),
+      ...(selectedIntent ? { selectedIntent } : {}), outcome: 'requested' };
   }
   if (event === 'SubagentStop') return { ...common, kind: 'child-observation', outcome: 'child-stopped', parentGoalChanged: false };
   if (!MEANINGFUL_TOOLS.test(String(input.tool_name ?? ''))) return { skipped: 'non-material tool observation' };
