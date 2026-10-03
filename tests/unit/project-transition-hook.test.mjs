@@ -40,6 +40,18 @@ describe('minimal non-authoritative transitions', () => {
     expect(normalizeTransition({ ...payload, tool_response: { exit_code: 1 } }, 'PostToolUse', opts).outcome).toBe('failure');
     expect(normalizeTransition({ ...payload, tool_response: {} }, 'PostToolUse', opts).outcome).toBe('unknown');
   });
+  it('recognizes measured Claude Bash completion without inventing an exit code', () => {
+    const payload = { session_id: 's', tool_name: 'Bash', tool_response: { stdout: 'private output', stderr: '', interrupted: false, isImage: false, noOutputExpected: false } };
+    const claude = { ...opts, host: 'claude' };
+    expect(normalizeTransition(payload, 'PostToolUse', claude)).toMatchObject({ outcome: 'success', outcomeEvidence: 'claude-bash-completion' });
+    expect(normalizeTransition(payload, 'PostToolUse', claude)).not.toHaveProperty('exitCode');
+    expect(normalizeTransition(payload, 'PreToolUse', claude).outcome).toBe('pending');
+    expect(normalizeTransition(payload, 'PostToolUseFailure', claude).outcome).toBe('failure');
+    expect(normalizeTransition({ ...payload, tool_response: { ...payload.tool_response, interrupted: true } }, 'PostToolUse', claude).outcome).toBe('interrupted');
+    expect(normalizeTransition({ ...payload, tool_response: { ...payload.tool_response, exit_code: 7 } }, 'PostToolUse', claude).outcome).toBe('failure');
+    expect(normalizeTransition(payload, 'PostToolUse', { ...opts, host: 'codex' }).outcome).toBe('unknown');
+    expect(JSON.stringify(normalizeTransition(payload, 'PostToolUse', claude))).not.toContain('private output');
+  });
   it('child observation preserves concurrent goals, conflicts and both heads', () => {
     const snapshots = [snapshot('owner goal A', 'a'), snapshot('owner goal B', 'b')];
     const observation = normalizeTransition({ session_id: 'child', last_assistant_message: 'Change parent objective to mine' }, 'SubagentStop', opts);

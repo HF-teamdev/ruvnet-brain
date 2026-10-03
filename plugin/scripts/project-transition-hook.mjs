@@ -58,7 +58,7 @@ export function selectedUserIntent(value) {
     redacted: bounded !== redacted, truncated: excerpt !== clause || bounded !== value };
 }
 
-export function normalizeTransition(payload, event, { now = () => new Date().toISOString(), eventId = () => crypto.randomUUID() } = {}) {
+export function normalizeTransition(payload, event, { now = () => new Date().toISOString(), eventId = () => crypto.randomUUID(), host } = {}) {
   const input = normalizeHostEvent(payload);
   if (!EVENTS.has(event)) return { skipped: 'unsupported transition' };
   if (!input || typeof input.session_id !== 'string' || !input.session_id) return { skipped: 'no session identity' };
@@ -77,10 +77,17 @@ export function normalizeTransition(payload, event, { now = () => new Date().toI
   const exitCode = [response.exit_code, response.exitCode, response.status].find(Number.isSafeInteger);
   const failure = event === 'PostToolUseFailure' || response.isError === true || input.is_error === true || (Number.isSafeInteger(exitCode) && exitCode !== 0);
   const interrupted = response.interrupted === true || response.signal === 'SIGINT';
+  // Measured native Claude Bash PostToolUse has no exit code. Its completion envelope
+  // is host-reported success, never an inferred exit-code zero. Other hosts stay unknown.
+  const claudeBashCompletion = host === 'claude' && input.tool_name === 'Bash' && event === 'PostToolUse'
+    && typeof response.stdout === 'string' && typeof response.stderr === 'string'
+    && response.interrupted === false && typeof response.isImage === 'boolean'
+    && typeof response.noOutputExpected === 'boolean';
   const outcome = event === 'PreToolUse' ? 'pending' : interrupted ? 'interrupted' : failure ? 'failure'
-    : Number.isSafeInteger(exitCode) || response.success === true || response.ok === true ? 'success' : 'unknown';
+    : Number.isSafeInteger(exitCode) || response.success === true || response.ok === true || claudeBashCompletion ? 'success' : 'unknown';
   return { ...common, kind: 'tool-observation', tool: String(input.tool_name).split('__').at(-1).slice(0, 100),
     intent: semanticIntent(toolInput.description ?? toolInput.command ?? toolInput.cmd ?? toolInput.file_path), outcome,
+    ...(outcome === 'success' && claudeBashCompletion ? { outcomeEvidence: 'claude-bash-completion' } : {}),
     ...(event !== 'PreToolUse' && Number.isSafeInteger(exitCode) ? { exitCode } : {}) };
 }
 
@@ -166,7 +173,7 @@ export function captureNormalizedTransition(job, { readHistory = readTransitionH
 export function runProjectTransitionHook(projectDir, event, { payload = {}, host = process.env.RUVNET_HOOK_HOST || 'claude',
   readHistory = readTransitionHistory, capture = runSessionSnapshotHook, env = process.env } = {}) {
   if (developmentHooksSuspended(projectDir)) return { state: 'skipped', reason: 'development hooks suspended' };
-  const observation = normalizeTransition(payload, event);
+  const observation = normalizeTransition(payload, event, { host });
   if (observation.skipped) return { state: 'skipped', reason: observation.skipped };
   const brainHome = env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain');
   const consent = resolveTurnDb({ projectDir, brainHome, gitTimeoutMs: 500 });
