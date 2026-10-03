@@ -78,7 +78,7 @@ describe('canonical prompt-time AgentDB recall', () => {
   });
   it('quotes the remedy from a structured exact lesson and keeps targeted checkpoints ahead of generic lessons', () => {
     expect(evidenceExcerpt('TASK: backup. TRIED(failed): cp dropped rows. WORKED: use WAL-safe backup. CRITIQUE: inspect restore.', 'lesson-backup')).toContain('WORKED: use WAL-safe backup');
-    expect(evidenceExcerpt(JSON.stringify({ source: 'a'.repeat(40), version: '4.5.4', automaticMemory: 'Recall canonical useful history before every prompt.', nextAction: 'Review pending work.' }),
+    expect(evidenceExcerpt(JSON.stringify({ source: 'a'.repeat(40), version: getVersion(), automaticMemory: 'Recall canonical useful history before every prompt.', nextAction: 'Review pending work.' }),
       'project-state-current-1', 'automatic useful recall')).toBe('automaticMemory: Recall canonical useful history before every prompt.');
     const selected = pickRows([
       { namespace: 'lessons', rows: [{ key: 'lesson-status', namespace: 'lessons', score: 0.9 }] },

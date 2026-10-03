@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getVersion } from '../../scripts/version.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -108,7 +109,7 @@ describe('minimal non-authoritative transitions', () => {
     const observation = normalizeTransition({ session_id: 's', prompt: 'Fix parser' }, 'UserPromptSubmit', opts);
     const originalSource = { ...source, checkoutPath: p, capturePath: p };
     const progression = buildTransitionProgression({ resolution, observation, snapshots: [], sessionIdentity: 's', host: 'claude', sourceIdentity: originalSource });
-    const stored = createProgressionSnapshot({ projectIdentity: resolution.projectIdentity, hostIdentity: { host: 'claude', adapterVersion: '4.5.4' }, sessionIdentity: 's', trigger: 'UserPromptSubmit', ...progression });
+    const stored = createProgressionSnapshot({ projectIdentity: resolution.projectIdentity, hostIdentity: { host: 'claude', adapterVersion: getVersion() }, sessionIdentity: 's', trigger: 'UserPromptSubmit', ...progression });
     const capture = vi.fn(() => { throw new Error('must not re-create event'); });
     const result = captureNormalizedTransition({ originProjectDir: p, event: 'UserPromptSubmit', host: 'claude', payload: { session_id: 's', normalizedTransition: { observation, sourceIdentity: originalSource } } }, { readHistory: () => [stored], capture });
     expect(result).toMatchObject({ progressionCaptured: true, receipt: { eventKey: stored.eventKey, readbackDigest: stored.payloadDigest } });
