@@ -62,7 +62,7 @@ function queuedWorker(steps, receipts, marker, workerModule = path.join(ROOT, 'p
     const request = JSON.parse(fs.readFileSync(0, 'utf8'));
     const rows = runSteps(request, {
       run: (bin, args) => { fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify(args)+'\\n'); return {status:0}; },
-      read: ({options}) => { const args=JSON.parse(fs.readFileSync(${JSON.stringify(marker)},'utf8').trim().split('\\n').at(-1)); return args[args.indexOf('--value')+1]; }
+      read: ({options}) => { if(!fs.existsSync(${JSON.stringify(marker)}))return null; const args=JSON.parse(fs.readFileSync(${JSON.stringify(marker)},'utf8').trim().split('\\n').at(-1)); return args[args.indexOf('--value')+1]; }
     });
     process.stdout.write(JSON.stringify(rows));`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
@@ -236,7 +236,7 @@ describe('turn privacy and receipt evidence', () => {
     fs.renameSync(saved, store);
     const retry = h.fire('Stop', payload).turn;
     expect(retry.queued).toBe(true);
-    expect(retry.key).not.toBe(flag(steps[0], '-k'));
+    expect(retry.key).toBe(flag(steps[0], '-k'));
     expect(queuedWorker(h.launches.at(-1), receipts, marker)[0]).toMatchObject({ status: 0, verified: true });
   });
 
@@ -354,7 +354,7 @@ describe('turn privacy and receipt evidence', () => {
     fs.writeFileSync(file, JSON.stringify({ kind: 'store', key: first.key, status: 1, error: 'refused', verified: false }));
     const retried = h.fire('Stop', payload).turn;
     expect(retried.queued).toBe(true);
-    expect(retried.key).not.toBe(first.key);
+    expect(retried.key).toBe(first.key);
     const opts = { projectDir: h.project, home: h.home, env: {}, ruflo: '/fake/ruflo', event: 'Stop', host: 'codex',
       payload: { session_id: 'launch-fail', last_assistant_message: OUTCOME } };
     expect(captureTurnOutcome({ ...opts, launch: () => { throw new Error('spawn refused'); } }).queued).toBe(false);
@@ -378,14 +378,14 @@ describe('turn privacy and receipt evidence', () => {
     expect(turnRecordingStatus({ projectDir: project, env: { RUVNET_BRAIN_HOME: brainHome } }).line).toContain('failing 1/1');
   });
 
-  it('reports only this canonical database and marks old unverified successes failing', () => {
+  it('reports only this canonical database and marks old successes unverified historical', () => {
     const h = harness(); const db = path.join(h.project, '.swarm', 'memory.db');
     const file = path.join(h.home, '.cache', 'ruvnet-brain', 'turn-capture', 'receipts.jsonl');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const rows = [ { kind: 'store', db: '/foreign/db', status: 1, at: new Date().toISOString(), error: 'foreign' },
       { kind: 'store', db, status: 0, at: new Date().toISOString() } ];
     fs.writeFileSync(file, rows.map(JSON.stringify).join('\n'));
-    expect(turnRecordingStatus({ projectDir: h.project, home: h.home, env: {} }).line).toMatch(/failing 1\/1.*no exact readback/);
+    expect(turnRecordingStatus({ projectDir: h.project, home: h.home, env: {} }).line).toMatch(/unverified historical/);
   });
 });
 

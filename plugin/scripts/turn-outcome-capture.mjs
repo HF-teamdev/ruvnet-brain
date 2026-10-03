@@ -31,9 +31,8 @@
  *
  * LATENCY: Stop runs synchronously in the host's turn, and one `ruflo memory store` costs ~0.7s
  * (measured). So the writes run in ONE detached worker (this file, `--run-steps`), store then
- * distill in order; the hook itself only reads, fingerprints and spawns. A breadcrumb line is
- * containing only key, hash and length is appended BEFORE the spawn; exact readback receipts make a lost
- * write is visible rather than silent. Advisory always: nothing here throws to the caller.
+ * distill in order; the hook itself only reads, fingerprints and spawns. A project-local journal containing redacted content and canonical binding is fsynced BEFORE
+ * spawning; fresh sessions replay stable keys without upsert and require exact readback receipts. Advisory always: nothing here throws to the caller.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -44,6 +43,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveRuflo, rufloInvocation } from './ruflo-bin.mjs';
 import { redactText, userLevelAgentdbHooks } from './continuity-events.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
+import { digest, journalTurn, readJournal, pendingTurnFiles, acknowledgeJournal, appendReceipt } from './turn-transport-journal.mjs';
 
 export const TURN_NAMESPACE = 'turns';
 export const MIN_OUTCOME_CHARS = 200;
@@ -198,7 +198,7 @@ const projectName = (projectDir) => redactText(path.basename(path.resolve(projec
 
 /** Detached worker launch: the hook returns immediately; the worker runs the steps in order. */
 export function launchDetached(steps, { receipts }) {
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--run-steps', JSON.stringify({ steps, receipts })], {
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--run-steps', JSON.stringify({ steps: steps.map((step) => step.kind === 'store' && step.journalFile ? { kind: 'journal', journalFile: step.journalFile, db: step.args[step.args.indexOf('--path') + 1] } : step), receipts })], {
     cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ...RUFLO_ENV },
   });
   child.unref();
@@ -257,7 +257,8 @@ export function captureTurnOutcome({
   Object.assign(report, { db, scope });
   if (target.skipped) return { ...report, skipped: target.skipped, distill: { queued: false, skipped: target.skipped } };
   const steps = [];
-  const binding = { projectRoot, projectDir: fs.realpathSync.native(projectDir), brainHome };
+  const rootStat = fs.statSync(projectRoot);
+  const binding = { projectRoot, projectDir: fs.realpathSync.native(projectDir), brainHome, rootIdentity: `${rootStat.dev}:${rootStat.ino}` };
   let dedupe;
   const project = projectName(projectRoot);
   const receipts = path.join(brainHome, 'turn-capture', 'receipts.jsonl');
@@ -292,11 +293,17 @@ export function captureTurnOutcome({
       if (sameTurnSeen(stateFile, identity, fingerprint, receipts)) report.skipped = 'same turn outcome already queued or verified';
       else {
         const at = now();
-        const key = `turn-${project}-${at.getTime()}-${crypto.randomBytes(6).toString('hex')}`;
+        const key = `turn-${project}-${digest(`${identity}:${fingerprint}`).slice(0, 40)}`;
         dedupe = { stateFile, identity, fingerprint, key };
-        const value = buildTurnRecord({ turn, project, host, session: payload.session_id, at });
+        let value = buildTurnRecord({ turn, project, host, session: payload.session_id, at });
+        // Retry uses the original durable content (including its timestamp), never a new value.
+        const pendingFile = path.join(path.dirname(db), 'turn-outbox', `${digest(key)}.json`);
+        if (fs.existsSync(pendingFile)) {
+          try { const pending = readJournal(pendingFile, db).step; value = pending.args[pending.args.indexOf('--value') + 1]; }
+          catch (error) { return { ...report, skipped: `durable turn queue invalid: ${redactText(error.message)}` }; }
+        }
         steps.push({ ...binding, kind: 'store', ruflo, args: ['memory', 'store', '-k', key, '--value', value, '-n', TURN_NAMESPACE,
-          '--path', db, '--tags', `project=${project},host=${host}`, '--provenance', 'agent_output'] });
+          '--path', db, '--no-upsert', '--tags', `project=${project},host=${host}`, '--provenance', 'agent_output'] });
         // This synchronous boundary proves only queuing; the worker's exact receipt proves recording.
         Object.assign(report, { queued: true, key, value });
       }
@@ -316,6 +323,8 @@ export function captureTurnOutcome({
     // Only explicit persisted consent permits creating a project store directory.
     if (target.optedIn) fs.mkdirSync(path.dirname(db), { recursive: true, mode: 0o700 });
     if (report.queued) {
+      const step = steps.find((item) => item.kind === 'store');
+      step.journalFile = journalTurn(step, db, report.key);
       fs.appendFileSync(path.join(path.dirname(db), 'agentdb-turns.jsonl'),
         `${JSON.stringify({ ts: Date.now(), key: report.key, hash: crypto.createHash('sha256').update(report.value).digest('hex'), len: report.value.length })}\n`, { mode: 0o600 });
     }
@@ -335,30 +344,58 @@ function readBack({ ruflo, db, key, run, options }) {
 }
 
 /** The detached worker: bounded steps, safe error evidence, exact content readback. */
-export function runSteps({ steps = [], receipts } = {}, { run = spawnSync, read = readBack, env = process.env } = {}) {
+export function runSteps({ steps = [], receipts } = {}, { run: suppliedRun = spawnSync, read = readBack, env = process.env, deadlineMs } = {}) {
+  const run = (binary, args, options) => {
+    if (deadlineMs === undefined) return suppliedRun(binary, args, options);
+    const remaining = deadlineMs - Date.now();
+    if (remaining <= 0) return { status: 1, error: new Error('turn replay deadline exhausted') };
+    return suppliedRun(binary, args, { ...options, timeout: Math.min(options.timeout, remaining) });
+  };
   const results = [];
-  for (const step of steps) {
+  for (const queuedStep of steps) {
+    let step = queuedStep;
+    if (step.kind === 'journal') {
+      try { step = { ...readJournal(step.journalFile, step.db).step, journalFile: step.journalFile }; }
+      catch (error) { results.push({ kind: 'store', status: 1, verified: false, error: redactText(error.message) }); continue; }
+    }
     let status = null; let error = null; let verified = false;
     const args = [...step.args];
     const db = args[args.indexOf(step.kind === 'store' ? '--path' : '--db') + 1];
     const key = step.kind === 'store' ? args[args.indexOf('-k') + 1] : undefined;
     const valueIndex = args.indexOf('--value') + 1;
-    if (step.kind === 'store') args[valueIndex] = redactText(args[valueIndex]);
+    if (step.kind === 'store') {
+      args[valueIndex] = redactText(args[valueIndex]);
+      if (args.includes('--upsert') || args.includes('-u')) { results.push({ kind: 'store', status: 1, verified: false, error: 'turn upsert rejected' }); continue; }
+      if (!args.includes('--no-upsert')) args.push('--no-upsert');
+    }
     try {
       if (!step.projectRoot || !step.projectDir || !step.brainHome) throw new Error('queued step has no canonical project binding');
       const target = resolveTurnDb({ projectDir: step.projectDir, brainHome: step.brainHome, requestedStorePath: db, gitTimeoutMs: 1000 });
       if (target.skipped) throw new Error(target.skipped);
+      const rootStat = fs.statSync(target.projectRoot);
+      if (step.rootIdentity && step.rootIdentity !== `${rootStat.dev}:${rootStat.ino}`) throw new Error('queued canonical project identity changed');
       if (target.projectRoot !== step.projectRoot || target.db !== db) throw new Error('queued canonical project/store identity changed');
       if (String(env.RUVNET_TURN_CAPTURE || '').toLowerCase() === 'off') throw new Error('RUVNET_TURN_CAPTURE=off');
+      if (step.journalFile) {
+        const currentRuflo = resolveRuflo({ env });
+        if (!currentRuflo) throw new Error('ruflo not found for durable replay');
+        step = { ...step, ruflo: currentRuflo };
+      }
       const invocation = rufloInvocation(step.ruflo, args);
       // Contain Ruflo's auxiliary writes in the canonical store's own directory.
       const home = path.dirname(db);
-      const options = { encoding: 'utf8', timeout: STEP_TIMEOUT_MS, cwd: home, windowsHide: true,
+      const remaining = deadlineMs === undefined ? STEP_TIMEOUT_MS : Math.max(1, deadlineMs - Date.now());
+      if (deadlineMs !== undefined && deadlineMs <= Date.now()) throw new Error('turn replay deadline exhausted');
+      const options = { encoding: 'utf8', timeout: Math.min(STEP_TIMEOUT_MS, remaining), cwd: home, windowsHide: true,
         maxBuffer: 1024 * 1024, env: { ...env, ...RUFLO_ENV, CLAUDE_FLOW_MEMORY_PATH: home } };
-      const r = run(invocation.executable, invocation.args, options);
+      const existing = step.kind === 'store' && step.journalFile ? read({ ruflo: step.ruflo, db, key, run, options }) : null;
+      if (existing !== null && existing !== args[valueIndex]) throw new Error('existing turn key content differs; no upsert permitted');
+      verified = step.kind === 'store' && existing === args[valueIndex];
+      const r = verified ? { status: 0 } : run(invocation.executable, invocation.args, options);
       status = Number.isInteger(r.status) ? r.status : 1;
-      if (r.error || status !== 0) error = redactText(r.error?.message || String(r.stderr || '').trim().split(/\r?\n/)[0] || `ruflo exited ${status}`).slice(0, 300);
-      else if (step.kind === 'store') {
+      if ((r.error || status !== 0) && step.journalFile && read({ ruflo: step.ruflo, db, key, run, options }) === args[valueIndex]) { status = 0; verified = true; }
+      if (!verified && (r.error || status !== 0)) error = redactText(r.error?.message || String(r.stderr || '').trim().split(/\r?\n/)[0] || `ruflo exited ${status}`).slice(0, 300);
+      else if (step.kind === 'store' && !verified) {
         verified = read({ ruflo: step.ruflo, db, key, run, options }) === args[valueIndex];
         if (!verified) { status = 1; error = 'exact turn key/content readback failed'; }
       }
@@ -369,12 +406,31 @@ export function runSteps({ steps = [], receipts } = {}, { run = spawnSync, read 
     results.push(row);
     if (receipts) {
       try {
-        fs.mkdirSync(path.dirname(receipts), { recursive: true, mode: 0o700 });
-        fs.appendFileSync(receipts, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+        appendReceipt(receipts, row);
+        if (verified && step.journalFile) acknowledgeJournal(step.journalFile, db);
       } catch { /* receipts are best effort */ }
     }
   }
   return results;
+}
+
+/** Replay only bounded canonical project entries; consent suspends rather than deletes them. */
+export function replayTurnQueue({ projectDir = process.cwd(), env = process.env, home = os.homedir(),
+  brainHome = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain'), limit = 10,
+  launch = launchDetached, synchronous = false, runner, deadlineMs } = {}) {
+  if (String(env.RUVNET_TURN_CAPTURE || '').toLowerCase() === 'off') return { queued: false, skipped: 'RUVNET_TURN_CAPTURE=off' };
+  try {
+    const target = resolveTurnDb({ projectDir, brainHome });
+    if (target.skipped) return { queued: false, skipped: target.skipped };
+    const steps = pendingTurnFiles(target.db, limit).map((journalFile) => ({ kind: 'journal', journalFile, db: target.db }));
+    if (!steps.length) return { queued: false, count: 0 };
+    if (synchronous) {
+      const results = runSteps({ steps, receipts: path.join(brainHome, 'turn-capture', 'receipts.jsonl') }, { env, ...(runner ? { run: runner } : {}), deadlineMs });
+      const pending = pendingTurnFiles(target.db, 25).length;
+      return { queued: false, count: steps.length, pending, failed: results.filter((row) => row.status !== 0).length, verified: results.filter((row) => row.verified === true).length, results };
+    }
+    return { queued: true, count: steps.length, pending: steps.length, launch: launch(steps, { receipts: path.join(brainHome, 'turn-capture', 'receipts.jsonl') }) };
+  } catch (error) { return { queued: false, skipped: redactText(error.message) }; }
 }
 
 /** Bounded recent evidence, isolated by canonical db. A continuity success cannot mask turn failures. */
@@ -389,8 +445,14 @@ export function turnRecordingStatus({ projectDir = process.cwd(), env = process.
       try { return [JSON.parse(line)]; } catch { return []; }
     }).filter((r) => r.kind === 'store' && (r.storeIdentity === crypto.createHash('sha256').update(target.db).digest('hex') || r.db === target.db) && now - Date.parse(r.at) < 7 * 86_400_000).slice(-20);
   } catch { /* first run */ }
-  const failed = rows.filter((r) => r.status !== 0 || r.verified !== true);
+  rows = [...new Map(rows.map((row) => [row.key || row.at, row])).values()];
+  let pending = 0;
+  try { pending = pendingTurnFiles(target.db, 25).length; } catch { return { state: 'warn', line: 'turn recording durable queue unsafe or unreadable' }; }
+  const historical = rows.filter((r) => r.status === 0 && r.verified === undefined);
+  const failed = rows.filter((r) => r.status !== 0 || r.verified === false);
   if (failed.length) return { state: 'warn', line: `turn recording failing ${failed.length}/${rows.length} — ${redactText(failed.at(-1).error || 'write has no exact readback evidence').slice(0, 300)}` };
+  if (historical.length) return { state: 'unknown', line: `turn recording unverified historical (${historical.length} receipts without exact readback evidence)` };
+  if (pending) return { state: 'unknown', line: `turn recording pending durable replay (${pending} entries); not yet proven` };
   return rows.length ? { state: 'ok', line: `turn recording ✓ (${rows.length}/${rows.length} exact readbacks)` }
     : { state: 'unknown', line: 'turn recording not yet proven — no exact readback receipt' };
 }
