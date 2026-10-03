@@ -154,8 +154,8 @@ const consentMap = (value) => value !== null && typeof value === 'object'
   && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype
   && Object.values(value).every((setting) => setting === 'on' || setting === 'off');
 
-export function resolveTurnDb({ projectDir, brainHome } = {}) {
-  const resolved = resolveProjectStore({ projectDir });
+export function resolveTurnDb({ projectDir, brainHome, requestedStorePath, gitTimeoutMs = 1000 } = {}) {
+  const resolved = resolveProjectStore({ projectDir, requestedStorePath, gitTimeoutMs });
   let policy = {};
   const file = brainHome && turnCapturePolicyFile(brainHome);
   if (file && fs.existsSync(file)) {
@@ -169,11 +169,29 @@ export function resolveTurnDb({ projectDir, brainHome } = {}) {
   const setting = policy.paths?.[fs.realpathSync.native(projectDir)] ?? policy.projects?.[resolved.projectRoot];
   if (setting !== undefined && !['on', 'off'].includes(setting)) return { skipped: 'invalid turn capture consent', projectRoot: resolved.projectRoot };
   const db = resolved.canonicalAgentDbPath;
+  assertTurnStoreFiles(db);
   if (setting === 'off') return { db, scope: 'project', projectRoot: resolved.projectRoot, skipped: 'persisted turn capture opt-out' };
   let exists = false;
   try { exists = fs.statSync(db).isFile(); } catch { /* absent */ }
   if (!exists && setting !== 'on') return { db, scope: 'project', projectRoot: resolved.projectRoot, skipped: 'no project memory db; persisted opt-in required' };
   return { db, scope: 'project', projectRoot: resolved.projectRoot, optedIn: setting === 'on' };
+}
+
+// Revalidation narrows the queue-to-launch window; it does not make SQLite's later open atomic.
+function assertTurnStoreFiles(db) {
+  const directory = path.dirname(db);
+  let stat;
+  try { stat = fs.lstatSync(directory); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (stat && (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(directory) !== directory)) {
+    throw new Error('store directory is not a canonical regular directory');
+  }
+  for (const file of [db, `${db}-wal`, `${db}-shm`, `${db}-journal`]) {
+    let entry;
+    try { entry = fs.lstatSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (entry && (!entry.isFile() || entry.isSymbolicLink() || entry.nlink > 1)) {
+      throw new Error('store or SQLite side file is a symlink, hard link or non-regular file');
+    }
+  }
 }
 
 const projectName = (projectDir) => redactText(path.basename(path.resolve(projectDir))).replace(/[^A-Za-z0-9._-]/g, '_') || 'project';
@@ -239,6 +257,7 @@ export function captureTurnOutcome({
   Object.assign(report, { db, scope });
   if (target.skipped) return { ...report, skipped: target.skipped, distill: { queued: false, skipped: target.skipped } };
   const steps = [];
+  const binding = { projectRoot, projectDir: fs.realpathSync.native(projectDir), brainHome };
   let dedupe;
   const project = projectName(projectRoot);
   const receipts = path.join(brainHome, 'turn-capture', 'receipts.jsonl');
@@ -276,7 +295,7 @@ export function captureTurnOutcome({
         const key = `turn-${project}-${at.getTime()}-${crypto.randomBytes(6).toString('hex')}`;
         dedupe = { stateFile, identity, fingerprint, key };
         const value = buildTurnRecord({ turn, project, host, session: payload.session_id, at });
-        steps.push({ kind: 'store', ruflo, args: ['memory', 'store', '-k', key, '--value', value, '-n', TURN_NAMESPACE,
+        steps.push({ ...binding, kind: 'store', ruflo, args: ['memory', 'store', '-k', key, '--value', value, '-n', TURN_NAMESPACE,
           '--path', db, '--tags', `project=${project},host=${host}`, '--provenance', 'agent_output'] });
         // This synchronous boundary proves only queuing; the worker's exact receipt proves recording.
         Object.assign(report, { queued: true, key, value });
@@ -287,7 +306,7 @@ export function captureTurnOutcome({
   if (event === 'SessionEnd' || event === 'PreCompact') {
     if (!fs.existsSync(db)) report.distill = { queued: false, skipped: 'no memory db to distill yet' };
     else {
-      steps.push({ kind: 'distill', ruflo, args: ['memory', 'distill', 'run', '--db', db, '--namespace', TURN_NAMESPACE, '--max-entries', '500'] });
+      steps.push({ ...binding, kind: 'distill', ruflo, args: ['memory', 'distill', 'run', '--db', db, '--namespace', TURN_NAMESPACE, '--max-entries', '500'] });
       report.distill = { queued: true, db };
     }
   }
@@ -316,7 +335,7 @@ function readBack({ ruflo, db, key, run, options }) {
 }
 
 /** The detached worker: bounded steps, safe error evidence, exact content readback. */
-export function runSteps({ steps = [], receipts } = {}, { run = spawnSync, read = readBack } = {}) {
+export function runSteps({ steps = [], receipts } = {}, { run = spawnSync, read = readBack, env = process.env } = {}) {
   const results = [];
   for (const step of steps) {
     let status = null; let error = null; let verified = false;
@@ -326,11 +345,16 @@ export function runSteps({ steps = [], receipts } = {}, { run = spawnSync, read 
     const valueIndex = args.indexOf('--value') + 1;
     if (step.kind === 'store') args[valueIndex] = redactText(args[valueIndex]);
     try {
+      if (!step.projectRoot || !step.projectDir || !step.brainHome) throw new Error('queued step has no canonical project binding');
+      const target = resolveTurnDb({ projectDir: step.projectDir, brainHome: step.brainHome, requestedStorePath: db, gitTimeoutMs: 1000 });
+      if (target.skipped) throw new Error(target.skipped);
+      if (target.projectRoot !== step.projectRoot || target.db !== db) throw new Error('queued canonical project/store identity changed');
+      if (String(env.RUVNET_TURN_CAPTURE || '').toLowerCase() === 'off') throw new Error('RUVNET_TURN_CAPTURE=off');
       const invocation = rufloInvocation(step.ruflo, args);
       // Contain Ruflo's auxiliary writes in the canonical store's own directory.
       const home = path.dirname(db);
       const options = { encoding: 'utf8', timeout: STEP_TIMEOUT_MS, cwd: home, windowsHide: true,
-        maxBuffer: 1024 * 1024, env: { ...process.env, ...RUFLO_ENV, CLAUDE_FLOW_MEMORY_PATH: home } };
+        maxBuffer: 1024 * 1024, env: { ...env, ...RUFLO_ENV, CLAUDE_FLOW_MEMORY_PATH: home } };
       const r = run(invocation.executable, invocation.args, options);
       status = Number.isInteger(r.status) ? r.status : 1;
       if (r.error || status !== 0) error = redactText(r.error?.message || String(r.stderr || '').trim().split(/\r?\n/)[0] || `ruflo exited ${status}`).slice(0, 300);

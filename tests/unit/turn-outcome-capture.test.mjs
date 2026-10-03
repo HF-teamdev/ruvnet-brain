@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { runSessionSnapshotHook } from '../../plugin/scripts/session-snapshot-hook.mjs';
 import { captureTurnOutcome, runSteps, resolveTurnDb, turnCapturePolicyFile, turnRecordingStatus, buildTurnRecord } from '../../plugin/scripts/turn-outcome-capture.mjs';
 import { CONTINUITY_EVENTS } from '../../plugin/scripts/continuity-hook-policy.mjs';
@@ -51,6 +53,25 @@ function transcript(dir, records) {
 const stores = (launches) => launches.flat().filter((s) => s.kind === 'store');
 const valueOf = (step) => step.args[step.args.indexOf('--value') + 1];
 const flag = (step, name) => step.args[step.args.indexOf(name) + 1];
+
+// Execute the real queued worker module in a separate process. Only its Ruflo launch/readback
+// collaborator is replaced: a marker proves whether that boundary was reached, with no native DB writes.
+function queuedWorker(steps, receipts, marker, workerModule = path.join(ROOT, 'plugin/scripts/turn-outcome-capture.mjs')) {
+  const source = `import fs from 'node:fs';
+    import { runSteps } from ${JSON.stringify(pathToFileURL(workerModule).href)};
+    const request = JSON.parse(fs.readFileSync(0, 'utf8'));
+    const rows = runSteps(request, {
+      run: (bin, args) => { fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify(args)+'\\n'); return {status:0}; },
+      read: ({options}) => { const args=JSON.parse(fs.readFileSync(${JSON.stringify(marker)},'utf8').trim().split('\\n').at(-1)); return args[args.indexOf('--value')+1]; }
+    });
+    process.stdout.write(JSON.stringify(rows));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+    input: JSON.stringify({ steps, receipts }), encoding: 'utf8', timeout: 10000,
+    env: { ...process.env, RUVNET_TURN_CAPTURE: 'force' },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout);
+}
 
 describe('turn-outcome capture at the shared snapshot boundary', () => {
   it('(1) records a stop_hook_active=true Stop exactly once; an identical repeat records nothing', () => {
@@ -148,22 +169,108 @@ describe('turn-outcome capture at the shared snapshot boundary', () => {
   });
 
   it('the worker runs store before distill, bounded, with the daemon autostart disabled', () => {
+    const h = harness();
+    const db = path.join(h.project, '.swarm', 'memory.db');
+    const binding = { projectRoot: h.project, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain') };
     const calls = [];
     const receipts = path.join(tmp('turn-receipts-'), 'r.jsonl');
     runSteps({ receipts, steps: [
-      { kind: 'store', ruflo: '/fake/ruflo', args: ['memory', 'store', '-k', 'k1', '--value', 'v', '-n', 'turns', '--path', '/db'] },
-      { kind: 'distill', ruflo: '/fake/ruflo', args: ['memory', 'distill', 'run', '--db', '/db'] },
-    ] }, { run: (bin, args, opts) => { calls.push({ args, opts }); return { status: 0 }; }, read: () => 'v' });
+      { ...binding, kind: 'store', ruflo: '/fake/ruflo', args: ['memory', 'store', '-k', 'k1', '--value', 'v', '-n', 'turns', '--path', db] },
+      { ...binding, kind: 'distill', ruflo: '/fake/ruflo', args: ['memory', 'distill', 'run', '--db', db] },
+    ] }, { env: {}, run: (bin, args, opts) => { calls.push({ args, opts }); return { status: 0 }; }, read: () => 'v' });
     expect(calls.map((c) => c.args[1])).toEqual(['store', 'distill']);
     expect(calls.every((c) => c.opts.env.RUFLO_DAEMON_AUTOSTART === '0' && c.opts.timeout > 0)).toBe(true);
     // ruflo writes hnsw.index / ruvector.db relative to its cwd even with --path: contain them.
-    expect(calls.every((c) => c.opts.cwd === '/' && c.opts.env.CLAUDE_FLOW_MEMORY_PATH === '/')).toBe(true);
+    expect(calls.every((c) => c.opts.cwd === path.dirname(db) && c.opts.env.CLAUDE_FLOW_MEMORY_PATH === path.dirname(db))).toBe(true);
     const rows = fs.readFileSync(receipts, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(rows.map((r) => [r.kind, r.db, r.status])).toEqual([['store', '/db', 0], ['distill', '/db', 0]]);
+    expect(rows.map((r) => [r.kind, r.db, r.status])).toEqual([['store', db, 0], ['distill', db, 0]]);
   });
 });
 
 describe('turn privacy and receipt evidence', () => {
+  it.each(['projectRoot', 'projectDir', 'brainHome'])('rejects a queued step missing its %s binding', (field) => {
+    const h = harness();
+    h.fire('Stop', { session_id: 'missing-binding', last_assistant_message: OUTCOME });
+    const [step] = h.launches.flat();
+    delete step[field];
+    const marker = path.join(h.home, 'launches.jsonl');
+    const receipts = path.join(h.home, '.cache', 'ruvnet-brain', 'turn-capture', 'receipts.jsonl');
+    expect(queuedWorker([step], receipts, marker)[0]).toMatchObject({ status: 1, verified: false, error: 'queued step has no canonical project binding' });
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('revalidates a queued store and distill after directory replacement, records refusal, and permits retry', () => {
+    const h = harness();
+    const payload = { session_id: 'queue-swap', last_assistant_message: OUTCOME };
+    h.fire('Stop', payload);
+    h.fire('SessionEnd', { session_id: 'queue-distill' });
+    const steps = h.launches.flat();
+    expect(steps.every((step) => step.projectRoot === h.project && step.projectDir === h.project)).toBe(true);
+    const receipts = path.join(h.home, '.cache', 'ruvnet-brain', 'turn-capture', 'receipts.jsonl');
+    const marker = path.join(h.home, 'launches.jsonl');
+    const store = path.join(h.project, '.swarm');
+    const saved = path.join(h.project, '.swarm-saved');
+    const foreign = tmp('foreign-queued-store-');
+    fs.writeFileSync(path.join(foreign, 'memory.db'), 'foreign bytes');
+    fs.renameSync(store, saved);
+    fs.symlinkSync(foreign, store, 'dir');
+    expect(queuedWorker(steps, receipts, marker).map((row) => row.status)).toEqual([1, 1]);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.readFileSync(path.join(foreign, 'memory.db'), 'utf8')).toBe('foreign bytes');
+    expect(fs.readdirSync(foreign)).toEqual(['memory.db']);
+    // Source-bound negative control: removing the final guard reaches the forbidden launch boundary.
+    const workerFile = path.join(ROOT, 'plugin/scripts/turn-outcome-capture.mjs');
+    const source = fs.readFileSync(workerFile, 'utf8');
+    const start = source.indexOf("      if (!step.projectRoot || !step.projectDir || !step.brainHome)");
+    const end = source.indexOf('      const invocation = rufloInvocation(step.ruflo, args);', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const mutantFile = path.join(tmp('queued-worker-mutant-'), 'capture.mjs');
+    const mutant = (source.slice(0, start) + source.slice(end)).replace(/from '(\.\/[^']+)'/g,
+      (_, relative) => `from ${JSON.stringify(pathToFileURL(path.resolve(path.dirname(workerFile), relative)).href)}`);
+    fs.writeFileSync(mutantFile, mutant);
+    const mutantMarker = path.join(h.home, 'mutant-launches.jsonl');
+    expect(queuedWorker(steps, null, mutantMarker, mutantFile).map((row) => row.status)).toEqual([0, 0]);
+    expect(fs.existsSync(mutantMarker)).toBe(true);
+    fs.rmSync(store);
+    fs.renameSync(saved, store);
+    const retry = h.fire('Stop', payload).turn;
+    expect(retry.queued).toBe(true);
+    expect(retry.key).not.toBe(flag(steps[0], '-k'));
+    expect(queuedWorker(h.launches.at(-1), receipts, marker)[0]).toMatchObject({ status: 0, verified: true });
+  });
+
+  it.each(['off', 'path-off', 'malformed'])('honours %s persisted consent written after enqueue, including distillation', (mode) => {
+    const h = harness();
+    h.fire('Stop', { session_id: `queue-consent-${mode}`, last_assistant_message: OUTCOME });
+    h.fire('SessionEnd', { session_id: 'queue-consent-distill' });
+    const brainHome = path.join(h.home, '.cache', 'ruvnet-brain');
+    const file = turnCapturePolicyFile(brainHome);
+    fs.writeFileSync(file, mode === 'malformed' ? '{bad' : JSON.stringify({ schemaVersion: 1,
+      projects: { [h.project]: mode === 'off' ? 'off' : 'on' }, paths: mode === 'path-off' ? { [h.project]: 'off' } : {} }));
+    const marker = path.join(h.home, 'launches.jsonl');
+    const rows = queuedWorker(h.launches.flat(), path.join(brainHome, 'turn-capture', 'receipts.jsonl'), marker);
+    expect(rows.map((row) => row.status)).toEqual([1, 1]);
+    expect(rows[0].error).toMatch(mode === 'malformed' ? /policy unreadable or invalid/ : /persisted.*opt-out/);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it.each(['-wal', '-shm', '-journal'].flatMap((suffix) => ['symlink', 'hardlink'].map((kind) => ({ suffix, kind }))))(
+    'refuses queued SQLite sidefile replacement $suffix $kind before a child can run', ({ suffix, kind }) => {
+      const h = harness();
+      h.fire('Stop', { session_id: 'queue-sidefile', last_assistant_message: OUTCOME });
+      const foreign = path.join(tmp('foreign-sidefile-'), 'data');
+      fs.writeFileSync(foreign, 'foreign bytes');
+      const side = path.join(h.project, '.swarm', `memory.db${suffix}`);
+      fs.rmSync(side, { force: true });
+      if (kind === 'symlink') fs.symlinkSync(foreign, side); else fs.linkSync(foreign, side);
+      const marker = path.join(h.home, 'launches.jsonl');
+      const receipts = path.join(h.home, '.cache', 'ruvnet-brain', 'turn-capture', 'receipts.jsonl');
+      expect(queuedWorker(h.launches.flat(), receipts, marker)[0]).toMatchObject({ status: 1, verified: false });
+      expect(fs.existsSync(marker)).toBe(false);
+      expect(fs.readFileSync(foreign, 'utf8')).toBe('foreign bytes');
+    });
+
   it('redacts outcome, actions, paths and session before truncation and persistence', () => {
     const token = `ghp_${'SYNTHETIC'.repeat(5)}`;
     const h = harness();
@@ -228,11 +335,13 @@ describe('turn privacy and receipt evidence', () => {
 
   it('never treats exit zero, stale content, or stderr discarded as write proof', () => {
     const receipts = path.join(tmp('turn-status-'), 'r.jsonl');
-    const step = { kind: 'store', ruflo: '/fake/ruflo', args: ['memory', 'store', '-k', 'new-key', '--value', 'substantive new value', '-n', 'turns', '--path', '/db'] };
-    const stale = runSteps({ receipts, steps: [step] }, { run: () => ({ status: 0 }), read: () => 'stale value' });
+    const h = harness();
+    const step = { projectRoot: h.project, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'),
+      kind: 'store', ruflo: '/fake/ruflo', args: ['memory', 'store', '-k', 'new-key', '--value', 'substantive new value', '-n', 'turns', '--path', path.join(h.project, '.swarm', 'memory.db')] };
+    const stale = runSteps({ receipts, steps: [step] }, { env: {}, run: () => ({ status: 0 }), read: () => 'stale value' });
     expect(stale[0]).toMatchObject({ status: 1, verified: false, error: 'exact turn key/content readback failed' });
     const token = `ghp_${'SYNTHETIC'.repeat(5)}`;
-    const fail = runSteps({ receipts, steps: [step] }, { run: () => ({ status: 1, stderr: `refused ${token}\nsecond line` }) });
+    const fail = runSteps({ receipts, steps: [step] }, { env: {}, run: () => ({ status: 1, stderr: `refused ${token}\nsecond line` }) });
     expect(fail[0].error).toBe('refused [REDACTED:token]');
     expect(fs.readFileSync(receipts, 'utf8')).not.toContain(token);
   });
@@ -264,7 +373,7 @@ describe('turn privacy and receipt evidence', () => {
     expect(valueOf(step)).not.toContain(token);
     expect(fs.readFileSync(path.join(project, '.swarm', 'agentdb-turns.jsonl'), 'utf8')).not.toContain(token);
     const receipts = path.join(brainHome, 'turn-capture', 'receipts.jsonl');
-    runSteps({ steps: [step], receipts }, { run: () => ({ status: 1, stderr: 'refused' }) });
+    runSteps({ steps: [step], receipts }, { env: {}, run: () => ({ status: 1, stderr: 'refused' }) });
     expect(fs.readFileSync(receipts, 'utf8')).not.toContain(token);
     expect(turnRecordingStatus({ projectDir: project, env: { RUVNET_BRAIN_HOME: brainHome } }).line).toContain('failing 1/1');
   });
