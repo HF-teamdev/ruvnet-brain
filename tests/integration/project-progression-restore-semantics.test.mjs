@@ -1,10 +1,7 @@
 /**
  * ADR-073 §5/§6 — what SessionStart is allowed to DO, and how honestly it reports what happened.
  *
- * §5  SessionStart restores COMMITTED rows only. Replay is a write; a write is a `ruflo memory store`
- *     process; one of those costs more than the whole SessionStart budget. A restore that replayed
- *     would time out and report UNKNOWN exactly when durable evidence existed — the failure this
- *     lane was built to remove. Pending snapshots are reported and replayed at a capture boundary.
+ * §5  SessionStart replays durable pending snapshots before selecting the latest state.
  * §6  Three outcomes, three meanings: UNAVAILABLE (no question to ask), EMPTY (asked, nothing there),
  *     UNKNOWN (asked, missed). An UNKNOWN over a store that demonstrably HOLDS rows is a failure and
  *     must say so; rendering it as neutral is how a lost project memory looks like a new project.
@@ -60,7 +57,7 @@ function snapshotFor(resolution, sequence, parents = []) {
     parentEventKeys: parents,
     dedupId: `semantics:${sequence}`,
     completeProjectState: {
-      currentGoal: `goal ${sequence}`, acceptanceContract: { required: ['committed rows only'] },
+      currentGoal: `goal ${sequence}`, acceptanceContract: { required: ['latest interrupted work restored'] },
       plan: [], activeProcess: 'ProjectContinuity', activeStep: `step-${sequence}`,
       completed: [], inProgress: [], blockers: [], failures: [], decisions: [], changedFiles: [],
       commands: [], proofArtifacts: [], untested: [], resumeConflicts: [],
@@ -78,7 +75,7 @@ afterEach(() => {
 });
 
 describe('SessionStart restore semantics', () => {
-  it('never replays the outbox, reports the pending count, and leaves the snapshots pending', () => {
+  it('replays the interrupted outbox before the first automatic restore', () => {
     expect(ruflo, 'global Ruflo is required; this integration must not vacuously skip').toBeTruthy();
     const project = temporaryProject();
     const resolution = resolveProjectStore({ projectDir: project });
@@ -96,19 +93,13 @@ describe('SessionStart restore semantics', () => {
 
     const result = restore(project);
     expect(result.status).toBe('restored');
-    expect(result.pendingReplay).toBe(1);
-    expect(result.context).toContain('1 uncommitted snapshot(s) pending replay');
-    // The restored head is the COMMITTED one; the pending row was neither written nor read.
-    expect(result.context).toContain('goal 1');
-    expect(result.context).not.toContain('goal 2');
-    // And it is still pending: reported, not consumed, not dropped.
-    expect(store.outbox.pendingSnapshots().map((row) => row.eventKey)).toEqual([pending.eventKey]);
-    expect(new ProjectProgressionStore({ projectDir: project }).listSnapshotKeys())
-      .toEqual([committed.eventKey]);
-
-    // A capture boundary owns the write budget, so replay belongs there — and works.
-    expect(store.replay().map((receipt) => receipt.eventKey)).toEqual([pending.eventKey]);
+    expect(result.pendingReplay).toBe(0);
+    expect(result.context).not.toContain('pending replay');
+    expect(result.context).toContain('goal 2');
+    expect(result.context).not.toContain('goal 1');
     expect(store.outbox.pendingSnapshots()).toEqual([]);
+    expect(new ProjectProgressionStore({ projectDir: project }).listSnapshotKeys().sort())
+      .toEqual([committed.eventKey, pending.eventKey].sort());
     const after = restore(project);
     expect(after.pendingReplay).toBe(0);
     expect(after.context).not.toContain('pending replay');

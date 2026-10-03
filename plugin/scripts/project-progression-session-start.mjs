@@ -229,10 +229,19 @@ export function restoreProgressionForSession({
       fs.mkdirSync(path.dirname(resolution.canonicalAgentDbPath), { recursive: true, mode: 0o700 });
       initializeCanonicalStore(store, resolution);
     }
-    // COMMITTED ROWS ONLY (ADR-073 §5). Replay is a write, a write is a `ruflo memory store`
-    // process, and one of those costs more than this entire boundary's budget. Pending durable
-    // snapshots are REPORTED below and replayed at the next capture boundary or by /checkpoint.
-    const restored = store.restoreLatest({ maxOutputBytes: payloadLimit, replayPending: false, projectToBound: true });
+    // A pending snapshot is newer observable work. Never label an older committed head restored
+    // while that work remains unverified. Replay uses the same managed exact-readback store path.
+    let restored;
+    try {
+      restored = store.restoreLatest({ maxOutputBytes: payloadLimit, replayPending: true, projectToBound: true });
+    } catch (error) {
+      if (store.pendingReplayCount?.() > 0) {
+        const failed = miss('outbox-replay');
+        return { ...failed, pendingReplay: store.pendingReplayCount(),
+          context: `${failed.context} ${store.pendingReplayCount()} durable snapshot(s) remain pending; no older checkpoint was injected.` };
+      }
+      throw error;
+    }
     if (!validResume(restored)) return miss('malformed-store');
     const summaryNotice = restored.projected
       ? '\n[BOUNDED CONTINUITY SUMMARY] The merged current goal and next action are preserved exactly; '
