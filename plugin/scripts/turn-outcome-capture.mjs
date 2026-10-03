@@ -150,6 +150,10 @@ export function turnCapturePolicyFile(brainHome) {
   return path.join(brainHome, 'turn-capture', 'policy.json');
 }
 
+const consentMap = (value) => value !== null && typeof value === 'object'
+  && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype
+  && Object.values(value).every((setting) => setting === 'on' || setting === 'off');
+
 export function resolveTurnDb({ projectDir, brainHome } = {}) {
   const resolved = resolveProjectStore({ projectDir });
   let policy = {};
@@ -157,7 +161,8 @@ export function resolveTurnDb({ projectDir, brainHome } = {}) {
   if (file && fs.existsSync(file)) {
     try {
       policy = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (policy?.schemaVersion !== 1 || !policy.projects || typeof policy.projects !== 'object') throw new Error('invalid policy');
+      if (policy?.schemaVersion !== 1 || !consentMap(policy.projects)
+        || (Object.hasOwn(policy, 'paths') && !consentMap(policy.paths))) throw new Error('invalid policy');
     } catch { return { skipped: 'turn capture policy unreadable or invalid', projectRoot: resolved.projectRoot }; }
   }
   // A path rule wins over a project rule, allowing a linked checkout/subdirectory to opt out.

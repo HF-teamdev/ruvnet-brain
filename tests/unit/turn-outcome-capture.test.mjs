@@ -202,6 +202,30 @@ describe('turn privacy and receipt evidence', () => {
     expect(resolveTurnDb({ projectDir: h.project, brainHome }).db).toBe(path.join(h.project, '.swarm', 'memory.db'));
   });
 
+  it.each([
+    { schemaVersion: 1, projects: [], paths: {} },
+    { schemaVersion: 1, projects: {}, paths: 'off' },
+    { schemaVersion: 1, projects: null },
+    { schemaVersion: 1, projects: {}, paths: [] },
+    { schemaVersion: 1, projects: {}, paths: null },
+    { schemaVersion: 1, projects: { '/other/project': 'invalid' } },
+    { schemaVersion: 1, projects: {}, paths: { '/other/path': false } },
+  ])('fails closed for malformed consent maps/settings even with an existing store: %j', (policy) => {
+    const h = harness();
+    const file = turnCapturePolicyFile(path.join(h.home, '.cache', 'ruvnet-brain'));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(policy));
+    const result = captureTurnOutcome({ projectDir: h.project, event: 'Stop', home: h.home,
+      env: { RUVNET_TURN_CAPTURE: 'force' }, ruflo: '/fake/ruflo',
+      payload: { session_id: 'malformed-consent', last_assistant_message: OUTCOME },
+      launch: () => { throw new Error('malformed consent must not launch'); } });
+    expect(result.skipped).toBe('turn capture policy unreadable or invalid');
+    expect(result.queued).toBe(false);
+    expect(result.launch).toBeUndefined();
+    expect(turnRecordingStatus({ projectDir: h.project, home: h.home, env: {} }).line).toContain('policy unreadable or invalid');
+    expect(fs.existsSync(path.join(h.project, '.swarm', 'agentdb-turns.jsonl'))).toBe(false);
+  });
+
   it('never treats exit zero, stale content, or stderr discarded as write proof', () => {
     const receipts = path.join(tmp('turn-status-'), 'r.jsonl');
     const step = { kind: 'store', ruflo: '/fake/ruflo', args: ['memory', 'store', '-k', 'new-key', '--value', 'substantive new value', '-n', 'turns', '--path', '/db'] };

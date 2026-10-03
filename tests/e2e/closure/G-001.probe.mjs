@@ -19,5 +19,9 @@ try {
   assert.match(f.stop({ message: `${outcome} Changed after policy write.` }).skipped, /persisted.*opt-out/);
   f.policy({}, { [f.project]: 'off' });
   assert.match(f.stop({ message: `${outcome} Changed after path policy write.` }).skipped, /persisted.*opt-out/);
-  console.log(JSON.stringify({ gap: 'G-001', evidenceClass: 'EXECUTED', verified: true, rawTokenBytes: 0, breadcrumbFields: Object.keys(breadcrumb), liveProjectAndPathOptOut: true }));
+  f.policy([], {});
+  assert.match(f.stop().skipped, /policy unreadable or invalid/);
+  f.policy({}, 'off');
+  assert.match(f.stop().skipped, /policy unreadable or invalid/);
+  console.log(JSON.stringify({ malformedConsentFailsClosed: true, gap: 'G-001', evidenceClass: 'EXECUTED', verified: true, rawTokenBytes: 0, breadcrumbFields: Object.keys(breadcrumb), liveProjectAndPathOptOut: true }));
 } finally { f.cleanup(); }
