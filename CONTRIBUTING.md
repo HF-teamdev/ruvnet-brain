@@ -1,6 +1,6 @@
 # Contributing to RuvNet Brain — the one rulebook
 
-Updated: 2026-10-01
+Updated: 2026-10-03
 Created: 2026-07-07
 
 This file is the **only** place that says how to version, release, update the knowledge corpus,
@@ -291,10 +291,26 @@ only; `npm run completion-claim:replay` measures both on real transcripts). Sess
 `[RuvNet Brain — KNOWLEDGE …]` line when the installed knowledge cannot be proven current (older than
 48h, or the latest refresh receipt FAILED) and names the fix. The same snapshot capture records each
 turn's outcome at Stop (final assistant text, files changed, command descriptions — never user
-text) to AgentDB namespace `turns` — the project's `.swarm/memory.db` if it exists, otherwise
-`~/.claude/global-memory/.swarm/memory.db`; `.swarm` is never created in a repository — and at
-SessionEnd/PreCompact runs `ruflo memory distill run` on that db so the records become patterns.
-Writes run in a detached worker; `RUVNET_TURN_CAPTURE=off` disables it. Where the owner's user-level
+text), redacted with the shared credential/private-key scanner before truncation, to AgentDB
+namespace `turns` in the canonical project's `.swarm/memory.db` (a linked worktree uses the primary
+repository store). There is no automatic global fallback. An existing project store is eligible by
+default; a project without one records nothing until explicitly opted in. The breadcrumb
+`agentdb-turns.jsonl` holds only `{ts,key,hash,len}`, never outcome text. Writes run in a detached
+worker; a receipt is successful only after exact key/content readback. Recent failed or unverified
+turn writes appear as `turn recording failing N/M` at SessionStart and in `--doctor`, independently
+of material-event recording status. `RUVNET_TURN_CAPTURE=off` disables it.
+
+Persisted consent lives in `<Brain home>/turn-capture/policy.json` (Brain home defaults to
+`~/.cache/ruvnet-brain`), and is reread at every capture boundary without restarting the host:
+`{"schemaVersion":1,"projects":{"/absolute/canonical/repository":"off"},"paths":{"/absolute/checkout/or/subdirectory":"off"}}`.
+A path entry overrides a canonical project entry; `on` explicitly opts in and permits creating the
+canonical project store directory, `off` disables both capture and distillation. A malformed consent
+file fails closed. An environment `force` does not override persisted opt-out. Existing historical
+records are not rewritten. The global Ruflo CLI currently accepts stored content through `--value`;
+only redacted content is passed there. Filesystem paths still have to be passed to the OS/CLI; avoid
+putting credentials in repository directory names. Receipt paths and project identifiers are redacted.
+
+Where the owner's user-level
 `~/.claude/hooks/agentdb-turn-capture.mjs` is registered in `~/.claude/settings.json`, the product defers
 Claude turn records to it (one writer per turn; `RUVNET_TURN_CAPTURE=force` keeps both). The same
 boundaries also record MATERIAL EVENTS (ADR-100, `continuity-events.mjs` / `continuity-journal.mjs`):

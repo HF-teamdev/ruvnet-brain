@@ -3,7 +3,7 @@ id: ADR-100
 title: Guaranteed AgentDB continuity — material events, durable outbox, come-up-to-speed brief, one writer
 status: Proposed
 date: 2026-10-01
-updated: 2026-10-01
+updated: 2026-10-03
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [agentdb, continuity, hooks, durability, memory]
 supersedes: []
@@ -124,3 +124,17 @@ whole-image mutator (access_count bump) — `ruflo/v3/@claude-flow/cli/src/memor
 - The outbox is not compacted yet; at the measured rate (tens of events/day, ~1 KB each) that is months.
 - Restore context (progression JSON, ≤ 8 KB) plus the brief (≤ 3 KB) can exceed a host's inline preview;
   the brief is first so it survives a cut.
+
+## Implementation hardening (2026-10-03)
+
+ADR status remains **Proposed**; this repair does not claim publication or complete continuity.
+Turn capture now reuses the canonical project-store resolver and shared secret/private-key redaction,
+with no implicit global store fallback. Persisted canonical-project/path consent is reread per boundary;
+an absent store requires explicit opt-in. Turn breadcrumbs contain only key, digest, length and time.
+The detached writer verifies exact key/content readback and preserves a redacted first stderr line on
+failure; SessionStart and doctor expose recent turn failures separately from the material-event success
+line. Historical raw records and owner-managed user-level capture hooks are not rewritten.
+
+Evidence: `tests/e2e/closure/G-001.probe.mjs`, `G-002.probe.mjs`, and `G-014.probe.mjs` run the real
+detached process boundary against the global Ruflo CLI in isolated homes (synthetic credentials only).
+These local process results are not published closure receipts.
