@@ -27,9 +27,44 @@ import {
   assertPostTaskPersisted,
   cleanupFixtureDaemons,
   buildFixtures, nightlyRefresh, seedProjectBMemory,
+  measurePortfolio,
 } from '../../scripts/learning-replay.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createReplaySource } from '../helpers/learning-replay-source.mjs';
+
+describe('portfolio measurement preserves the evidence gate', () => {
+  it('measures both N=3 traps and all four causal mutants using the explicit executor', async () => {
+    const calls = [];
+    const result = await measurePortfolio({
+      host: 'codex', model: 'gpt-6.1-sol',
+      execute: async (args) => { calls.push(args); return args.includes('--mutant') ? EXIT.FAIL : EXIT.PASS; },
+      check: () => ({ status: VERDICT.PASS, why: 'all six measurements verified' }),
+    });
+    expect(result).toBe(EXIT.PASS);
+    expect(calls).toHaveLength(6);
+    for (const trap of [TRAP.MEMORY_SEARCH, TRAP.POST_TASK]) {
+      expect(calls.filter((args) => args.includes(trap))).toHaveLength(3);
+      expect(calls).toContainEqual(['--trap', trap, '--n', '3', '--host', 'codex', '--model', 'gpt-6.1-sol']);
+      for (const mutant of ['delete-lesson', 'brain-off-treated']) {
+        expect(calls).toContainEqual(['--trap', trap, '--mutant', mutant, '--n', '1', '--host', 'codex', '--model', 'gpt-6.1-sol']);
+      }
+    }
+  });
+
+  it.each([VERDICT.UNKNOWN, VERDICT.FAIL, VERDICT.INCONCLUSIVE])(
+    'cannot turn successful child exits into a pass when portfolio evidence is %s', async (status) => {
+      let measurements = 0;
+      const result = await measurePortfolio({
+        host: 'codex', model: 'gpt-6.1-sol',
+        execute: async () => { measurements++; return EXIT.PASS; },
+        check: () => ({ status, why: 'negative control: evidence rejected' }),
+      });
+      expect(measurements).toBe(6);
+      expect(result).toBe(EXIT[status]);
+      expect(result).not.toBe(EXIT.PASS);
+    },
+  );
+});
 
 describe('CLI help is side-effect free', () => {
   it('--help prints usage, exits zero, and does not overwrite the replay artifact', () => {

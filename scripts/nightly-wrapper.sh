@@ -222,7 +222,7 @@ echo "===== RELEASE-CONVERGENCE watchdog — $(date -u +%FT%TZ) =====" >> "$LOG"
   || echo "[release-watchdog] exited non-zero — see above; nightly continues" >> "$LOG"
 
 echo "===== LEARNING-REPLAY counterfactual trap — $(date -u +%FT%TZ) =====" >> "$LOG"
-"$NODE_BIN" scripts/learning-replay.mjs --n 3 --model haiku >> "$LOG" 2>&1
+"$NODE_BIN" scripts/learning-replay.mjs --measure-portfolio --host codex --model gpt-6.1-sol >> "$LOG" 2>&1
 LR_RC=$?
 case "$LR_RC" in
   0) echo "===== LEARNING-REPLAY: PASS =====" >> "$LOG" ;;
