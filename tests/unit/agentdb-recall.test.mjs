@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { recall, recallTrigger, agentdbStores, parseSearchJson, pickRows, formatBlock, BLOCK_MAX_BYTES, evidenceExcerpt } from '../../plugin/scripts/agentdb-recall.mjs';
+import { recall, recallTrigger, agentdbStores, parseSearchJson, pickRows, formatBlock, BLOCK_MAX_BYTES, evidenceExcerpt, promptKeywords, recallQuery, turnOutcomeExcerpt } from '../../plugin/scripts/agentdb-recall.mjs';
+
+import { captureTurnOutcome } from '../../plugin/scripts/turn-outcome-capture.mjs';
 
 const script = path.resolve('plugin/scripts/agentdb-recall.mjs');
 const ground = path.resolve('plugin/scripts/ground-ruvnet.sh');
@@ -151,6 +153,48 @@ describe('canonical prompt-time AgentDB recall', () => {
       const r = await recall({ prompt: 'Fix parser', projectDir: w.proj, env: { ...w.env, RECALL_RETRIEVE_HANG: '1' }, deadlineMs: 350 });
       expect(r.picks).toEqual([]); expect(r.block).toContain('timed out reading exact values');
       expect(r.block).not.toContain('requirement present');
+    } finally { w.cleanup(); }
+  });
+  it('recalls relevant automatic OUTCOME knowledge stored only in turns, not session metadata', async () => {
+    const w = world();
+    try {
+      const token = 'ghp_' + 'z'.repeat(35);
+      const stored = [];
+      const captured = captureTurnOutcome({ event: 'Stop', host: 'codex', projectDir: w.proj,
+        env: { ...w.env, RUVNET_TURN_CAPTURE: 'on' }, home: w.env.HOME, ruflo: w.env.RUFLO_BIN,
+        payload: { session_id: 'private-session-identifier', last_assistant_message:
+          'We finished an unrelated color chart. The safe packing remedy is count three blue bins then record seven. '
+          + token + ' This outcome records the learned procedure so a later independent task can reuse it without consulting a private transcript.' },
+        launch: (steps) => {
+          for (const step of steps.filter(s => s.kind === 'store')) stored.push({ key: step.args[step.args.indexOf('-k') + 1],
+            namespace: step.args[step.args.indexOf('-n') + 1], score: 0.88, preview: 'session metadata', content: step.args[step.args.indexOf('--value') + 1] });
+          fs.writeFileSync(w.env.RECALL_ROWS, JSON.stringify([...stored,
+            { key: 'turn-codex-metadata2', namespace: 'turns', score: 1.0, content: '[turn] || SESSION: safe packing || TRANSCRIPT: private-path' },
+            { key: 'turn-codex-metadata', namespace: 'turns', score: 0.99, content: '[turn project=proj] || SESSION: safe packing metadata only || TRANSCRIPT: private-path' },
+            { key: 'turn-codex-unrelated', namespace: 'turns', score: 0.98, content: '[turn project=proj] || OUTCOME: The weather is sunny. || SESSION: safe packing' },
+          ]));
+          return { launched: true };
+        },
+      });
+      expect(captured.queued, JSON.stringify(captured)).toBe(true); expect(stored).toHaveLength(1);
+      expect(stored[0].namespace).toBe('turns'); expect(stored[0].content).not.toContain(token);
+      const r = await recall({ prompt: 'Recommend the safe packing remedy', projectDir: w.proj, env: w.env });
+      expect(r.block).toContain('safe packing remedy is count three blue bins then record seven');
+      expect(r.block).not.toContain('private-session-identifier'); expect(r.block).not.toContain('TRANSCRIPT');
+      expect(r.picks.map(p => p.key)).toEqual([stored[0].key]); expect(r.block).not.toContain(token);
+      const excerpt = turnOutcomeExcerpt('OUTCOME: safe packing ' + token + ' keeps history private. || SESSION: hidden', 'safe packing');
+      expect(excerpt).toContain('[REDACTED:token]'); expect(excerpt).not.toContain(token);
+      expect(Buffer.byteLength(r.block + '\n')).toBeLessThanOrEqual(BLOCK_MAX_BYTES);
+    } finally { w.cleanup(); }
+  });
+  it('redacts prompt credentials before keyword fragmentation and Ruflo query arguments', async () => {
+    const w = world();
+    try {
+      const token = 'ghp_' + 'z'.repeat(35); const prompt = 'Remember safe packing ' + token;
+      expect(promptKeywords(prompt).join(' ')).not.toContain('z'.repeat(35));
+      expect(recallQuery(prompt)).not.toContain('z'.repeat(35));
+      await recall({ prompt, projectDir: w.proj, env: w.env });
+      expect(JSON.stringify(w.calls())).not.toContain('z'.repeat(35));
     } finally { w.cleanup(); }
   });
   it('is silent when off, no canonical store exists, the prompt is empty, or the resolver rejects', async () => {

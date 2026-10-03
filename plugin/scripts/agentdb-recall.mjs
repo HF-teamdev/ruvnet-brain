@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Prompt-time canonical AgentDB recall (ADR-101, G-022).
- * Every nonempty human prompt searches curated signal and project/default namespaces in
+ * Every nonempty human prompt searches curated signal, turn outcomes and project/default namespaces in
  * .swarm/memory.db. Recalled records are untrusted evidence, never instructions.
  * Global Ruflo executes in isolated scratch directories; all processes share one
  * <=2s deadline. ground-ruvnet.sh delivers <=600 bytes on each eligible prompt.
@@ -48,17 +48,18 @@ const STOP = new Set(('the a an and or but for nor so yet to of in on at by with
 
 /** Up to `max` distinctive words from the prompt, in order. */
 export function promptKeywords(prompt, max = 6) {
-  const words = String(prompt || '').toLowerCase().replace(/[^a-z0-9.\s-]/g, ' ').split(/\s+/)
+  const words = redactText(prompt).toLowerCase().replace(/[^a-z0-9.\s-]/g, ' ').split(/\s+/)
     .map((w) => w.replace(/^[-.]+|[-.]+$/g, '')).filter((w) => w.length >= 3 && !STOP.has(w) && !/^\d+$/.test(w));
   return [...new Set(words)].slice(0, max);
 }
 
 export function recallQuery(prompt) {
-  const terms = promptKeywords(redactText(prompt), 14);
-  if (/where are we|status|catch me up/i.test(prompt)) terms.push('project status progress');
-  if (/score|grade|north.star/i.test(prompt)) terms.push('scorecard north star');
-  if (/releas|publish|workflow run|dispatch/i.test(prompt)) terms.push('release decision authority');
-  return terms.join(' ') || String(prompt).trim().slice(0, 200);
+  const safePrompt = redactText(prompt);
+  const terms = promptKeywords(safePrompt, 14);
+  if (/where are we|status|catch me up/i.test(safePrompt)) terms.push('project status progress');
+  if (/score|grade|north.star/i.test(safePrompt)) terms.push('scorecard north star');
+  if (/releas|publish|workflow run|dispatch/i.test(safePrompt)) terms.push('release decision authority');
+  return terms.join(' ') || safePrompt.trim().slice(0, 200);
 }
 
 export function parseSearchJson(stdout) {
@@ -81,6 +82,19 @@ function clean(value, limit) {
 
 const NOISE_KEY = /^(?:verify[-_]|probe[-_]|test[-_]|rnb-quality-probe|session[-_]|turn[-_]|project-progress[-_]|cevt[-_])/i;
 const SIGNAL_NAMESPACES = new Set(['lessons', 'patterns', 'pattern']);
+/** Turn knowledge is the actual redacted outcome, never its session/transcript wrapper. */
+export function turnOutcomeExcerpt(value, prompt) {
+  const text = redactText(value);
+  const outcome = /(?:^|\|\|\s*)OUTCOME:\s*([\s\S]*)/i.exec(text)?.[1]?.split(/\s*\|\|\s*[A-Z][A-Z ]*:/)[0];
+  if (!outcome) return '';
+  const terms = new Set(promptKeywords(prompt, 14));
+  if (!terms.size) return '';
+  const clauses = outcome.split(/(?<=[.!?])\s+/).map((clause) => ({ clause,
+    relevance: promptKeywords(clause, 100).filter((term) => terms.has(term)).length }));
+  clauses.sort((a, b) => b.relevance - a.relevance);
+  return clauses[0]?.relevance ? clean('OUTCOME: ' + clauses[0].clause, 110) : '';
+}
+
 /** Quote a substantive exact-value passage, including the remedy in structured lessons. */
 export function evidenceExcerpt(value, key, prompt = '') {
   const text = redactText(value);
@@ -120,16 +134,17 @@ export function evidenceExcerpt(value, key, prompt = '') {
   return clean(start >= 0 ? text.slice(start) : text, 110);
 }
 
-export function pickRows(results) {
-  const candidates = results.flatMap((r) => r.rows.filter((p) => p.namespace === r.namespace && !NOISE_KEY.test(p.key)
+export function pickRows(results, limit = 3) {
+  const candidates = results.flatMap((r) => r.rows.filter((p) => p.namespace === r.namespace && (!NOISE_KEY.test(p.key) || p.namespace === 'turns' && /^turn[-_]/i.test(p.key))
     && (!r.family || p.key.toLowerCase().includes(r.family))
     && Number.isFinite(p.score) && p.score >= MIN_RELEVANCE).map((p) => ({ ...p, targeted: Boolean(r.family) })));
-  const ranked = candidates.sort((a, b) => Number(b.targeted) - Number(a.targeted) || Number(SIGNAL_NAMESPACES.has(b.namespace)) - Number(SIGNAL_NAMESPACES.has(a.namespace)) || b.score - a.score);
+  const signal = (p) => SIGNAL_NAMESPACES.has(p.namespace) ? 2 : p.namespace === 'turns' ? 1 : 0;
+  const ranked = candidates.sort((a, b) => Number(b.targeted) - Number(a.targeted) || signal(b) - signal(a) || b.score - a.score);
   // Curated lessons and patterns are signal; lifecycle transcript telemetry is not.
   // Do not reserve a slot for a weak match just because its namespace was searched.
   const chosen = [];
   for (const row of ranked) {
-    if (chosen.length >= 3) break;
+    if (chosen.length >= limit) break;
     if (!chosen.some((r) => r.key === row.key && r.namespace === row.namespace)) chosen.push(row);
   }
   return chosen.map((p) => ({ store: 'memory.db', key: p.key, namespace: p.namespace,
@@ -203,27 +218,32 @@ export async function recall({ prompt, projectDir = process.cwd(), env = process
     const store = stores[0];
     const query = recallQuery(prompt);
     const scratchFor = scratch || ((storePath) => rufloCwdFor(storePath, { root: rufloScratchRoot(env) }));
-    const namespaces = [...new Set(['lessons', 'patterns', 'pattern', path.basename(root), 'default'])];
+    const namespaces = [...new Set(['lessons', 'patterns', 'pattern', 'turns', path.basename(root), 'default'])];
     const family = /score|grade|north.star/i.test(prompt) ? 'scorecard'
       : /where are we|status|catch me up/i.test(prompt) ? 'project-state-current'
       : /releas|publish|workflow run|dispatch/i.test(prompt) ? 'release'
       : /requirement|always|every prompt/i.test(prompt) ? 'decision-agentdb' : null;
     const jobs = namespaces.flatMap((namespace) => [{ namespace, family: null, args: ['--format', 'json', '-q', query, '-n', namespace, '--limit', '12'] },
-      ...(family && !SIGNAL_NAMESPACES.has(namespace) ? [{ namespace, family, args: ['--format', 'json', '-q', family, '-n', namespace, '-t', 'keyword', '--limit', '4'] }] : [])]);
+      ...(family && !SIGNAL_NAMESPACES.has(namespace) && namespace !== 'turns' ? [{ namespace, family, args: ['--format', 'json', '-q', family, '-n', namespace, '-t', 'keyword', '--limit', '4'] }] : [])]);
     const results = await Promise.all(jobs.map(async ({ namespace, family: recordFamily, args }) => ({ namespace, family: recordFamily,
       ...await searchOnce({ ruflo: bin, store, deadline, env, scratch: scratchFor, args }) })));
     let status = results.every((r) => r.state === 'ok') ? 'ok'
       : results.some((r) => r.state === 'timed out') ? 'timed out' : 'unavailable';
-    const candidates = pickRows(results);
+    // Overfetch a bounded six exact values so rejected turn metadata cannot hide
+    // the next useful outcome; at most three verified excerpts are delivered.
+    const candidates = pickRows(results, 6);
     // Ruflo previews are ~60 characters. Read the actual selected values within
     // the same deadline so the block contains useful evidence rather than titles.
     const retrieved = await Promise.all(candidates.map(async (p) => {
       const r = await searchOnce({ ruflo: bin, store, deadline, env, scratch: scratchFor, operation: 'retrieve',
         args: ['-k', p.key, '-n', p.namespace, '--value-only'] });
-      if (r.state === 'ok' && r.value && !r.value.startsWith('[WARN]')) return { pick: { ...p, preview: evidenceExcerpt(r.value, p.key, prompt) }, state: 'ok' };
+      if (r.state === 'ok' && r.value && !r.value.startsWith('[WARN]')) {
+        const preview = p.namespace === 'turns' ? turnOutcomeExcerpt(r.value, prompt) : evidenceExcerpt(r.value, p.key, prompt);
+        return { pick: preview ? { ...p, preview } : null, state: 'ok' };
+      }
       return { pick: null, state: r.state === 'ok' ? 'unavailable' : r.state };
     }));
-    const picks = retrieved.flatMap((r) => r.pick ? [r.pick] : []);
+    const picks = retrieved.flatMap((r) => r.pick ? [r.pick] : []).slice(0, 3);
     if (retrieved.some((r) => r.state !== 'ok')) status = retrieved.some((r) => r.state === 'timed out') ? 'timed out reading exact values' : 'unavailable exact values';
     return { block: formatBlock({ picks, status }), picks, stores, status: { 'memory.db': status } };
   } catch { return empty; }
