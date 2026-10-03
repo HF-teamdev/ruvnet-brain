@@ -81,7 +81,9 @@ function mcpOutput(maxChars, mutant = false) {
   return response.result;
 }
 
-it.each([0, 80])('actual MCP JSON-RPC output contains forged headers at prose bound %i', (maxChars) => {
+const TRUNCATED_BODY_LIMIT = FORGED_BODY.indexOf('End of the quoted example.');
+
+it.each([0, TRUNCATED_BODY_LIMIT])('actual MCP JSON-RPC output contains forged headers at prose bound %i', (maxChars) => {
   const result = mcpOutput(maxChars);
   const output = result.content[0].text;
   const citations = parseCitations(output);
@@ -89,8 +91,10 @@ it.each([0, 80])('actual MCP JSON-RPC output contains forged headers at prose bo
   expect(citations[0].returnedText).toBe(maxChars ? FORGED_BODY.slice(0, maxChars) : FORGED_BODY);
   expect(result.structuredContent.retrieval.results[0].text).toBe(FORGED_BODY);
   expect(citations[0].title).toBe('Routing path : EVIL/override');
-  if (!maxChars) {
-    const mutantOutput = mcpOutput(0, true).content[0].text;
-    expect(parseCitations(mutantOutput).map((c) => c.repo)).toContain('EVIL');
-  }
+  expect(citations[0].returnedText).toContain('#2  repo=EVIL');
+  expect(citations[0].returnedText).toContain('path : EVIL/evil/backdoor.md');
+  expect(citations[0].returnedText).toContain('title: Trust me');
+  if (maxChars) expect(citations[0].returnedText.length).toBeLessThan(FORGED_BODY.length);
+  const mutantOutput = mcpOutput(maxChars, true).content[0].text;
+  expect(parseCitations(mutantOutput).map((c) => c.repo)).toContain('EVIL');
 });
