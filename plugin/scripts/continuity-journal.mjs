@@ -1,33 +1,16 @@
 /**
- * continuity-journal.mjs — durable outbox FIRST, then AgentDB, then an exact read-back. Never silent.
- * THE GUARANTEE, and the failure it is built around. `ruflo memory store` refuses a write while another
- * process holds the store's native WAL sidecars: memory-initializer.ts storeEntry/getEntry check
- * `hasNativeWalSidecars(dbPath)` and return `walRefusalError` ("active native WAL connection — refusing
- * an unsafe sql.js whole-image write"; ruflo #2735/#2878, search_ruvnet:
- * ruflo/v3/@claude-flow/cli/src/memory/memory-initializer.ts). That is ordinary under concurrency, so an
- * event that is only ever handed to `ruflo` once is an event that can be lost. Here:
+ * Durable material events: fsync the outbox, store through canonical Ruflo, then exact-read back.
+ * Ruflo refuses sql.js writes during native WAL contention (#2735/#2878); a refused event stays
+ * pending and the bounded worker retries with backoff. Only verified bytes produce a commit receipt.
+ * Current original-path consent governs capture and every replay attempt; opt-out retains debt.
+ * One kind:id denotes one event, even when concurrent sessions observe it. A conflicting stored row
+ * is quarantined. Missing store/Ruflo is not applicable, while pending debt or corruption is reported
+ * by the SessionStart brief, doctor, and a once-per-session Claude Stop notice.
  *
- *   1. append(): every event is written to `.swarm/continuity-events-outbox.jsonl` and fsynced BEFORE
- *      any store call. From that instant it cannot be lost by a crash, a SIGKILL or a refusal.
- *   2. drain(): `ruflo memory store --no-upsert --path <db>` (the ONLY writer of memory.db), then the
- *      row is read back by exact key through the read-only node:sqlite reader (the same independent
- *      read path project-progression-store.mjs uses) and compared. Only then is a `commit` line
- *      appended. A refusal is retried with backoff inside the worker's budget; whatever is left stays
- *      pending and is retried by the next boundary's worker.
- *   3. status(): pending count, oldest pending, last commit, last failure — surfaced by the SessionStart
- *      brief, `--doctor`, and (Claude) a Stop line when recording is stuck. Never swallowed.
- * WHAT "✗" MEANS, AND WHAT KEEPS THE FILE SMALL (independent review S3/S4, 2026-10-01):
- *   • ONE EVENT, ONE KEY: two lines under one key are one event seen twice (first wins); only a stored row
- *     that is NOT that kind:id is a conflict, and that key is quarantined.
- *   • NOT APPLICABLE IS NOT A FAILURE: no initialized store → nothing journalled; no ruflo → events wait,
- *     no drainer, and the line says "n/a", never ✗.
- *   • A PROBLEM IS REPORTED, THEN CLEARS: quarantine/corrupt lines age out after QUARANTINE_REPORT_MS or
- *     with `continuity-brief.mjs --clear`; the Stop line shows once per session per condition.
- *   • BOUNDED. A failure is ONE record per event (attempt count, last error), never a line per attempt;
- *     compact() rewrites the file atomically (lock + size re-check, so a concurrent append is never
- *     lost): committed events older than RETAIN_COMMITTED_MS leave (the store keeps them and dedupes),
- *     corrupt lines become one notice; MAX_EVENT_RECORDS bounds committed history, never pending events.
- *     A prolonged outage can grow the pending file beyond that soft cap; status reports capacity pressure.
+ * Failures retain one attempts/last-error record per event. Lock-protected compaction checks the file
+ * size before atomic replacement so concurrent appends survive. It removes committed history after
+ * RETAIN_COMMITTED_MS, ages quarantine/corrupt notices after QUARANTINE_REPORT_MS, and bounds committed
+ * history at MAX_EVENT_RECORDS. Pending events are never dropped; prolonged outages report pressure.
  */
 import fs from 'node:fs';
 import os from 'node:os';
