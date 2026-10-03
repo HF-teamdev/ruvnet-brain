@@ -5,20 +5,37 @@ import { qualificationPlan } from '../../scripts/release-qualification.mjs';
 export function qualificationInvocationFiles(jobBody) {
   const lines = String(jobBody).split('\n');
   const commands = [];
+  let inSteps = false;
   for (let i = 0; i < lines.length; i++) {
-    const run = lines[i].match(/^(\s*)(?:-\s+)?run:\s*(.*)$/);
-    if (!run) continue;
-    let command = run[2];
+    if (/^ {4}steps:\s*$/.test(lines[i])) { inSteps = true; continue; }
+    if (lines[i].trim() && lines[i].match(/^\s*/)[0].length <= 4) inSteps = false;
+    if (!inSteps) continue;
+    // Repository steps use six spaces plus '- ', or an eight-space property.
+    // Skip other scalar bodies, which may contain fixtures resembling run keys.
+    const run = lines[i].match(/^ {6}(?:- |  )run:\s*(.*)$/);
+    const scalar = lines[i].match(/^(\s*)(?:- )?\S[^\r\n]*:\s*[|>](?:[1-9][-+]?|[-+][1-9]?)?\s*(?:#.*)?$/);
+    if (!run) {
+      if (scalar) while (i + 1 < lines.length && (!lines[i + 1].trim()
+        || lines[i + 1].match(/^\s*/)[0].length > scalar[1].length)) i++;
+      continue;
+    }
+    let command = run[1];
     if (/^[|>][-+]?\s*$/.test(command)) {
+      const folded = command.startsWith('>');
       const body = [];
       while (i + 1 < lines.length && (!lines[i + 1].trim()
-        || lines[i + 1].match(/^\s*/)[0].length > run[1].length)) body.push(lines[++i]);
+        || lines[i + 1].match(/^\s*/)[0].length > 8)) body.push(lines[++i]);
+      if (folded) continue;
       command = body.join('\n');
     }
     // Heredocs and multiline shell strings can contain source/fixture text that
     // looks executable. Only unquoted literal run steps are supported here.
     if (command.includes('<<') || /['"`]/.test(command)) continue;
-    commands.push(...command.replace(/\\\r?\n\s*/g, ' ').split('\n'));
+    command = command.replace(/\\\r?\n\s*/g, ' ').trim();
+    // A preceding exit, shell condition, function, or another command can make
+    // a later producer unreachable. Support exactly one logical command.
+    if (/[\r\n]/.test(command)) continue;
+    commands.push(command);
   }
   const files = new Set();
   for (const command of commands) {

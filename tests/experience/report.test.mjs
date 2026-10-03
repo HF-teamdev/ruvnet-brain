@@ -19,13 +19,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { qualificationInvocationFiles } from './qualification-invocation.mjs';
+import { qualificationInvocationFiles as parseQualificationInvocationFiles } from './qualification-invocation.mjs';
 import { qualificationPlan } from '../../scripts/release-qualification.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
 const REPORT = path.join(HERE, 'report.mjs');
 const REAL_SCENARIOS = JSON.parse(fs.readFileSync(path.join(HERE, 'scenarios.json'), 'utf8'));
+
+function qualificationInvocationFiles(body) {
+  // Synthetic step declarations use the same enclosing section as real jobs.
+  return parseQualificationInvocationFiles(/^ {4}steps:/m.test(body) ? body : `    steps:\n${body}`);
+}
 
 test('qualification adapter expands the actual integration workflow from the producer plan', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/integration-linux.yml'), 'utf8');
@@ -67,6 +72,16 @@ test('qualification adapter never expands comments, echo output, or embedded sou
     `        run: |\n          source='\n          ${producer}\n          '`,
     `        run: |\n          source=\`\n          ${producer}\n          \``,
     `        run: |\n          echo fixture \\\n            ${producer}`,
+    `        run: >\n          echo\n          ${producer}`,
+    `        run: |\n          exit 0\n          ${producer}`,
+    `        run: |\n          if false; then\n            ${producer}\n          fi`,
+    `        run: |\n          unused() {\n            ${producer}\n          }`,
+    `        env:\n          FIXTURE: |\n            run: ${producer}\n        run: true`,
+    `    env:\n      FIXTURE: |\n        run: ${producer}\n    steps:\n      - run: true`,
+    `    env:\n      FIXTURE: | # fixture\n        run: ${producer}\n    steps:\n      - run: true`,
+    `    env:\n      FIXTURE: |2- # fixture\n        run: ${producer}\n    steps:\n      - run: true`,
+    `    env:\n      "FIXTURE": | # fixture\n        run: ${producer}\n    steps:\n      - run: true`,
+    `    env:\n      FIXTURE: "source\n        run: ${producer}\n        source"\n    steps:\n      - run: true`,
   ]) assert.equal(qualificationInvocationFiles(body).size, 0, body);
 });
 
