@@ -341,15 +341,12 @@ describe('real global ruflo (skipped where absent)', () => {
   (ruflo ? it : it.skip)('drains through the real CLI into a disposable store and reads back by exact key', () => {
     const p = adoptedProject();
     const db = path.join(p.dir, '.swarm', 'memory.db');
-    fs.rmSync(db);
-    const init = spawnSync(ruflo, ['memory', 'init', '--backend', 'agentdb', '--path', db], {
-      cwd: tmp('cont-init-'), encoding: 'utf8', timeout: 120_000, env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' } });
-    expect(init.status, init.stderr || init.stdout).toBe(0);
-    if (!fs.existsSync(db)) createStore(db);
+    // The journal drains an existing adopted store, as in production. Preserve that fixture
+    // instead of deleting it and invoking an unrelated embedding-backend initializer.
     const journal = new ContinuityJournal({ projectRoot: p.dir });
     journal.record([lesson('Real CLI round trip.')]);
     const result = drain(journal, { ruflo, budgetMs: 100_000 });
-    expect(result, JSON.stringify(journal.scan().failures)).toMatchObject({ committed: 1, remaining: 0 });
+    expect(result, JSON.stringify([...journal.scan().failures.values()])).toMatchObject({ committed: 1, remaining: 0 });
     expect(rows(db, CONTINUITY_NAMESPACE).map((r) => JSON.parse(r.content).summary)).toEqual(['Real CLI round trip.']);
   }, 180_000);
 });

@@ -126,3 +126,14 @@ Read the entire updated qualification contract after its initial hash drift. SHA
 Managed boundary inherited settings authority is now surgically corrected in worker commit67de0536c81391c9351369f940c9628776510eb5, test file only: both child hook envs name fixture RUVNET_SETTINGS_FILE explicitly. Foreign ambient advise policy regression passes fixture block enforcement. File7/7 pass. Removed env override negative control reproduced expected2/received0 failure and was restored before commit. Source-only fixture correction; no production policy change.
 
 Final corrected `tests/unit/managed-memory-boundary.test.mjs` in worker commit67de0536 SHA256 `af53466e0a4283a21ba9e65f5db83c4f4a6832d19a1d2b85909d020c5bb2d9f9` (99lines); whole corrected file reviewed in diff plus unchanged prior full file. Foreign ambient test restores process.env in finally.
+
+## Final live fixture reconciliation
+
+The exact-source integration run initially passed 149/150 cases; the remaining real CLI case
+failed because the disposable schema omitted `UNIQUE(namespace, key)`. Current global Ruflo
+3.51.1 declares that constraint in both memory initializer and native bridge and uses it for
+strict writes. The fixture now matches that constraint; the existing adopted-store case retains
+real global write/exact readback without deleting its store and initializing an unrelated
+embedding backend. Failure diagnostics serialize actual Map values rather than an empty object.
+The removed embedding initializer separately aborted locally; its health is not certified by this
+journal test. No developer-managed store was opened through raw SQL or changed for this repair.
