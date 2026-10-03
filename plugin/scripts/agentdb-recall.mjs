@@ -83,16 +83,28 @@ function clean(value, limit) {
 const NOISE_KEY = /^(?:verify[-_]|probe[-_]|test[-_]|rnb-quality-probe|session[-_]|turn[-_]|project-progress[-_]|cevt[-_])/i;
 const SIGNAL_NAMESPACES = new Set(['lessons', 'patterns', 'pattern']);
 /** Turn knowledge is the actual redacted outcome, never its session/transcript wrapper. */
-export function turnOutcomeExcerpt(value, prompt) {
-  const text = redactText(value);
-  const outcome = /(?:^|\|\|\s*)OUTCOME:\s*([\s\S]*)/i.exec(text)?.[1]?.split(/\s*\|\|\s*[A-Z][A-Z ]*:/)[0];
-  if (!outcome) return '';
-  const terms = new Set(promptKeywords(prompt, 14));
-  if (!terms.size) return '';
-  const clauses = outcome.split(/(?<=[.!?])\s+/).map((clause) => ({ clause,
+function turnOutcomeClauses(value, prompt) {
+  const outcome = /(?:^|\|\|\s*)OUTCOME:\s*([\s\S]*)/i.exec(redactText(value))?.[1]?.split(/\s*\|\|\s*[A-Z][A-Z ]*:/)[0];
+  if (!outcome) return [];
+  // Context-delivery vocabulary is not a result-bearing match (e.g. "project memory").
+  const terms = new Set(promptKeywords(prompt, 40).filter(t =>
+    !/^(?:previous|prior|canonical|project|memory|context|supplied|provided|automatically|recall|checks|results|concluded|identify|occurred|recover|read|files|tools|answer|concisely|disclose)$/.test(t)));
+  if (!terms.size) return [];
+  const clauses = outcome.split(/(?<=[.!?])\s+/).map((clause, index) => ({ clause, index,
     relevance: promptKeywords(clause, 100).filter((term) => terms.has(term)).length }));
   clauses.sort((a, b) => b.relevance - a.relevance);
-  return clauses[0]?.relevance ? clean('OUTCOME: ' + clauses[0].clause, 110) : '';
+  const selected = []; let bytes = 9;
+  for (const entry of clauses.filter(c => c.relevance)) {
+    const size = Buffer.byteLength(entry.clause) + 1;
+    if (bytes + size <= 280) { selected.push(entry); bytes += size; }
+  }
+  if (!selected.length && clauses[0]?.relevance) return [clean(clauses[0].clause, 270)];
+  return selected.sort((a, b) => a.index - b.index).map(e => e.clause);
+}
+
+export function turnOutcomeExcerpt(value, prompt) {
+  const clauses = turnOutcomeClauses(value, prompt);
+  return clauses.length ? clean('OUTCOME: ' + clauses.join(' '), 280) : '';
 }
 
 /** Quote a substantive exact-value passage, including the remedy in structured lessons. */
@@ -158,7 +170,10 @@ export function formatBlock({ picks, status }) {
   const shown = picks.slice();
   const render = (limit) => heading + shown.map((p) =>
     `\n${JSON.stringify(clean(p.key, 72))} [${clean(p.namespace, 32)}]: ${JSON.stringify(clean(p.preview, limit))}`).join('');
-  let limit = 110;
+  let limit = Math.min(280, Math.max(110, ...shown.map(p => Buffer.byteLength(String(p.preview || '')))));
+  // Preserve substantive multi-fact passages; drop lower-ranked records before
+  // clipping every record into incomplete facts merely to fill three slots.
+  while (shown.length > 1 && Buffer.byteLength(render(limit) + '\n') > BLOCK_MAX_BYTES) shown.pop();
   while (limit > 0 && Buffer.byteLength(render(limit) + '\n') > BLOCK_MAX_BYTES) limit -= 1;
   while (shown.length && Buffer.byteLength(render(limit) + '\n') > BLOCK_MAX_BYTES) shown.pop();
   return render(limit);
@@ -238,12 +253,24 @@ export async function recall({ prompt, projectDir = process.cwd(), env = process
       const r = await searchOnce({ ruflo: bin, store, deadline, env, scratch: scratchFor, operation: 'retrieve',
         args: ['-k', p.key, '-n', p.namespace, '--value-only'] });
       if (r.state === 'ok' && r.value && !r.value.startsWith('[WARN]')) {
-        const preview = p.namespace === 'turns' ? turnOutcomeExcerpt(r.value, prompt) : evidenceExcerpt(r.value, p.key, prompt);
-        return { pick: preview ? { ...p, preview } : null, state: 'ok' };
+        const clauses = p.namespace === 'turns' ? turnOutcomeClauses(r.value, prompt) : null;
+        const preview = clauses ? turnOutcomeExcerpt(r.value, prompt) : evidenceExcerpt(r.value, p.key, prompt);
+        return { pick: preview ? { ...p, preview, clauses } : null, state: 'ok' };
       }
       return { pick: null, state: r.state === 'ok' ? 'unavailable' : r.state };
     }));
-    const picks = retrieved.flatMap((r) => r.pick ? [r.pick] : []).slice(0, 3);
+    const seenClauses = new Set();
+    const picks = retrieved.flatMap(({ pick }) => {
+      if (!pick) return [];
+      const { clauses, ...p } = pick;
+      if (!clauses) return [p];
+      const unique = clauses.filter(clause => {
+        const id = clause.toLowerCase().replace(/[`*_-]/g, '').replace(/\s+/g, ' ').trim();
+        if (seenClauses.has(id)) return false;
+        seenClauses.add(id); return true;
+      });
+      return unique.length ? [{ ...p, preview: clean('OUTCOME: ' + unique.join(' '), 280) }] : [];
+    }).slice(0, 3);
     if (retrieved.some((r) => r.state !== 'ok')) status = retrieved.some((r) => r.state === 'timed out') ? 'timed out reading exact values' : 'unavailable exact values';
     return { block: formatBlock({ picks, status }), picks, stores, status: { 'memory.db': status } };
   } catch { return empty; }

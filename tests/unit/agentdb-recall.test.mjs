@@ -187,6 +187,24 @@ describe('canonical prompt-time AgentDB recall', () => {
       expect(Buffer.byteLength(r.block + '\n')).toBeLessThanOrEqual(BLOCK_MAX_BYTES);
     } finally { w.cleanup(); }
   });
+  it('preserves worked, failed and no-retry facts from an automatic outcome and deduplicates repeated clauses', async () => {
+    const w = world();
+    try {
+      const outcome = '[turn metadata] || OUTCOME: The supplied project memory has an unrelated checksum label. '
+        + '- **Worked:** `printf native-resume-success` ran and printed `native-resume-success`. '
+        + '- **Failed:** `exit 7` returned exit code 7, as expected. - **Retry:** I made no retry. '
+        + 'I created no files and changed no configuration. || SESSION: hidden || TRANSCRIPT: hidden';
+      fs.writeFileSync(w.env.RECALL_ROWS, JSON.stringify([
+        { key: 'turn-project-one', namespace: 'turns', score: 0.91, content: outcome },
+        { key: 'turn-project-duplicate', namespace: 'turns', score: 0.90, content: outcome.replace('metadata', 'other metadata') },
+      ]));
+      const r = await recall({ prompt: 'Recall previous native shell checks: the command that worked, command that failed with exit status, and whether any retry occurred. Use supplied canonical project memory.', projectDir: w.proj, env: w.env });
+      expect(r.block).toContain('printf native-resume-success'); expect(r.block).toContain('exit code 7'); expect(r.block).toContain('no retry');
+      expect(r.block).not.toContain('unrelated checksum'); expect(r.block).not.toContain('hidden');
+      expect(r.picks.map(p => p.key)).toEqual(['turn-project-one']);
+      expect(Buffer.byteLength(r.block + '\n')).toBeLessThanOrEqual(BLOCK_MAX_BYTES);
+    } finally { w.cleanup(); }
+  });
   it('redacts prompt credentials before keyword fragmentation and Ruflo query arguments', async () => {
     const w = world();
     try {
