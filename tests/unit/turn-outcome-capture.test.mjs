@@ -13,6 +13,7 @@ import { CONTINUITY_EVENTS } from '../../plugin/scripts/continuity-hook-policy.m
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const roots = [];
+const TRUSTED_ENV = { RUFLO_BIN: process.execPath };
 afterEach(() => { while (roots.length) fs.rmSync(roots.pop(), { recursive: true, force: true }); });
 
 function tmp(prefix) {
@@ -35,7 +36,7 @@ function harness({ withSwarm = true } = {}) {
   }
   const launches = [];
   const captureTurn = (opts) => captureTurnOutcome({
-    ...opts, env: {}, home, ruflo: '/fake/bin/ruflo',
+    ...opts, env: TRUSTED_ENV, home, ruflo: '/fake/bin/ruflo',
     launch: (steps) => { launches.push(steps); return { launched: true }; },
   });
   const fire = (event, payload, host = 'claude') => runSessionSnapshotHook(project, event, {
@@ -68,7 +69,7 @@ function queuedWorker(steps, receipts, marker, workerModule = path.join(ROOT, 'p
     process.stdout.write(JSON.stringify(rows));`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
     input: JSON.stringify({ steps, receipts }), encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, RUVNET_TURN_CAPTURE: 'force' },
+    env: { ...process.env, RUVNET_TURN_CAPTURE: 'force', ...TRUSTED_ENV },
   });
   expect(result.status, result.stderr).toBe(0);
   return JSON.parse(result.stdout);
@@ -178,8 +179,9 @@ describe('turn-outcome capture at the shared snapshot boundary', () => {
     runSteps({ receipts, steps: [
       { ...binding, kind: 'store', ruflo: '/fake/ruflo', args: ['memory', 'store', '-k', 'k1', '--value', 'v', '-n', 'turns', '--path', db] },
       { ...binding, kind: 'distill', ruflo: '/fake/ruflo', args: ['memory', 'distill', 'run', '--db', db] },
-    ] }, { env: {}, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'), run: (bin, args, opts) => { calls.push({ args, opts }); return { status: 0 }; }, read: () => 'v' });
+    ] }, { env: TRUSTED_ENV, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'), run: (bin, args, opts) => { calls.push({ bin, args, opts }); return { status: 0 }; }, read: () => 'v' });
     expect(calls.map((c) => c.args[1])).toEqual(['store', 'distill']);
+    expect(calls.every((c) => c.bin === process.execPath)).toBe(true);
     expect(calls.every((c) => c.opts.env.RUFLO_DAEMON_AUTOSTART === '0' && c.opts.timeout > 0)).toBe(true);
     // ruflo writes hnsw.index / ruvector.db relative to its cwd even with --path: contain them.
     expect(calls.every((c) => c.opts.cwd === path.dirname(db) && c.opts.env.CLAUDE_FLOW_MEMORY_PATH === path.dirname(db))).toBe(true);
@@ -331,7 +333,7 @@ describe('turn privacy and receipt evidence', () => {
     expect(result.skipped).toBe('turn capture policy unreadable or invalid');
     expect(result.queued).toBe(false);
     expect(result.launch).toBeUndefined();
-    expect(turnRecordingStatus({ projectDir: h.project, home: h.home, env: {} }).line).toContain('policy unreadable or invalid');
+    expect(turnRecordingStatus({ projectDir: h.project, home: h.home, env: TRUSTED_ENV }).line).toContain('policy unreadable or invalid');
     expect(fs.existsSync(path.join(h.project, '.swarm', 'agentdb-turns.jsonl'))).toBe(false);
   });
 
@@ -340,10 +342,10 @@ describe('turn privacy and receipt evidence', () => {
     const h = harness();
     const step = { projectRoot: h.project, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'),
       kind: 'store', ruflo: '/fake/ruflo', args: ['memory', 'store', '-k', 'new-key', '--value', 'substantive new value', '-n', 'turns', '--path', path.join(h.project, '.swarm', 'memory.db')] };
-    const stale = runSteps({ receipts, steps: [step] }, { env: {}, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'), run: () => ({ status: 0 }), read: () => 'stale value' });
+    const stale = runSteps({ receipts, steps: [step] }, { env: TRUSTED_ENV, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'), run: () => ({ status: 0 }), read: () => 'stale value' });
     expect(stale[0]).toMatchObject({ status: 1, verified: false, error: 'exact turn key/content readback failed' });
     const token = `ghp_${'SYNTHETIC'.repeat(5)}`;
-    const fail = runSteps({ receipts, steps: [step] }, { env: {}, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'), run: () => ({ status: 1, stderr: `refused ${token}\nsecond line` }) });
+    const fail = runSteps({ receipts, steps: [step] }, { env: TRUSTED_ENV, projectDir: h.project, brainHome: path.join(h.home, '.cache', 'ruvnet-brain'), run: () => ({ status: 1, stderr: `refused ${token}\nsecond line` }) });
     expect(fail[0].error).toBe('refused [REDACTED:token]');
     expect(fs.readFileSync(receipts, 'utf8')).not.toContain(token);
   });
@@ -357,7 +359,7 @@ describe('turn privacy and receipt evidence', () => {
     const retried = h.fire('Stop', payload).turn;
     expect(retried.queued).toBe(true);
     expect(retried.key).toBe(first.key);
-    const opts = { projectDir: h.project, home: h.home, env: {}, ruflo: '/fake/ruflo', event: 'Stop', host: 'codex',
+    const opts = { projectDir: h.project, home: h.home, env: TRUSTED_ENV, ruflo: '/fake/ruflo', event: 'Stop', host: 'codex',
       payload: { session_id: 'launch-fail', last_assistant_message: OUTCOME } };
     expect(captureTurnOutcome({ ...opts, launch: () => { throw new Error('spawn refused'); } }).queued).toBe(false);
     expect(captureTurnOutcome({ ...opts, launch: () => ({ launched: true }) }).queued).toBe(true);
@@ -368,14 +370,14 @@ describe('turn privacy and receipt evidence', () => {
     const project = path.join(root, token); fs.mkdirSync(path.join(project, '.swarm'), { recursive: true });
     const db = path.join(project, '.swarm', 'memory.db'); fs.writeFileSync(db, '');
     const brainHome = path.join(root, 'brain'); let step;
-    const report = captureTurnOutcome({ projectDir: project, event: 'Stop', host: 'codex', ruflo: '/fake/ruflo', env: {}, brainHome,
+    const report = captureTurnOutcome({ projectDir: project, event: 'Stop', host: 'codex', ruflo: '/fake/ruflo', env: TRUSTED_ENV, brainHome,
       payload: { session_id: 'named', last_assistant_message: OUTCOME }, launch: (steps) => { [step] = steps; return { launched: true }; } });
     expect(report.key).not.toContain(token);
     expect(flag(step, '--tags')).not.toContain(token);
     expect(valueOf(step)).not.toContain(token);
     expect(fs.readFileSync(path.join(project, '.swarm', 'agentdb-turns.jsonl'), 'utf8')).not.toContain(token);
     const receipts = path.join(brainHome, 'turn-capture', 'receipts.jsonl');
-    runSteps({ steps: [step], receipts }, { env: {}, projectDir: project, brainHome, run: () => ({ status: 1, stderr: 'refused' }) });
+    runSteps({ steps: [step], receipts }, { env: TRUSTED_ENV, projectDir: project, brainHome, run: () => ({ status: 1, stderr: 'refused' }) });
     expect(fs.readFileSync(receipts, 'utf8')).not.toContain(token);
     expect(turnRecordingStatus({ projectDir: project, env: { RUVNET_BRAIN_HOME: brainHome } }).line).toContain('failing 1/1');
   });
@@ -387,7 +389,7 @@ describe('turn privacy and receipt evidence', () => {
     const rows = [ { kind: 'store', db: '/foreign/db', status: 1, at: new Date().toISOString(), error: 'foreign' },
       { kind: 'store', db, status: 0, at: new Date().toISOString() } ];
     fs.writeFileSync(file, rows.map(JSON.stringify).join('\n'));
-    expect(turnRecordingStatus({ projectDir: h.project, home: h.home, env: {} }).line).toMatch(/unverified historical/);
+    expect(turnRecordingStatus({ projectDir: h.project, home: h.home, env: TRUSTED_ENV }).line).toMatch(/unverified historical/);
   });
 });
 

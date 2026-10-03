@@ -9,9 +9,18 @@ function regular(file, directory = false) {
   if (stat.isSymbolicLink() || (!directory && (!stat.isFile() || stat.nlink !== 1))
     || (directory && (!stat.isDirectory() || fs.realpathSync.native(file) !== file))) throw new Error('unsafe turn journal path');
 }
-function syncDirectory(dir) {
-  const fd = fs.openSync(dir, 'r');
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+// Node's Windows directory handles do not consistently support fsync. Never weaken
+// file fsync or hide unexpected I/O errors; a missing namespace flush is reported.
+export function syncTurnDirectory(dir, { platform = process.platform, io = fs } = {}) {
+  let fd;
+  try {
+    fd = io.openSync(dir, 'r'); io.fsyncSync(fd);
+    return { platform, directoryFsync: 'completed' };
+  } catch (error) {
+    if (platform !== 'win32' || !['EISDIR', 'EPERM', 'EACCES', 'EINVAL', 'ENOTSUP', 'EBADF'].includes(error.code)) throw error;
+    return { platform, directoryFsync: 'unavailable', reason: error.code,
+      limitation: 'file fsync remains required; directory-entry persistence across power loss is unproven' };
+  } finally { if (fd !== undefined) io.closeSync(fd); }
 }
 // Legacy recipes are data extraction inputs only, never executable commands.
 export function storeData(step) {
@@ -34,7 +43,7 @@ function validateBinding(binding) {
     || !path.isAbsolute(binding.projectRoot || '') || !path.isAbsolute(binding.projectDir || '')
     || typeof binding.rootIdentity !== 'string' || !/^\d+:\d+$/.test(binding.rootIdentity)) throw new Error('invalid turn canonical binding');
 }
-export function journalTurn(step, db, key) {
+export function journalTurn(step, db, key, { platform = process.platform, io = fs, onDurability } = {}) {
   const dir = turnQueueDirectory(db);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); regular(dir, true);
   const file = path.join(dir, `${digest(key)}.json`);
@@ -42,15 +51,21 @@ export function journalTurn(step, db, key) {
   if (data.db !== db || data.key !== key) throw new Error('turn journal identity mismatch');
   const binding = bindingOf(step); validateBinding(binding);
   const record = { schemaVersion: 2, key, value: data.value, contentDigest: digest(data.value), consentScope: 'canonical-project-and-path', binding };
+  let created = false;
   try {
-    const fd = fs.openSync(file, 'wx', 0o600);
-    try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    syncDirectory(dir);
+    const fd = io.openSync(file, 'wx', 0o600);
+    created = true;
+    try { io.writeFileSync(fd, JSON.stringify(record)); io.fsyncSync(fd); } finally { io.closeSync(fd); }
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;
     const previous = readJournal(file, db);
     if (previous.key !== key || previous.contentDigest !== record.contentDigest) throw new Error('turn journal identity collision');
+    // Reflush an existing complete entry: its creator may have died before fsync.
+    const fd = io.openSync(file, 'r+');
+    try { io.fsyncSync(fd); } finally { io.closeSync(fd); }
   }
+  const evidence = { fileFsync: 'completed', entry: created ? 'created-exclusively' : 'existing-exact-match-reflushed', ...syncTurnDirectory(dir, { platform, io }) };
+  if (onDurability) onDurability(evidence);
   return file;
 }
 export function readJournal(file, db) {
@@ -80,8 +95,8 @@ export function pendingTurnFiles(db, limit = 10) {
   try { regular(dir, true); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   return fs.readdirSync(dir).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).sort().slice(0, Math.min(25, Math.max(0, limit))).map((name) => path.join(dir, name));
 }
-export function acknowledgeJournal(file, db) {
-  readJournal(file, db); fs.unlinkSync(file); syncDirectory(path.dirname(file));
+export function acknowledgeJournal(file, db, options = {}) {
+  readJournal(file, db); fs.unlinkSync(file); return syncTurnDirectory(path.dirname(file), options);
 }
 export function appendReceipt(file, row) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });

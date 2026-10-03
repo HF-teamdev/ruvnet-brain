@@ -101,7 +101,7 @@ runSteps(${JSON.stringify({ steps: requests })}, {projectDir:${JSON.stringify(f.
     const f = fixture(); try {
       f.initialize();
       const original = fs.readFileSync(path.join(ROOT, 'plugin/scripts/turn-outcome-capture.mjs'), 'utf8');
-      const durableWrite = 'step.journalFile = journalTurn(step, db, report.key);';
+      const durableWrite = 'step.journalFile = journalTurn(step, db, report.key, { onDurability: (evidence) => { report.durability = evidence; } });';
       expect(original).toContain(durableWrite);
       // Preserve the legacy hash-only breadcrumb and spawn path, remove only durable content.
       const mutant = original.replace(durableWrite, '// mutation: hash-only breadcrumb, no durable turn content');

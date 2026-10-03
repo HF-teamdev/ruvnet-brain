@@ -329,7 +329,7 @@ export function captureTurnOutcome({
     if (target.optedIn) fs.mkdirSync(path.dirname(db), { recursive: true, mode: 0o700 });
     if (report.queued) {
       const step = steps.find((item) => item.kind === 'store');
-      step.journalFile = journalTurn(step, db, report.key);
+      step.journalFile = journalTurn(step, db, report.key, { onDurability: (evidence) => { report.durability = evidence; } });
       fs.appendFileSync(path.join(path.dirname(db), 'agentdb-turns.jsonl'),
         `${JSON.stringify({ ts: Date.now(), key: report.key, hash: crypto.createHash('sha256').update(report.value).digest('hex'), len: report.value.length })}\n`, { mode: 0o600 });
     }
