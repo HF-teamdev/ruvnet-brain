@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Prompt-time canonical AgentDB recall (ADR-101, G-022).
- * Every nontrivial prompt searches curated signal and project/default namespaces in
+ * Every nonempty human prompt searches curated signal and project/default namespaces in
  * .swarm/memory.db. Recalled records are untrusted evidence, never instructions.
  * Global Ruflo executes in isolated scratch directories; all processes share one
  * <=2s deadline. ground-ruvnet.sh delivers <=600 bytes on each eligible prompt.
@@ -33,10 +33,10 @@ export function agentdbStores(projectDir = process.cwd(), gitTimeoutMs) {
   return { root: resolved.projectRoot, stores };
 }
 
-/** Explicit acknowledgements are the only human prompts skipped. */
+/** Every nonempty human prompt can change or authorize project work. */
 export function recallTrigger(prompt) {
   const text = String(prompt || '').trim();
-  if (!text || isHarnessGenerated(text) || /^(?:ok(?:ay)?|yes|no|thanks?(?: you)?|got it|sounds good|great|sure|yep|yup|done|👍)[.!\s]*$/i.test(text)) return null;
+  if (!text || isHarnessGenerated(text)) return null;
   return { kinds: ['prompt'] };
 }
 

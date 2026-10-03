@@ -45,9 +45,20 @@ else {
 }
 
 describe('canonical prompt-time AgentDB recall', () => {
-  it('recalls ordinary requirements, edits and releases, while skipping only acks and harness messages', () => {
-    for (const p of ['I require the hooks to read memory every time.', 'Fix the parser.', 'Dispatch protected release.', 'Where are we at?', 'git status', 'Why?']) expect(recallTrigger(p), p).not.toBeNull();
-    for (const p of ['', 'thanks!', 'Okay.', 'Yes', '<task-notification>fix parser</task-notification>']) expect(recallTrigger(p), p).toBeNull();
+  it('recalls ordinary requirements, edits and releases, while skipping empty and harness messages', () => {
+    for (const p of ['I require the hooks to read memory every time.', 'Fix the parser.', 'Dispatch protected release.', 'Where are we at?', 'git status', 'Why?', 'thanks!', 'Okay.', 'Yes', 'No']) expect(recallTrigger(p), p).not.toBeNull();
+    for (const p of ['', '<task-notification>fix parser</task-notification>']) expect(recallTrigger(p), p).toBeNull();
+  });
+  it('checks canonical prior history on acknowledgement prompts that may authorize pending work', async () => {
+    const w = world();
+    try {
+      for (const prompt of ['Okay.', 'Yes', 'No', 'thanks!']) {
+        const before = fs.existsSync(w.env.RECALL_LOG) ? w.calls().length : 0;
+        const r = await recall({ prompt, projectDir: w.proj, env: w.env });
+        expect(w.calls().length, prompt).toBeGreaterThan(before);
+        expect(r.block, prompt).toContain('decision-requirements');
+      }
+    } finally { w.cleanup(); }
   });
   it('parses actual Ruflo JSON with prefix logs and suffix warnings', () => {
     expect(parseSearchJson(`[INFO] Searching\n${JSON.stringify({ results: rows })}\n[WARN] other store`)).toEqual(rows);
@@ -142,11 +153,11 @@ describe('canonical prompt-time AgentDB recall', () => {
       expect(r.block).not.toContain('requirement present');
     } finally { w.cleanup(); }
   });
-  it('is silent when off, no canonical store exists, the prompt is an ack, or the resolver rejects', async () => {
+  it('is silent when off, no canonical store exists, the prompt is empty, or the resolver rejects', async () => {
     const w = world();
     try {
       expect((await recall({ prompt: 'Fix parser', projectDir: w.proj, env: { ...w.env, RUVNET_AGENTDB_FIRST: 'off' } })).block).toBe('');
-      expect((await recall({ prompt: 'thanks', projectDir: w.proj, env: w.env })).block).toBe('');
+      expect((await recall({ prompt: '', projectDir: w.proj, env: w.env })).block).toBe('');
       fs.unlinkSync(path.join(w.proj, '.swarm', 'memory.db'));
       expect((await recall({ prompt: 'Fix parser', projectDir: w.proj, env: w.env })).block).toBe('');
       expect(fs.existsSync(w.env.RECALL_LOG)).toBe(false);

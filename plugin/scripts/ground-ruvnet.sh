@@ -68,7 +68,7 @@ if printf '%s' "$TEXT" | grep -qiE '\[Your previous response|\[Request interrupt
 fi
 
 # Read canonical memory before the quiet path; useful evidence may exist even
-# for a worktree with no local .swarm. Acks/off/no-match keep the cheap return.
+# for a worktree with no local .swarm. Off/absent/no-match keep the cheap return.
 _ADB_OUT=""
 if [ "${RUVNET_AGENTDB_FIRST:-on}" != "off" ]; then
   _ADB_OUT=$(printf '%s' "$INPUT" | "${RUVNET_NODE_BIN:-node}" "$(dirname "$0")/agentdb-recall.mjs" 2>/dev/null)
@@ -145,7 +145,7 @@ inj_seen() {
 }
 inj_mark() { [ -n "$INJ_DIR" ] && mkdir -p "$INJ_DIR" 2>/dev/null && : > "$INJ_DIR/$1" 2>/dev/null; return 0; }
 
-# ── Canonical AgentDB recall (ADR-101): every nontrivial human prompt. ──────────────
+# ── Canonical AgentDB recall (ADR-101): every nonempty human prompt. ──────────────
 # Priority 0 preserves safety output. Recall is delivered on every eligible prompt.
 if [ -n "$_ADB_OUT" ]; then
   _ADB_ID=$(printf '%s\n' "$_ADB_OUT" | head -n 1 | tr -cd 'A-Za-z0-9' | cut -c1-12)
