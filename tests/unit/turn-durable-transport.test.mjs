@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { fixture as baseFixture, outcome, ROOT } from '../helpers/turn-capture-process.mjs';
@@ -96,13 +96,16 @@ runSteps(${JSON.stringify({ steps: requests })}, {run:()=>{process.stdout.write(
       const rows = f.receipts(); expect(rows.at(-1).error).toContain('identity changed');
     } finally { f.cleanup(); }
   }, 60000);
-  it('the recovery oracle rejects the original hash-only source rather than vacuously passing', async () => {
+  it('the recovery oracle rejects a source-bound hash-only mutation rather than vacuously passing', async () => {
     const f = fixture(); try {
       f.initialize();
-      const original = spawnSync('git', ['show', 'b76780a9:plugin/scripts/turn-outcome-capture.mjs'], { cwd: ROOT, encoding: 'utf8' });
-      expect(original.status).toBe(0);
+      const original = fs.readFileSync(path.join(ROOT, 'plugin/scripts/turn-outcome-capture.mjs'), 'utf8');
+      const durableWrite = 'step.journalFile = journalTurn(step, db, report.key);';
+      expect(original).toContain(durableWrite);
+      // Preserve the legacy hash-only breadcrumb and spawn path, remove only durable content.
+      const mutant = original.replace(durableWrite, '// mutation: hash-only breadcrumb, no durable turn content');
       const oldFile = path.join(f.root, 'old-capture.mjs');
-      fs.writeFileSync(oldFile, original.stdout.replace(/from '(\.\/[^']+)'/g,
+      fs.writeFileSync(oldFile, mutant.replace(/from '(\.\/[^']+)'/g,
         (_, relative) => `from ${JSON.stringify(pathToFileURL(path.resolve(ROOT, 'plugin/scripts', relative)).href)}`));
       const old = await import(pathToFileURL(oldFile).href);
       const report = old.captureTurnOutcome({ projectDir: f.project, event: 'Stop', host: 'codex', env: f.env, home: f.home,
