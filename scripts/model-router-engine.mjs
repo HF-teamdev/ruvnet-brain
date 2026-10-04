@@ -1,35 +1,11 @@
 #!/usr/bin/env node
-// scripts/model-router-engine.mjs — the harness-neutral MODEL SELECTION engine.
-//
-// WHAT THIS IS (and is NOT):
-//   • IS: a pure `prompt -> {model, provider, reason, cost}` DECISION engine. It extracts features
-//     from the prompt and hands them to a PLUGGABLE POLICY that decides which model to use. The
-//     policy is the swappable part — drop your researched heuristics (or a learned router) into
-//     ~/.claude/model-router/policy.mjs and the engine picks them up. NO heuristics are baked in
-//     here. (ADR-040 / DRACO, verified via search_ruvnet: a hand-built self-signal threshold routed
-//     WORSE than always-cheapest; a learned map from a real feature beat the best fixed model. So
-//     the SIGNAL/policy is everything and must never be hard-coded into the engine.)
-//   • IS harness-neutral: the SAME CLI is consulted by Claude Code AND Codex. It only DECIDES; it
-//     does not launch a model. The caller acts on the JSON. (Codex has no native routing surface —
-//     ~/.codex/config.toml launches one model per run — so a consulted CLI is the only way to make
-//     selection work for Codex too. That is the fix for "only partially OK for Codex.")
-//   • Is NOT an executor. Running a task on a cheap model is route-cheap.mjs's job (OpenRouter).
-//     This answers only "which model should handle this prompt?"
-//
-// INTEGRATION:
-//   Claude Code : call from a hook/skill, parse the JSON, use .model.
-//                   node model-router-engine.mjs --harness claude-code --prompt "$PROMPT" --json
-//   Codex       : wrap the codex launch —
-//                   M=$(node model-router-engine.mjs --harness codex --prompt "$TASK" --json | jq -r .model)
-//                   codex --model "$M"  ...
-//
-// Config (edit freely):  ~/.claude/model-router/catalog.json   (candidates + verified pricing)
-//                        ~/.claude/model-router/policy.mjs      (YOUR policy; falls back to policy.default.mjs)
-// Decision log:          ~/.claude/metaharness/routing-decisions.jsonl  (sibling to route-cheap's execution receipts)
-//
-// Usage:
-//   node model-router-engine.mjs --prompt "..." [--harness claude-code|codex] [--policy <path>] [--json|--line]
-//   echo "the prompt text" | node model-router-engine.mjs --harness codex
+// Deterministic prompt classification + reviewed per-user native model/effort allocation.
+// This selects only; model-router-dispatch.mjs enforces a managed worker launch. Parent chat
+// model selection is controlled by the host, not a UserPromptSubmit recommendation hook.
+// ~/.claude/model-router: catalog.json, profile.json, routing-policy.json, optional policy.mjs.
+// Learned routes are constrained to the reviewed policy pick, never given first refusal.
+// Usage: node model-router-engine.mjs --harness codex --policy-only --json < prompt.txt
+// Decision receipts retain model/effort/class metadata only; no raw prompt or policy reason.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,6 +20,7 @@ export const CONFIG_DIR = path.join(os.homedir(), '.claude', 'model-router');
 const CATALOG_PATH = process.env.MODEL_ROUTER_CATALOG || path.join(CONFIG_DIR, 'catalog.json');
 const POLICY_USER = path.join(CONFIG_DIR, 'policy.mjs');
 const POLICY_DEFAULT = path.join(CONFIG_DIR, 'policy.default.mjs');
+const POLICY_SHIPPED = path.join(__dirname, '..', 'config', 'model-router', 'policy.default.mjs');
 const DECISIONS_LOG =
   process.env.MODEL_ROUTER_DECISIONS ||
   path.join(os.homedir(), '.claude', 'metaharness', 'routing-decisions.jsonl');
@@ -64,7 +41,7 @@ export function extractFeatures(prompt, harness) {
     hasCode,
     fileTypes,
     questionCount: (text.match(/\?/g) || []).length,
-    taskHints: text.slice(0, 4000), // policies may regex over the actual prompt head
+    taskHints: text, // policies may regex over the actual prompt head
     harness,
   };
 }
@@ -125,13 +102,16 @@ export function loadCatalog() {
 }
 
 export async function loadPolicy(explicit) {
-  const candidatePaths = [explicit, POLICY_USER, POLICY_DEFAULT].filter(Boolean);
+  if (explicit && !fs.existsSync(explicit)) throw new Error(`Explicit routing policy missing: ${explicit}`);
+  const candidatePaths = [explicit, POLICY_USER, POLICY_DEFAULT, POLICY_SHIPPED].filter(Boolean);
   for (const p of candidatePaths) {
     if (!fs.existsSync(p)) continue;
     try {
       const mod = await import(pathToFileURL(p).href);
       if (typeof mod.choose === 'function') return { choose: mod.choose, source: p };
+      throw new Error('Policy must export choose()');
     } catch (e) {
+      if (p === explicit || p === POLICY_USER) throw new Error(`User routing policy failed to load: ${e.message}`);
       process.stderr.write(`[model-router] policy at ${p} failed to load: ${e.message}\n`);
     }
   }
@@ -139,12 +119,13 @@ export async function loadPolicy(explicit) {
 }
 
 function parseArgs(argv) {
-  const a = { harness: null, prompt: null, policy: null, mode: 'json' };
+  const a = { harness: null, prompt: null, policy: null, mode: 'json', policyOnly: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--prompt') a.prompt = argv[++i];
     else if (k === '--harness') a.harness = argv[++i];
     else if (k === '--policy') a.policy = argv[++i];
+    else if (k === '--policy-only') a.policyOnly = true;
     else if (k === '--line') a.mode = 'line';
     else if (k === '--json') a.mode = 'json';
     else if (k === '--help' || k === '-h') a.help = true;
@@ -162,6 +143,67 @@ function estInputCost(candidate, inTokens) {
   const p = candidate && candidate.costPerMTok;
   if (!p || typeof p.in !== 'number') return null;
   return +((inTokens * p.in) / 1e6).toFixed(6);
+}
+
+export function loadSelection(file = process.env.MODEL_ROUTER_SELECTION || path.join(CONFIG_DIR, 'routing-policy.json')) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch { throw new Error('No reviewed per-user routing-policy.json available'); }
+}
+
+export function assertCurrentSelection(selection, now = Date.now()) {
+  const age = now - Date.parse(selection?.reviewedAt);
+  const maxAge = Math.min(selection?.maxAgeMs || 604800000, 604800000);
+  if (selection?.schemaVersion !== 1 || !Number.isFinite(age) || age < 0 || age > maxAge || maxAge <= 0) {
+    throw new Error('Routing allocation missing or stale; review model/effort evidence before managed dispatch');
+  }
+  return selection;
+}
+
+// Eligibility is independent of policy and learning: catalog pricing is never spend permission.
+export function eligibleCandidates(candidates, profile, harness) {
+  const host = profile?.harnesses?.[harness];
+  if (host?.available !== true || host?.subscription !== true) return [];
+  const provider = { codex: 'openai', 'claude-code': 'anthropic' }[harness];
+  return candidates.filter((m) => m.provider === provider &&
+    (m.harness || []).includes(harness) && (m.subscription || []).includes(harness));
+}
+
+export async function selectDecision({ prompt, harness, candidates, profile, policy,
+  features = extractFeatures(prompt, harness), learnedRoute, selection = loadSelection(), now = Date.now() } = {}) {
+  assertCurrentSelection(selection, now);
+  const pool = eligibleCandidates(candidates, profile, harness);
+  if (!pool.length) throw new Error(`No available native subscription candidates for ${harness}; no metered fallback`);
+  if (!policy?.choose) throw new Error('No routing policy available');
+  const decision = await policy.choose({ features, candidates: pool, harness, profile, selection });
+  const chosen = pool.find((m) => m.id === decision?.model);
+  if (!chosen) throw new Error(`Policy model unavailable or unauthorized: ${decision?.model || 'none'}`);
+  const taskClass = decision.taskClass || 'medium';
+  const effort = decision.effort || selection.routes?.[harness]?.[taskClass]?.effort;
+  if (!['fast', 'medium', 'hard'].includes(taskClass) || !['low', 'medium', 'high'].includes(effort)) {
+    throw new Error('Policy must specify a supported task class and effort');
+  }
+  const approved = selection.routes?.[harness]?.[taskClass];
+  const codingEffort = selection.routes?.[harness]?.codingEffort;
+  const coding = features.hasCode || /\b(implement|code|coding|debug|refactor|test|endpoint|API|repository|module|function)\b/i.test(features.taskHints || '');
+  const approvedEffort = harness === 'claude-code' && taskClass === 'medium' && coding
+    ? codingEffort || approved?.effort : approved?.effort;
+  if (approved?.model !== chosen.id || approvedEffort !== effort) {
+    throw new Error('Custom policy decision exceeds reviewed model/effort allocation; update per-user routing-policy.json');
+  }
+  if (chosen.supportedEfforts && !chosen.supportedEfforts.includes(effort)) {
+    throw new Error(`Policy effort unavailable for ${chosen.id}: ${effort}`);
+  }
+  let routedBy = 'user-policy';
+  try {
+    const route = learnedRoute || (await import('./metaharness-router.mjs')).route;
+    // Explicit allocation is authoritative. A learned model outside it never gets first refusal.
+    const learned = await route(prompt, [chosen], profile);
+    routedBy = learned.routedBy === '@metaharness/router' && learned.model === chosen.id
+      ? '@metaharness/router (policy constrained)'
+      : `user-policy (${learned.routedBy || 'learned decision rejected'})`;
+  } catch (e) { routedBy = `user-policy (learned router unavailable: ${e.message})`; }
+  return { ...decision, provider: chosen.provider, tier: chosen.tier, taskClass, effort,
+    subscriptionCovered: true, selectionReviewedAt: selection.reviewedAt, selectionMaxAgeMs: Math.min(selection.maxAgeMs || 604800000, 604800000), routedBy };
 }
 
 async function main() {
@@ -186,45 +228,9 @@ async function main() {
   const policy = await loadPolicy(args.policy);
   const features = extractFeatures(prompt, harness);
 
-  // ── rUv's REAL router gets FIRST REFUSAL. ────────────────────────────────────────────────────────
-  // 2026-07-13: this is the fix for a lie I shipped. v2.5's headline was "it uses @metaharness/router",
-  // I wrote the wrapper, tested it, gated CI against faking — and NEVER WIRED IT INTO THIS FILE. The
-  // engine users actually run stayed 100% hand-rolled while the README said otherwise. An honest
-  // artifact sitting next to a lying claim is still a lie. The decision now comes from rUv's code
-  // whenever it CAN decide, and the local heuristic is a fallback that must ANNOUNCE ITSELF.
-  let decision;
-  let routedBy;
-  const pool = candidates.filter((m) => (m.harness || []).includes(harness));
-  try {
-    const mh = await import('./metaharness-router.mjs');
-    const r = await mh.route(prompt, pool.length ? pool : candidates, profile);
-    if (r.routedBy === '@metaharness/router') {
-      const pick = candidates.find((m) => m.id === r.model);
-      decision = {
-        model: r.model,
-        provider: pick?.provider ?? null,
-        tier: pick?.tier ?? null,
-        reason: `@metaharness/router (rUv's learned cost-optimal router): predicted quality ${r.predictedQuality?.toFixed(2)}, ${r.metBar ? 'clears' : 'BELOW'} the bar, ${r.subscriptionCovered ? '$0 (your subscription)' : `$${r.costPerMTok}/Mtok`}, from ${r.labels} labelled example(s)`,
-        confidence: r.predictedQuality ?? 0,
-      };
-      routedBy = '@metaharness/router';
-    } else {
-      // COLD-START or the package is absent. Say which, out loud — never pass the fallback off as the
-      // learned router. That substitution is the entire sin this wiring exists to end.
-      routedBy = `local-heuristic (${r.routedBy}: ${r.reason})`;
-    }
-  } catch (e) {
-    routedBy = `local-heuristic (@metaharness/router unavailable: ${e.message})`;
-  }
-
-  if (!decision) {
-    if (!policy) {
-      const pick = pool.slice().sort((x, y) => (x.costPerMTok?.out ?? Infinity) - (y.costPerMTok?.out ?? Infinity))[0] || candidates[0];
-      decision = { model: pick?.id ?? null, provider: pick?.provider ?? null, tier: pick?.tier ?? null, reason: 'NO POLICY FOUND — fell back to cheapest priced candidate for the harness', confidence: 0 };
-    } else {
-      decision = policy.choose({ features, candidates, harness });
-    }
-  }
+  const decision = await selectDecision({ prompt, harness, candidates, profile, policy, features,
+    learnedRoute: args.policyOnly ? async () => ({ routedBy: 'SKIPPED (policy-only)' }) : undefined });
+  const routedBy = decision.routedBy;
 
   const chosen = candidates.find((m) => m.id === decision.model) || null;
   const out = {
@@ -233,6 +239,11 @@ async function main() {
     model: decision.model,
     provider: decision.provider,
     tier: decision.tier,
+    taskClass: decision.taskClass,
+    effort: decision.effort,
+    subscriptionCovered: decision.subscriptionCovered,
+    selectionReviewedAt: decision.selectionReviewedAt,
+    selectionMaxAgeMs: decision.selectionMaxAgeMs,
     reason: decision.reason,
     confidence: decision.confidence,
     // WHO decided. Never let a caller assume the learned router made a call the heuristic made.
@@ -247,7 +258,7 @@ async function main() {
   // Durable decision log (append-only; separate from route-cheap's execution/savings ledger).
   try {
     fs.mkdirSync(path.dirname(DECISIONS_LOG), { recursive: true });
-    fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ ...out, features: undefined, prompt_head: prompt.slice(0, 120) }) + '\n');
+    fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ ts: out.ts, harness, model: out.model, effort: out.effort, taskClass: out.taskClass, subscriptionCovered: out.subscriptionCovered, policy_source: out.policy_source }) + '\n');
   } catch { /* logging must never break selection */ }
 
   if (args.mode === 'line') {
