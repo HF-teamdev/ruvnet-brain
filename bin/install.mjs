@@ -1631,6 +1631,7 @@ function codexManagedBlock(serverPath) {
     'command = "node"',
     `args = [${JSON.stringify(serverPath)}]`,
     'startup_timeout_sec = 30',
+    'env = { RUVNET_HOOK_HOST = "codex" }',
     CODEX_BLOCK_END,
   ].join('\n');
 }
@@ -1837,6 +1838,10 @@ export function wireCodexHost({
   // land where the server will look for them, and the walk is transitive because a dependency's own
   // dependency is no less required.
   const deps = serverDependencies(source);
+  // Progression capture reads its adapter version from this runtime resource, not an import.
+  // Keep it beside the copied plugin scripts, bound to the same source as the MCP shell.
+  deps.push({ spec: '../.claude-plugin/plugin.json',
+    from: path.resolve(path.dirname(source), '..', '.claude-plugin', 'plugin.json') });
   const missing = deps.filter((d) => !fs.existsSync(d.from));
   if (missing.length) {
     if (announce) warn(`MCP server dependency missing from this bundle (${missing.map((d) => d.spec).join(', ')}) — Codex left untouched (non-fatal)`);
