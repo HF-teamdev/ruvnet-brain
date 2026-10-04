@@ -107,7 +107,7 @@ function unsafeSettings(value, prefix = '', routing = false) {
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, entry]) => {
     const name = prefix ? `${prefix}.${key}` : key;
-    if (/^(model_providers|apiKeyHelper|api_key|apiKey|base_url|baseUrl|auth_token|authToken|customHeaders|env)(\.|$)/.test(name)) return true;
+    if (/^(model_providers|apiKeyHelper|api_key|apiKey|base_url|baseUrl|auth_token|authToken|customHeaders|env|modelSettings|alwaysThinkingEnabled|maxEffortLevel)(\.|$)/.test(name)) return true;
     if (/^(model_provider|modelProvider)$/.test(name) && entry !== 'openai') return true;
     if (/^(service_tier|serviceTier)$/.test(name) && entry != null && entry !== 'default') return true;
     if (/^(features\.fast_mode|fastMode)$/.test(name) && entry !== false) return true;
@@ -132,13 +132,40 @@ export function routeCodexTurn(message, decision) {
 /** Injectable protocol transport; no inference or model implementation lives in the gateway. */
 export function connectNativeGateway({ harness, child, input, output, diagnostics = process.stderr,
   decide = decideNativeTurn, verifyDecision = validateDispatchDecision, checkAuth = () => {},
-  receipt = appendGatewayReceipt, timeoutMs = 5000, now = () => new Date().toISOString() } = {}) {
+  receipt = appendGatewayReceipt, timeoutMs = 5000, maxDeferredBytes = 64 * 1024 * 1024, tempRoot = os.tmpdir(), now = () => new Date().toISOString() } = {}) {
   const nonce = crypto.randomUUID();
   const pending = new Map(), initIds = new Set(), ownIds = new Set(), held = new Set();
   const accepted = new Map(), starts = new Map(), inactiveWaiters = new Set();
   let serial = Promise.resolve(), ready = harness === 'codex', active = false, closed = false, serialNumber = 0;
   let readiness = null, resolveReady;
+  let queuedBytes = 0, spoolDirectory = null, spoolSequence = 0, declineUsers = false;
+  const spoolKey = crypto.randomBytes(32);
   const waitInactive = () => !active ? Promise.resolve() : new Promise((resolve) => inactiveWaiters.add(resolve));
+  const packetFor = (token) => {
+    if (token.packet) return token.packet;
+    const bytes = fs.readFileSync(token.file);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', spoolKey, bytes.subarray(0, 12));
+    decipher.setAuthTag(bytes.subarray(12, 28));
+    const packet = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8'));
+    fs.unlinkSync(token.file); token.file = null; token.packet = packet; return packet;
+  };
+  const retire = (token) => {
+    if (!held.delete(token)) return;
+    queuedBytes -= token.bytes;
+    if (token.file) { fs.rmSync(token.file, { force: true }); token.file = null; }
+  };
+  const retain = (line, message) => {
+    const token = { bytes: Buffer.byteLength(line), cancelled: false };
+    if (harness !== 'claude-code' || held.size < 32) token.packet = message;
+    else {
+      if (!spoolDirectory) { spoolDirectory = fs.mkdtempSync(path.join(tempRoot, 'native-routing-')); fs.chmodSync(spoolDirectory, 0o700); }
+      const nonce = crypto.randomBytes(12), cipher = crypto.createCipheriv('aes-256-gcm', spoolKey, nonce);
+      const encrypted = Buffer.concat([cipher.update(line, 'utf8'), cipher.final()]);
+      token.file = path.join(spoolDirectory, `${++spoolSequence}.bin`);
+      fs.writeFileSync(token.file, Buffer.concat([nonce, cipher.getAuthTag(), encrypted]), { mode: 0o600 });
+    }
+    held.add(token); queuedBytes += token.bytes; return token;
+  };
   // Honor writable backpressure while preserving order and pausing its upstream.
   const writer = (destination, source) => {
     const queue = [], idleWaiters = []; let blocked = false, stopped = false, resuming = false;
@@ -148,7 +175,7 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         const entry = queue.shift();
         if (entry.token?.cancelled) { entry.resolve(false); continue; }
         blocked = !destination.write(entry.line);
-        if (entry.token) { entry.token.dispatched = true; held.delete(entry.token); if (harness === 'claude-code') active = true; }
+        if (entry.token) { entry.token.dispatched = true; retire(entry.token); if (harness === 'claude-code') active = true; }
         entry.resolve(true);
       }
       if (blocked) source.pause(); else if (!stopped) source.resume();
@@ -206,9 +233,11 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         : { type: 'control_request', request_id: id, request });
     } catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
   });
-  async function route(message, token) {
+  async function route(token) {
+    let message;
     const assertLive = () => { if (closed || token.cancelled) throw new Error('cancelled'); };
     try {
+      message = packetFor(token);
       await waitReady();
       assertLive();
       // Active Claude packets become unchanged next-turn input after the current result.
@@ -261,10 +290,11 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         if (await writeHost(message, token)) record('turn-forwarded', decision, true, { evidence: 'native-get_settings.applied' });
       }
     } catch {
-      if (!closed && !token.cancelled && !token.dispatched && !(harness === 'claude-code' && active)) fail(message);
+      if (!message && !closed && !token.cancelled) diagnostics.write('[native-model-routing] Deferred transport integrity unavailable; packet not submitted; current work continues.\n');
+      if (!closed && !token.cancelled && !token.dispatched && message && !(harness === 'claude-code' && active)) fail(message);
       else if (token.dispatched) diagnostics.write('[native-model-routing] Post-dispatch receipt unavailable; native work continues.\n');
     }
-    finally { held.delete(token); if (held.size < 32 && !closed) input.resume(); }
+    finally { retire(token); }
   }
   const listenLines = (stream, handler) => {
     let buffer = ''; const decoder = new StringDecoder('utf8');
@@ -272,7 +302,7 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
       let split;
       while ((split = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, split); buffer = buffer.slice(split + 1);
-        if (handler(line) === false) { buffer = line + '\n' + buffer; stream.pause(); break; }
+        handler(line);
       }
     };
     stream.on('data', (chunk) => { buffer += decoder.write(chunk); pump(); });
@@ -284,13 +314,20 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
     try { message = JSON.parse(line); } catch { if (!closed) writeHost(line); return; }
     if (harness === 'claude-code' && message.type === 'control_request' && message.request?.subtype === 'initialize') initIds.add(message.request_id);
     const routable = harness === 'codex' ? ['turn/start', 'turn/steer', 'thread/queue/add'].includes(message.method) : message.type === 'user';
-    if (routable && held.size >= 32) return false; // bounded intake; original line remains buffered
+    if (routable && harness === 'claude-code' && (declineUsers || queuedBytes + Buffer.byteLength(line) > maxDeferredBytes)) {
+      declineUsers = true;
+      const reason = 'Deferred input capacity (64 MiB) exceeded; new user packet not submitted; current work continues.';
+      diagnostics.write(`[native-model-routing] ${reason}\n`);
+      try { record('deferred-capacity-refused'); } catch { /* keep parsing permission/cancel controls */ }
+      if (!active) fail(message, reason);
+      return;
+    }
     const cancel = harness === 'codex' ? message.method === 'turn/interrupt' : message.request?.subtype === 'interrupt';
     const shutdown = message.method === 'shutdown';
     if (shutdown || (cancel && (harness === 'codex' || !active))) {
       for (const token of held) {
-        if (!token.cancelled && (shutdown || harness !== 'codex' || !message.params?.threadId || message.params.threadId === token.message.params?.threadId)) {
-          token.cancelled = true; fail(token.message, 'Native turn cancelled before dispatch.');
+        if (!token.cancelled && (shutdown || harness !== 'codex' || !message.params?.threadId || message.params.threadId === token.packet?.params?.threadId)) {
+          token.cancelled = true; fail(packetFor(token), 'Native turn cancelled before dispatch.');
         }
       }
     }
@@ -309,7 +346,10 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         || (['apply_flag_settings', 'update_settings'].includes(request.subtype) && unsafeSettings(request.settings || request, '', true));
     }
     if (unsafe) { fail(message, 'Native allocation/provider override refused; reviewed gateway routing owns model and effort.'); return; }
-    if (routable) { const token = { message, cancelled: false }; held.add(token); serial = serial.then(() => route(message, token)); }
+    if (routable) {
+      try { const token = retain(line, message); serial = serial.then(() => route(token)); }
+      catch { diagnostics.write('[native-model-routing] Deferred transport storage unavailable; packet not submitted; current work continues.\n'); if (!active) fail(message); }
+    }
     else {
       if (!closed) writeHost(line);
     }
@@ -340,13 +380,15 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
   child.stderr?.on('data', (chunk) => diagnostics.write(chunk));
   const close = () => {
     closed = true; hostWriter.close(); inactiveWaiters.forEach((resolve) => resolve()); inactiveWaiters.clear();
-    for (const token of held) token.cancelled = true;
+    for (const token of [...held]) { token.cancelled = true; retire(token); }
+    if (spoolDirectory) fs.rmSync(spoolDirectory, { recursive: true, force: true });
+    spoolKey.fill(0);
     for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(REFUSED)); }
     pending.clear();
   };
   child.once('error', close); child.once('exit', close); child.stdin.on('error', close); child.stdout.on('error', close);
   input.on('end', () => { serial.finally(async () => { await hostWriter.idle(); if (!closed) child.stdin.end(); }); });
-  return { idle: () => serial, close };
+  return { idle: () => serial, close, spoolState: () => ({ directory: spoolDirectory, queuedBytes }) };
 }
 
 export function parseGatewayInvocation(argv, env = process.env) {

@@ -171,6 +171,16 @@ describe('native turn routing transport', () => {
     expect(f.sent.at(-1)).toEqual(user()); expect(f.sent.some((m) => m.request?.subtype === 'set_model')).toBe(false);
   });
 
+  it('rejects native model-specific effort overrides without touching unrelated tools', () => {
+    const f = fixture('claude-code'); f.initialize();
+    for (const settings of [{ modelSettings: { 'native-fixture': { effortLevel: 'low' } } },
+      { modelSettings: { 'native-fixture': { maxEffortLevel: 'low' } } }, { alwaysThinkingEnabled: false }, { maxEffortLevel: 'low' }]) {
+      f.send({ type: 'control_request', request_id: 'effort-bypass', request: { subtype: 'apply_flag_settings', settings } });
+      expect(f.received.at(-1)).toMatchObject({ type: 'control_response', response: { request_id: 'effort-bypass', subtype: 'error' } });
+    }
+    expect(f.sent).toHaveLength(1);
+  });
+
   it('rejects nested provider, configuration, thread-setting and API login bypasses', () => {
     const f = fixture('codex');
     for (const message of [
@@ -286,14 +296,48 @@ describe('native turn routing transport', () => {
     });
     f.send(user()); await f.idle();
     const packets = Array.from({ length: 33 }, (_, index) => ({ ...user(`DEFERRED ${index}`), uuid: `original-${index}` }));
-    f.input.write(packets.map((message) => JSON.stringify(message)).join('\n') + '\n'); await tick();
-    expect(f.input.isPaused()).toBe(true); expect(f.sent.filter((m) => m.type === 'user')).toHaveLength(1);
+    const sameChunkControl = { type: 'control_response', response: { request_id: 'same-chunk-permission', subtype: 'success' } };
+    f.input.write([...packets, sameChunkControl].map((message) => JSON.stringify(message)).join('\n') + '\n'); await tick();
+    expect(f.sent.at(-1)).toEqual(sameChunkControl);
+    expect(f.input.isPaused()).toBe(false); expect(f.sent.filter((m) => m.type === 'user')).toHaveLength(1);
+    const controls = [{ type: 'control_response', response: { request_id: 'permission-after-overflow', subtype: 'success' } },
+      { type: 'control_request', request_id: 'cancel-after-overflow', request: { subtype: 'interrupt' } }];
+    f.input.write(controls.map(JSON.stringify).join('\n') + '\n');
+    expect(f.sent.slice(-2)).toEqual(controls);
+    expect(f.spoolState().directory).toBeTruthy();
+    const directory = f.spoolState().directory;
+    expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+    for (const file of fs.readdirSync(directory)) {
+      const encrypted = fs.readFileSync(path.join(directory, file));
+      expect(encrypted.includes(Buffer.from('DEFERRED'))).toBe(false);
+      expect(fs.statSync(path.join(directory, file)).mode & 0o777).toBe(0o600);
+    }
     for (let index = 0; index < packets.length; index++) {
       f.respond({ type: 'result', subtype: 'success' });
       await until(() => f.sent.filter((m) => m.type === 'user').length === index + 2);
     }
     expect(f.sent.filter((m) => m.type === 'user').slice(1)).toEqual(packets);
     await f.idle(); expect(f.received.filter((m) => m.type === 'result')).toHaveLength(33);
+    expect(fs.readdirSync(directory)).toEqual([]); f.close(); expect(fs.existsSync(directory)).toBe(false);
+  });
+
+  it('reports finite deferred capacity without terminal active result and keeps controls flowing', async () => {
+    const diagnostics = new PassThrough(); let errors = ''; diagnostics.on('data', (chunk) => { errors += chunk; });
+    const f = fixture('claude-code', { maxDeferredBytes: 2048, diagnostics }); f.initialize(); f.send(user()); await claudeControls(f);
+    f.send(user('x'.repeat(2048))); f.send(user('further declined'));
+    const control = { type: 'control_response', response: { request_id: 'permission', subtype: 'success' } }; f.send(control);
+    expect(f.sent.at(-1)).toEqual(control); expect(f.received.some((m) => m.type === 'result')).toBe(false);
+    expect(errors).toContain('capacity (64 MiB) exceeded'); expect(errors).not.toContain('further declined');
+  });
+
+  it('removes encrypted queued transport files on native failure without launching held packets', async () => {
+    const f = fixture('claude-code'); f.initialize(); f.send(user()); await claudeControls(f);
+    for (let index = 0; index < 33; index++) f.send(user(`retained ${index}`));
+    await tick(); const directory = f.spoolState().directory; expect(fs.readdirSync(directory).length).toBeGreaterThan(0);
+    f.child.stdin.emit('error', new Error('native pipe failed')); await f.idle();
+    expect(fs.existsSync(directory)).toBe(false); expect(f.spoolState().queuedBytes).toBe(0);
+    expect(f.sent.filter((m) => m.type === 'user')).toHaveLength(1);
+    expect(f.received.some((m) => m.type === 'result')).toBe(false);
   });
 
   it('allows Codex active additions only for exact native accepted configured pair', async () => {
@@ -373,7 +417,7 @@ describe('native gateway launch and privacy', () => {
       expect(() => nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: [...codexArgs, arg], env: {} })).toThrow();
     }
     const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
-    for (const settings of [{ apiKeyHelper: 'secret-helper' }, { env: { ANTHROPIC_BASE_URL: 'foreign' } }]) {
+    for (const settings of [{ apiKeyHelper: 'secret-helper' }, { env: { ANTHROPIC_BASE_URL: 'foreign' } }, { modelSettings: { native: { maxEffortLevel: 'low' } } }]) {
       expect(() => nativeGatewayLaunch({ harness: 'claude-code', realBinary: binary, args: [...args, '--settings', JSON.stringify(settings)], env: {} })).toThrow();
     }
     const safe = [...args, '--settings', JSON.stringify({ hooks: { SessionStart: [] }, permissions: { allow: ['Read'] } })];
