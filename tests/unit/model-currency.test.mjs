@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseArtificialAnalysis, currencyStatus, WEEK_MS } from '../../scripts/model-currency-evidence.mjs';
+import { parseArtificialAnalysis, parseCodingAgentEvidence, currencyStatus, WEEK_MS } from '../../scripts/model-currency-evidence.mjs';
 import { refreshModelCurrency, maybeLaunchCurrencyRefresh, readCurrencyStatus } from '../../scripts/model-currency.mjs';
 
 const fixture = JSON.parse(fs.readFileSync(new URL('../fixtures/model-currency/aa-captured-rows.json', import.meta.url)));
@@ -14,7 +14,11 @@ const bindings = { 'gpt-6-1-sol': { model: 'gpt-6.1-sol', evidence: 'native laun
 const dirs = [];
 const dir = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-currency-test-')); dirs.push(d); return d; };
 const inventory = JSON.stringify({ data: Array.from({ length: 50 }, (_, i) => ({ id: `provider/model-${i}`, pricing: { prompt: '0.000001', completion: '0.000002' }, supported_parameters: ['reasoning'] })) });
-const goodFetch = async (url) => ({ ok: true, text: async () => url.includes('openrouter') ? inventory : html });
+const agentFixture = JSON.parse(fs.readFileSync(new URL('../fixtures/model-currency/aa-captured-agent-rows.json', import.meta.url)));
+const agentHtml = `<script>self.__next_f.push(${JSON.stringify([1, `42:${JSON.stringify({ rows: agentFixture.rows })}\n`])})</script>`;
+const agentMethodology = 'Coding Agent Index v1.5 methodology';
+const goodFetch = async (url) => ({ ok: true, text: async () => url.includes('openrouter') ? inventory
+  : url.includes('coding-agents-benchmarking') ? agentMethodology : url.includes('/agents/coding-agents') ? agentHtml : html });
 afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 
 describe('independent currency evidence', () => {
@@ -38,7 +42,7 @@ describe('independent currency evidence', () => {
     const result = await refreshModelCurrency({ routerDir, now: NOW, fetchImpl: goodFetch, identityBindings: bindings, aaUrls: [source.url] });
     expect(result.status).toBe('current');
     expect(result.selectionQualified).toBe(false);
-    expect(fs.readdirSync(path.join(routerDir, 'evidence'))).toHaveLength(2);
+    expect(fs.readdirSync(path.join(routerDir, 'evidence'))).toHaveLength(4);
     expect(readCurrencyStatus({ routerDir, now: NOW + WEEK_MS }).status).toBe('stale');
     expect(readCurrencyStatus({ routerDir, now: NOW - 1 }).status).toBe('stale');
   });
@@ -135,6 +139,42 @@ describe('independent currency evidence', () => {
     expect(result.errors.join(' ')).toMatch(/instruction.*128 KiB/);
     expect(fs.statSync(target).size).toBe(128 * 1024 + 1);
     expect(result.assessment.instructionSource).toBe('fallback-after-read-error');
+  });
+
+  it('captures agent workload records separately with exact effort, versions and mixed harness boundaries', () => {
+    const parsed = parseCodingAgentEvidence(agentHtml, agentMethodology, { ...source, identityBindings: bindings });
+    const sol = parsed.records.find((r) => r.harness === 'Codex');
+    expect(sol.model).toBe('gpt-6.1-sol'); expect(sol.effort).toBe('high');
+    expect(sol.benchmark).toEqual({ suite: 'artificial-analysis-coding-agent-index', version: '1.5' });
+    expect(sol.codingAgentIndexFraction).toBeCloseTo(0.6014923716179784);
+    expect(sol.versions['terminal-bench-v4'].min.version).toBe('0.154.0');
+    expect(sol.components.find((c) => c.suite === 'terminal-bench-v4').score).toBe(0.5);
+    const mixed = parsed.records.find((r) => r.harness.includes('Devin'));
+    expect(mixed.nativeHost).toBeNull(); expect(mixed.model).toBeNull(); expect(mixed.effort).toBeNull();
+    expect(parsed.selectionQualified).toBe(false);
+    expect(() => parseCodingAgentEvidence('<html>200 OK</html>', agentMethodology, source)).toThrow(/records absent/);
+    expect(() => parseCodingAgentEvidence(agentHtml, '', source)).toThrow(/version absent/);
+  });
+  it('preserves prior agent records when source or methodology collection fails, with explicit stale diagnostics', async () => {
+    const routerDir = dir();
+    await refreshModelCurrency({ routerDir, now: NOW, fetchImpl: goodFetch, aaUrls: [source.url] });
+    const before = JSON.parse(fs.readFileSync(path.join(routerDir, 'currency.json'))).agentSources;
+    const result = await refreshModelCurrency({ routerDir, now: NOW + 1, aaUrls: [source.url],
+      fetchImpl: async (url) => url.includes('coding-agents-benchmarking') ? { ok: true, text: async () => '' } : goodFetch(url) });
+    const after = JSON.parse(fs.readFileSync(path.join(routerDir, 'currency.json'))).agentSources;
+    expect(after).toEqual(before); expect(result.status).toBe('stale');
+    expect(result.errors.join(' ')).toMatch(/coding agents.*version absent/);
+  });
+
+  it('rejects empty additional benchmark archives and preserves the previous verified agent section', async () => {
+    const routerDir = dir();
+    await refreshModelCurrency({ routerDir, now: NOW, fetchImpl: goodFetch, aaUrls: [source.url] });
+    const before = JSON.parse(fs.readFileSync(path.join(routerDir, 'currency.json'))).agentSources;
+    const result = await refreshModelCurrency({ routerDir, now: NOW + 1, aaUrls: [source.url],
+      fetchImpl: async (url) => url === 'https://vulcanbench.com/' ? { ok: true, text: async () => '' } : goodFetch(url) });
+    expect(result.status).toBe('stale');
+    expect(result.errors.join(' ')).toMatch(/vulcanbench.*empty or truncated/);
+    expect(JSON.parse(fs.readFileSync(path.join(routerDir, 'currency.json'))).agentSources).toEqual(before);
   });
 
 });

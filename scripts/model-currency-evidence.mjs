@@ -87,3 +87,53 @@ export function currencyStatus(record, now = Date.now()) {
     evaluationsFresh: !!evaluationsFresh, selectionQualified: false, maxAgeMs: WEEK_MS,
     errors: record?.lastAttempt?.errors ?? [], assessment: record?.assessment ?? null, reason: failed ? 'last refresh incomplete' : inventoryFresh && evaluationsFresh ? 'fresh independent evidence' : 'weekly evidence required' };
 }
+
+/** Coding-agent workloads are a separate suite and harness/configuration, never model-index aliases. */
+export function parseCodingAgentEvidence(html, methodology, { url, checkedAt, identityBindings = {} } = {}) {
+  const version = methodology.match(/Coding Agent Index v(\d+\.\d+(?:\.\d+)?)/)?.[1];
+  if (!version) throw new Error('Coding Agent Index methodology version absent');
+  const rows = new Map();
+  const walk = (value) => {
+    if (Array.isArray(value)) { for (const child of value) walk(child); return; }
+    if (!value || typeof value !== 'object') return;
+    if (typeof value.hostModelSlug === 'string' && typeof value.id === 'string' && value.indexScore !== undefined) { rows.set(value.id, value); return; }
+    for (const child of Object.values(value)) walk(child);
+  };
+  for (const match of html.matchAll(/self\.__next_f\.push\((.*?)\)<\/script>/gs)) {
+    try {
+      const envelope = JSON.parse(match[1]);
+      if (typeof envelope[1] !== 'string') continue;
+      for (const line of envelope[1].split('\n')) {
+        if (!line.includes('hostModelSlug')) continue;
+        try { walk(JSON.parse(line.slice(line.indexOf(':') + 1))); } catch { /* unrelated frame */ }
+      }
+    } catch { /* required contract checked below */ }
+  }
+  const source = { url, checkedAt, sha256: digest(html), parser: 'aa-coding-agents-flight-v1' };
+  const records = [];
+  for (const row of rows.values()) {
+    if (!finite(row.indexScore) || row.indexScore > 1 || !finite(row.mean?.costUsd) || !finite(row.mean?.agentWallTimeSec)
+      || !row.display?.model || !Array.isArray(row.evals) || row.evals.length !== row.indexComponentCount || !row.versions
+      || row.evals.some((e) => !e.datasetIndexName || !finite(e.mean?.reward))) {
+      throw new Error(`Incomplete coding-agent record: ${row.id}`);
+    }
+    const nativeHost = row.agentName === 'Codex' && row.provider === 'openai' ? 'codex'
+      : row.agentName === 'Claude Code' && row.provider === 'anthropic' ? 'claude-code' : null;
+    const binding = nativeHost ? identityBindings[row.modelRelease?.slug] : null;
+    if (binding && (!binding.model || !binding.evidence || !binding.checkedAt)) throw new Error('Invalid coding-agent native identity binding');
+    const effort = nativeHost ? row.display.model.match(/\((low|medium|high|xhigh|max|minimal|none)\)/i)?.[1]?.toLowerCase() ?? null : null;
+    records.push({ sourceId: row.id, harness: row.agentName, provider: row.provider, nativeHost,
+      sourceModelSlug: row.hostModelSlug, sourceReleaseSlug: row.modelRelease?.slug ?? null,
+      displayModel: row.display.model, configurationLabel: row.displayLabel, effort,
+      model: binding?.model ?? null, identityEvidence: binding ?? null,
+      fallback: /fallback/i.test(row.displayLabel ?? row.display.model),
+      benchmark: { suite: 'artificial-analysis-coding-agent-index', version }, codingAgentIndexFraction: row.indexScore,
+      apiBenchmarkCostPerTaskUsd: row.mean.costUsd, timePerTaskSeconds: row.mean.agentWallTimeSec,
+      versions: row.versions, components: row.evals.map((e) => ({ suite: e.datasetIndexName,
+        dataset: e.refDatasetName, score: e.mean.reward, mean: e.mean })), source,
+      selectionQualified: false });
+  }
+  if (!records.length) throw new Error('Coding-agent structured records absent');
+  return { source, records, coverage: { scope: 'public serialized agent/configuration records; native entitlements unverified',
+    recordCount: records.length, renderedChartSelectionVerified: false }, selectionQualified: false };
+}

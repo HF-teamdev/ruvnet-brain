@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { buildWeeklyAssessment } from './model-weekly-assessment.mjs';
 import { fileURLToPath } from 'node:url';
-import { WEEK_MS, digest, parseInventory, parseArtificialAnalysis, currencyStatus } from './model-currency-evidence.mjs';
+import { WEEK_MS, digest, parseInventory, parseArtificialAnalysis, parseCodingAgentEvidence, currencyStatus } from './model-currency-evidence.mjs';
 
 export const DEFAULT_ROUTER_DIR = path.join(os.homedir(), '.claude', 'model-router');
 export const AA_URLS = [
@@ -20,6 +20,16 @@ export const AA_URLS = [
 export const OFFICIAL_SOURCES = [
   { provider: 'openai', url: 'https://developers.openai.com/api/docs/models' },
   { provider: 'anthropic', url: 'https://platform.claude.com/docs/en/models/overview' },
+];
+export const AGENT_SOURCE_URLS = [
+  'https://artificialanalysis.ai/agents/coding-agents',
+  'https://artificialanalysis.ai/methodology/coding-agents-benchmarking',
+];
+export const CODING_BENCHMARK_SOURCES = [
+  { suite: 'vulcanbench', url: 'https://vulcanbench.com/' },
+  { suite: 'vulcanbench-swe-v4', url: 'https://vulcanbench.com/benchmarks/swe-v4-gpt61-sol-v318.html' },
+  { suite: 'terminal-bench', url: 'https://www.tbench.ai/' },
+  { suite: 'swe-bench', url: 'https://www.swebench.com/' },
 ];
 const INVENTORY_URL = 'https://openrouter.ai/api/v1/models';
 const LOCK_MS = 10 * 60 * 1000;
@@ -101,7 +111,7 @@ export function maybeLaunchCurrencyRefresh({ routerDir = DEFAULT_ROUTER_DIR, now
 }
 
 export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now = Date.now(), fetchImpl = fetch,
-  identityBindings, aaUrls = AA_URLS, officialSources = OFFICIAL_SOURCES, claimToken = null } = {}) {
+  identityBindings, aaUrls = AA_URLS, officialSources = OFFICIAL_SOURCES, agentSourceUrls = AGENT_SOURCE_URLS, codingBenchmarkSources = CODING_BENCHMARK_SOURCES, claimToken = null } = {}) {
   const lock = claimToken ?? claim(routerDir, now);
   if (!lock) return { action: 'busy', status: 'stale', reason: 'refresh ownership or transaction guard unavailable' };
   try {
@@ -121,7 +131,7 @@ export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now
       fencedWrite(routerDir, lock, path.join(routerDir, 'evidence', `${source.sha256}.${url === INVENTORY_URL ? 'json' : 'html'}`), bytes);
       return { source, bytes };
     };
-    const results = await Promise.allSettled([INVENTORY_URL, ...aaUrls, ...officialSources.map((s) => s.url)].map(collect));
+    const results = await Promise.allSettled([INVENTORY_URL, ...aaUrls, ...officialSources.map((s) => s.url), ...agentSourceUrls, ...codingBenchmarkSources.map((s) => s.url)].map(collect));
     let inventory = prior.inventory; let evaluations = prior.evaluations;
     if (results[0].status === 'fulfilled') {
       try { inventory = parseInventory(results[0].value.bytes, results[0].value.source); }
@@ -151,6 +161,27 @@ export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now
       else errors.push(`official ${officialSources[i].url}: ${result.reason.message}`);
     }
     if (publicDocs.length === officialSources.length) official = { checkedAt, sources: publicDocs };
+    let agents = prior.agentSources;
+    if (agentSourceUrls.length) {
+      const agentResults = results.slice(1 + aaUrls.length + officialSources.length, 1 + aaUrls.length + officialSources.length + agentSourceUrls.length);
+      try {
+        if (agentResults.length !== 2) throw new Error('coding-agent source and methodology pair required');
+        for (const result of agentResults) if (result.status !== 'fulfilled') throw result.reason;
+        const parsedAgents = parseCodingAgentEvidence(agentResults[0].value.bytes, agentResults[1].value.bytes,
+          { ...agentResults[0].value.source, identityBindings: bindings });
+        agents = { checkedAt, sources: agentResults.map((r) => r.value.source), ...parsedAgents };
+      } catch (error) { errors.push(`coding agents: ${error.message}`); }
+    }
+    const additional = [];
+    for (let i = 0; i < codingBenchmarkSources.length; i++) {
+      const result = results[1 + aaUrls.length + officialSources.length + agentSourceUrls.length + i];
+      if (result.status === 'fulfilled' && result.value.bytes.trim().length >= 100) {
+        additional.push({ ...result.value.source, suite: codingBenchmarkSources[i].suite,
+          scope: 'raw source archive; independent suite, score parsing and semantic qualification not implemented' });
+      } else errors.push(`coding benchmark ${codingBenchmarkSources[i].url}: ${result.status === 'rejected' ? result.reason.message : 'empty or truncated source'}`);
+    }
+    if (additional.length === codingBenchmarkSources.length && agents && agents !== prior.agentSources) agents = { ...agents, additionalSources: additional };
+    else if (additional.length !== codingBenchmarkSources.length) agents = prior.agentSources;
     const instructionPath = path.join(routerDir, 'weekly-analyst-instruction.md');
     let instruction; let instructionSource = 'packaged-fallback';
     try {
@@ -166,7 +197,7 @@ export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now
     } catch (error) {
       if (error.code !== 'ENOENT') { errors.push(`instruction: ${error.message}`); instruction = undefined; instructionSource = 'fallback-after-read-error'; }
     }
-    const next = { schemaVersion: 1, maxAgeMs: WEEK_MS, inventory, evaluations, officialSources: official,
+    const next = { schemaVersion: 1, maxAgeMs: WEEK_MS, inventory, evaluations, officialSources: official, agentSources: agents,
       lastAttempt: { checkedAt, status: errors.length ? (inventory === prior.inventory && evaluations === prior.evaluations ? 'failed' : 'partial') : 'complete', errors } };
     let priorPolicyBytes = null; let policy = null;
     try { priorPolicyBytes = fs.readFileSync(path.join(routerDir, 'routing-policy.json'), 'utf8'); policy = JSON.parse(priorPolicyBytes); }

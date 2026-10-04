@@ -3,6 +3,7 @@ import { digest, currencyStatus } from './model-currency-evidence.mjs';
 
 export const WEEKLY_ANALYST_INSTRUCTION = `Weekly model routing review
 Priority: correctness first, subscription allowance second, task completion time third.
+Research coding-agent workloads and model-only benchmarks as separate suites with harness/configuration versions.
 Analyse OpenAI/Codex and Anthropic/Claude separately. Do not substitute one provider for the other.
 Research current official model, effort, subscription and host support alongside independent benchmarks.
 Keep public/API model discovery separate from native subscription access and exact returned model identity.
@@ -42,6 +43,7 @@ export function buildWeeklyAssessment({ currency, policy = null, priorPolicyByte
     for (const [taskClass, selected] of Object.entries(policy?.routes?.[host] ?? {})) {
       if (!selected || typeof selected !== 'object' || typeof selected.model !== 'string' || typeof selected.effort !== 'string') continue;
       const current = selected ? records.find((r) => r.model === selected.model && r.effort === selected.effort) : null;
+      const agent = selected ? currency?.agentSources?.records?.find((r) => r.nativeHost === host && r.model === selected.model && r.effort === selected.effort) : null;
       const alternatives = !current ? [] : records.filter((row) => sameProvider(row.model, host)
         && row.identityEvidence && row.benchmark?.suite === current.benchmark?.suite
         && row.benchmark?.version === current.benchmark?.version
@@ -51,6 +53,9 @@ export function buildWeeklyAssessment({ currency, policy = null, priorPolicyByte
         && Number.isFinite(row.costPerTaskUsd) && row.costPerTaskUsd <= current.costPerTaskUsd);
       const shortlist = alternatives.sort((a, b) => a.timePerTaskSeconds - b.timePerTaskSeconds).map(summarize);
       coverage.push({ host, provider, taskClass, selected, evidence: summarize(current),
+        codingAgentEvidence: agent ? { benchmark: agent.benchmark, harness: agent.harness, configurationLabel: agent.configurationLabel,
+          codingAgentIndexFraction: agent.codingAgentIndexFraction, timePerTaskSeconds: agent.timePerTaskSeconds,
+          apiBenchmarkCostPerTaskUsd: agent.apiBenchmarkCostPerTaskUsd, fallback: agent.fallback, versions: agent.versions, source: agent.source } : null,
         independentCoverage: current ? 'matched' : 'missing', officialPublicSources: (currency?.officialSources?.sources ?? []).filter((s) => s.provider === provider),
         nativeSubscriptionAccess: 'not revalidated', subscriptionAllowance: 'unknown', codingEffortRule: policy?.routes?.[host]?.codingEffort ?? null });
       recommendations.push({ host, taskClass, action: 'retain-reviewed-allocation', selected,
@@ -60,7 +65,7 @@ export function buildWeeklyAssessment({ currency, policy = null, priorPolicyByte
   }
   const priorPolicySha256 = priorPolicyBytes === null ? null : digest(priorPolicyBytes);
   const signature = digest(JSON.stringify({ priorPolicySha256, instructionSha256,
-    coverage: coverage.map((c) => ({ host: c.host, taskClass: c.taskClass, independentCoverage: c.independentCoverage })),
+    coverage: coverage.map((c) => ({ host: c.host, taskClass: c.taskClass, independentCoverage: c.independentCoverage, codingAgentCovered: !!c.codingAgentEvidence })),
     recommendations: recommendations.map((r) => ({ host: r.host, taskClass: r.taskClass, selected: r.selected,
       shortlist: r.shortlist.map((s) => ({ model: s.model, effort: s.effort })) })) }));
   const changed = signature !== previousAssessment?.signature;
@@ -71,7 +76,7 @@ export function buildWeeklyAssessment({ currency, policy = null, priorPolicyByte
     instructionSha256, instructionSource,
     nativeAnalystSafety: { executed: false, noCreditFallbackEnforced: false,
       reason: 'Native subscription auth and ordinary usage allowance do not prove purchased credits cannot be consumed.' }, priorities: ['correctness', 'subscription allowance', 'completion time'],
-    coverage, recommendations, gaps, signature,
+    coverage, recommendations, gaps, signature, additionalCodingBenchmarkSources: currency?.agentSources?.additionalSources ?? [],
     notification: { actionable, quiet: !actionable && !changed, changed, reason: actionable ? 'source or route coverage needs attention' : changed ? 'new assessment available; no routing change qualified' : 'unchanged assessment' } };
   const proposal = { schemaVersion: 1, version: checkedAt, status: 'unqualified', applied: false,
     priorPolicySha256, candidateRoutes: policy?.routes ?? null, preserveOverrides: true,

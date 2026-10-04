@@ -64,4 +64,14 @@ describe('weekly deterministic assessment', () => {
     expect(second.report.notification.changed).toBe(true);
   });
 
+  it('shows coding-agent evidence separately without substituting its score for the model suite', () => {
+    const r = buildWeeklyAssessment({ currency: { ...currency, agentSources: { records: [{ nativeHost: 'codex',
+      model: 'gpt-baseline', effort: 'high', harness: 'Codex', configurationLabel: 'Codex high',
+      benchmark: { suite: 'artificial-analysis-coding-agent-index', version: '1.5' }, codingAgentIndexFraction: 0.6,
+      timePerTaskSeconds: 800, apiBenchmarkCostPerTaskUsd: 0.9, fallback: false, versions: { codex: '0.154.0' }, source }] } }, policy, now: NOW });
+    expect(r.report.coverage[0].codingAgentEvidence.codingAgentIndexFraction).toBe(0.6);
+    expect(r.report.coverage[0].evidence.intelligenceIndex).toBe(50);
+    expect(r.proposal.applied).toBe(false);
+  });
+
 });
