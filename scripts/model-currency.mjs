@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { buildWeeklyAssessment } from './model-weekly-assessment.mjs';
 import { fileURLToPath } from 'node:url';
 import { WEEK_MS, digest, parseInventory, parseArtificialAnalysis, currencyStatus } from './model-currency-evidence.mjs';
 
@@ -15,6 +16,10 @@ export const AA_URLS = [
   'https://artificialanalysis.ai/models/releases/comparisons/gpt-6-1-sol-vs-claude-sonnet-5-5',
   'https://artificialanalysis.ai/models/releases/comparisons/gpt-6-luna-vs-gpt-6-astra',
   'https://artificialanalysis.ai/models/releases/comparisons/claude-opus-5-5-vs-gpt-6-astra',
+];
+export const OFFICIAL_SOURCES = [
+  { provider: 'openai', url: 'https://developers.openai.com/api/docs/models' },
+  { provider: 'anthropic', url: 'https://platform.claude.com/docs/en/models/overview' },
 ];
 const INVENTORY_URL = 'https://openrouter.ai/api/v1/models';
 const LOCK_MS = 10 * 60 * 1000;
@@ -96,7 +101,7 @@ export function maybeLaunchCurrencyRefresh({ routerDir = DEFAULT_ROUTER_DIR, now
 }
 
 export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now = Date.now(), fetchImpl = fetch,
-  identityBindings, aaUrls = AA_URLS, claimToken = null } = {}) {
+  identityBindings, aaUrls = AA_URLS, officialSources = OFFICIAL_SOURCES, claimToken = null } = {}) {
   const lock = claimToken ?? claim(routerDir, now);
   if (!lock) return { action: 'busy', status: 'stale', reason: 'refresh ownership or transaction guard unavailable' };
   try {
@@ -116,14 +121,14 @@ export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now
       fencedWrite(routerDir, lock, path.join(routerDir, 'evidence', `${source.sha256}.${url === INVENTORY_URL ? 'json' : 'html'}`), bytes);
       return { source, bytes };
     };
-    const results = await Promise.allSettled([INVENTORY_URL, ...aaUrls].map(collect));
+    const results = await Promise.allSettled([INVENTORY_URL, ...aaUrls, ...officialSources.map((s) => s.url)].map(collect));
     let inventory = prior.inventory; let evaluations = prior.evaluations;
     if (results[0].status === 'fulfilled') {
       try { inventory = parseInventory(results[0].value.bytes, results[0].value.source); }
       catch (error) { errors.push(`inventory: ${error.message}`); }
     } else errors.push(`inventory: ${results[0].reason.message}`);
     const parsed = [];
-    for (let i = 1; i < results.length; i++) {
+    for (let i = 1; i <= aaUrls.length; i++) {
       const result = results[i];
       try {
         if (result.status !== 'fulfilled') throw result.reason;
@@ -137,8 +142,32 @@ export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now
       evaluations = { checkedAt, sources: parsed.map((p) => p.source), records: [...records.values()],
         selectionQualified: false, limitation: 'Independent benchmark evidence; native access and supported effort require separate verification. Arena is not collected.' };
     }
-    const next = { schemaVersion: 1, maxAgeMs: WEEK_MS, inventory, evaluations,
+    let official = prior.officialSources;
+    const publicDocs = [];
+    for (let i = 0; i < officialSources.length; i++) {
+      const result = results[1 + aaUrls.length + i];
+      if (result.status === 'fulfilled') publicDocs.push({ ...result.value.source, provider: officialSources[i].provider,
+        scope: 'official public/API documentation; not native subscription access', semanticallyQualified: false });
+      else errors.push(`official ${officialSources[i].url}: ${result.reason.message}`);
+    }
+    if (publicDocs.length === officialSources.length) official = { checkedAt, sources: publicDocs };
+    const next = { schemaVersion: 1, maxAgeMs: WEEK_MS, inventory, evaluations, officialSources: official,
       lastAttempt: { checkedAt, status: errors.length ? (inventory === prior.inventory && evaluations === prior.evaluations ? 'failed' : 'partial') : 'complete', errors } };
+    let priorPolicyBytes = null; let policy = null;
+    try { priorPolicyBytes = fs.readFileSync(path.join(routerDir, 'routing-policy.json'), 'utf8'); policy = JSON.parse(priorPolicyBytes); }
+    catch { /* no policy: report missing allocation, never synthesize one */ }
+    const assessment = buildWeeklyAssessment({ currency: next, policy, priorPolicyBytes, now, previousAssessment: prior.assessment });
+    const assessmentDir = path.join(routerDir, 'assessments', `${checkedAt.replaceAll(':', '-')}-${lock}`);
+    for (const [name, bytes] of [['report.json', JSON.stringify(assessment.report, null, 2)],
+      ['proposal.json', JSON.stringify(assessment.proposal, null, 2)], ['report.md', assessment.markdown],
+      ['instruction.md', assessment.instruction], ['prior-policy.json', priorPolicyBytes ?? 'null']]) {
+      fencedWrite(routerDir, lock, path.join(assessmentDir, name), bytes);
+    }
+    const instructionPath = path.join(routerDir, 'weekly-analyst-instruction.md');
+    if (!fs.existsSync(instructionPath)) fencedWrite(routerDir, lock, instructionPath, assessment.instruction);
+    next.assessment = { instructionPath, checkedAt, signature: assessment.report.signature, reportPath: path.join(assessmentDir, 'report.json'),
+      proposalPath: path.join(assessmentDir, 'proposal.json'), status: 'complete-unqualified', analystExecuted: false,
+      notification: assessment.report.notification };
     fencedWrite(routerDir, lock, path.join(routerDir, 'currency.json'), `${JSON.stringify(next, null, 2)}\n`);
     return { action: 'refreshed', ...currencyStatus(next, now), lastAttempt: next.lastAttempt };
   } finally { release(routerDir, lock); }

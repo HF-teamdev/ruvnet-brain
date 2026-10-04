@@ -107,4 +107,21 @@ describe('independent currency evidence', () => {
     expect(fs.existsSync(guard)).toBe(true);
   });
 
+  it('writes durable dated assessment/proposal/instruction and preserves policy bytes and explicit instruction override', async () => {
+    const routerDir = dir(); const policyBytes = '{"schemaVersion":1,"routes":{}}\n';
+    fs.writeFileSync(path.join(routerDir, 'routing-policy.json'), policyBytes);
+    fs.writeFileSync(path.join(routerDir, 'weekly-analyst-instruction.md'), 'User supplemental instruction.');
+    await refreshModelCurrency({ routerDir, now: NOW, fetchImpl: goodFetch, identityBindings: bindings, aaUrls: [source.url] });
+    const record = JSON.parse(fs.readFileSync(path.join(routerDir, 'currency.json')));
+    const report = JSON.parse(fs.readFileSync(record.assessment.reportPath));
+    const proposal = JSON.parse(fs.readFileSync(record.assessment.proposalPath));
+    expect(report.analystExecuted).toBe(false); expect(proposal.applied).toBe(false);
+    expect(fs.readFileSync(path.join(path.dirname(record.assessment.reportPath), 'prior-policy.json'), 'utf8')).toBe(policyBytes);
+    expect(fs.readFileSync(path.join(routerDir, 'routing-policy.json'), 'utf8')).toBe(policyBytes);
+    expect(fs.readFileSync(path.join(routerDir, 'weekly-analyst-instruction.md'), 'utf8')).toBe('User supplemental instruction.');
+    await refreshModelCurrency({ routerDir, now: NOW + 1, fetchImpl: goodFetch, identityBindings: bindings, aaUrls: [source.url] });
+    expect(fs.readdirSync(path.join(routerDir, 'assessments'))).toHaveLength(2);
+    expect(fs.existsSync(record.assessment.reportPath)).toBe(true);
+  });
+
 });
