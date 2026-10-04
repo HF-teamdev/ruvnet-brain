@@ -4887,7 +4887,7 @@ export async function offerRouterProfile() {
   // invisible; without the VIEWER, the user has no scoreboard to hold it to. Shipping one without the
   // other is how a router ends up "working" with three test pings in its log and nobody the wiser.
   // (dispatch-receipt.mjs relative-imports route-cheap.mjs — they land in the same bin/ dir, so it resolves.)
-  for (const t of ['model-router-engine.mjs', 'model-router-setup.mjs', 'model-router-status.mjs', 'model-router-outcome.mjs', 'subscription-hosts.mjs', 'dual-host-deliberation.mjs', 'dual-host-suggest.mjs', 'route-cheap.mjs', 'dispatch-receipt.mjs', 'metaharness-receipts.mjs', 'metaharness-router.mjs', 'model-router-dispatch.mjs', 'model-currency.mjs', 'model-currency-evidence.mjs', 'user-model-prompt-hook.mjs', 'model-router-agent-hook.mjs', 'model-weekly-assessment.mjs', 'codex-routed.sh']) {
+  for (const t of ['model-router-engine.mjs', 'model-router-setup.mjs', 'model-router-status.mjs', 'model-router-outcome.mjs', 'subscription-hosts.mjs', 'dual-host-deliberation.mjs', 'dual-host-suggest.mjs', 'route-cheap.mjs', 'dispatch-receipt.mjs', 'metaharness-receipts.mjs', 'metaharness-router.mjs', 'model-router-dispatch.mjs', 'model-currency.mjs', 'model-currency-evidence.mjs', 'user-model-prompt-hook.mjs', 'model-router-agent-hook.mjs', 'model-weekly-assessment.mjs', 'native-subscription-usage.mjs', 'codex-routed.sh']) {
     const s = path.join(pkgRoot, 'scripts', t);
     if (fs.existsSync(s)) { fs.copyFileSync(s, path.join(routerDir, 'bin', t)); copied++; }
   }
@@ -4901,6 +4901,9 @@ export async function offerRouterProfile() {
   const selectionSrc = path.join(pkgRoot, 'config', 'model-router', 'routing-policy.template.json');
   const selectionDst = path.join(routerDir, 'routing-policy.json');
   if (fs.existsSync(selectionSrc) && !fs.existsSync(selectionDst)) fs.copyFileSync(selectionSrc, selectionDst);
+  const instructionSrc = path.join(pkgRoot, 'config', 'model-router', 'weekly-analyst-instruction.md');
+  const instructionDst = path.join(routerDir, 'weekly-analyst-instruction.md');
+  if (fs.existsSync(instructionSrc) && !fs.existsSync(instructionDst)) fs.copyFileSync(instructionSrc, instructionDst);
 
   const profilePath = path.join(routerDir, 'profile.json');
   if (fs.existsSync(profilePath)) { ok('subscription profile already exists — routing already uses it'); return 'already'; }
