@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Permanent native launchers. Explicit installation only; no login/Keychain changes.
+// Permanent POSIX native launchers (macOS/Linux). Windows shell launchers are unsupported.
+// Explicit installation only; no login/Keychain changes.
 // VS Code Codex APPLICATION settings belong on the UI client; Claude MACHINE settings
 // belong on the extension host. A saved setting is not proof an existing process reloaded.
 import fs from 'node:fs';
@@ -27,8 +28,8 @@ export function discoverNativeCodex(extensionsRoot) {
   const extension = fs.realpathSync(entries[0].location.path);
   const root = fs.realpathSync(extensionsRoot);
   if (!extension.startsWith(`${root}${path.sep}`)) throw new Error('Registered extension escaped extension root');
-  const platform = process.platform === 'darwin' ? 'macos' : process.platform;
-  const arch = process.arch === 'arm64' ? 'aarch64' : process.arch;
+  const platform = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : process.platform;
+  const arch = process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'x86_64' : process.arch;
   const binary = regular(path.join(extension, 'bin', `${platform}-${arch}`, process.platform === 'win32' ? 'codex.exe' : 'codex'));
   fs.accessSync(binary, fs.constants.X_OK);
   return binary;
@@ -41,7 +42,7 @@ export function launcherInvocation({ harness, args, config, launcherPath }) {
     if (!path.isAbsolute(nativeArgs[0] || '')) throw new Error('Claude wrapper requires the native binary as its first argument');
     binary = regular(nativeArgs.shift());
     const root = fs.realpathSync(config.extensionsRoot);
-    if (!binary.startsWith(`${root}${path.sep}`) || path.basename(binary) !== 'claude') throw new Error('Claude wrapper binary is not an extension native executable');
+    if (!binary.startsWith(`${root}${path.sep}`) || path.basename(binary) !== (process.platform === 'win32' ? 'claude.exe' : 'claude')) throw new Error('Claude wrapper binary is not an extension native executable');
   } else throw new Error('Unsupported native host');
   if (binary === fs.realpathSync(launcherPath) || binary === fs.realpathSync(SELF)) throw new Error('Native launcher recursion refused');
   // These extension probes/transport bridges do not submit model turns.
@@ -59,6 +60,9 @@ function atomic(file, bytes, mode = 0o600) {
   const fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, mode);
   try { fs.writeFileSync(fd, bytes); fs.fchmodSync(fd, mode); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   try { fs.renameSync(temp, file); } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
+  // Windows cannot fsync a directory handle through Node. The file was flushed
+  // above and replacement remains atomic; POSIX additionally flushes the directory.
+  if (process.platform === 'win32') return;
   const dirFd = fs.openSync(path.dirname(file), fs.constants.O_RDONLY);
   try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
 }
@@ -101,6 +105,9 @@ function stableNode() {
 }
 
 export function installNativeLaunchers({ sourceRoot, home = os.homedir(), extensionsRoot = path.join(home, '.vscode-server/extensions'), nodeBinary = stableNode(), apply = false } = {}) {
+  // VS Code spawns its executable directly. A .cmd/.sh surrogate is not a proved
+  // Windows executable adapter; refuse before writing a misleading registration.
+  if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Permanent native routing launchers support macOS/Linux only; Windows executable adapter is not implemented');
   const snapshot = runtimeSnapshot(sourceRoot);
   const base = path.join(home, '.cache/ruvnet-brain/model-routing');
   const runtime = path.join(base, 'versions', snapshot.digest);

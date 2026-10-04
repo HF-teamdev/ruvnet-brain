@@ -306,11 +306,18 @@ describe('native turn routing transport', () => {
     expect(f.sent.slice(-2)).toEqual(controls);
     expect(f.spoolState().directory).toBeTruthy();
     const directory = f.spoolState().directory;
-    expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(directory).isDirectory()).toBe(true);
+    // Windows stat mode is not a POSIX ACL/private-directory proof. Keep mode
+    // checks on POSIX; ciphertext privacy and lossless replay are checked on every host.
+    if (process.platform !== 'win32') expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
     for (const file of fs.readdirSync(directory)) {
       const encrypted = fs.readFileSync(path.join(directory, file));
       expect(encrypted.includes(Buffer.from('DEFERRED'))).toBe(false);
-      expect(fs.statSync(path.join(directory, file)).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.join(directory, file)).isFile()).toBe(true);
+      expect(file).toMatch(/^\d+\.bin$/);
+      expect(encrypted.length).toBeGreaterThan(28); // 12-byte nonce + 16-byte GCM tag + ciphertext
+      expect(() => JSON.parse(encrypted.toString())).toThrow();
+      if (process.platform !== 'win32') expect(fs.statSync(path.join(directory, file)).mode & 0o777).toBe(0o600);
     }
     for (let index = 0; index < packets.length; index++) {
       f.respond({ type: 'result', subtype: 'success' });
