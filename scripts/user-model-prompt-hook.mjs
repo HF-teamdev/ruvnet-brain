@@ -5,16 +5,18 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { maybeLaunchCurrencyRefresh } from './model-currency.mjs';
-import { maybeLaunchWeeklyAnalyst } from './model-weekly-analyst.mjs';
+import { maybeLaunchWeeklyCycle } from './model-weekly-cycle.mjs';
 
 export const PRESENTATION = 'For terminal briefings: give concise executive status; use narrow padded ASCII tables with borders, plain cell text, aligned columns and short rows. Never send pipe-delimited Markdown tables to this terminal. Use short lists when a table would wrap. Do not flood the response with commands or technical logs.';
 
-export function promptContext(payload, { routerDir = path.join(os.homedir(), '.claude/model-router'), run = spawnSync, now = Date.now(), refresh = maybeLaunchCurrencyRefresh, analyst = maybeLaunchWeeklyAnalyst } = {}) {
+export function promptContext(payload, { routerDir = path.join(os.homedir(), '.claude/model-router'), run = spawnSync, now = Date.now(), cycle = maybeLaunchWeeklyCycle } = {}) {
   const lines = [PRESENTATION];
-  const evidence = refresh({ routerDir, now });
-  const semantic = analyst({ routerDir, now });
-  lines.push(evidence.status === 'current' ? 'Weekly independent model evidence is current. API reference cost is not subscription allowance usage.' : `Weekly model evidence is stale or unverified${evidence.launched ? '; a bounded background refresh started' : ''}. Do not present old benchmarks as current.`);
+  const weekly = cycle({ routerDir, now });
+  if (weekly.status === 'current' && weekly.reviewRequired === false) lines.push(`Weekly model-release check current (${weekly.checkedAt}); retain the approved policy. Full assessment runs only for newly discovered OpenAI or Anthropic models. This is not a semantic-review or promotion claim.`);
+  else if (weekly.launched) lines.push(weekly.reviewRequired
+    ? 'A new model release requires assessment; the bounded review is pending and the approved policy remains active.'
+    : 'A lightweight weekly model-release check started; no full assessment is required unless a new relevant model is found.');
+  else if (weekly.status === 'blocked') lines.push(`Weekly model-release check needs attention: ${weekly.reason || 'verification unavailable'}. Retain the approved policy; do not claim no changes or a completed review.`);
   const harness = payload?.host === 'claude-code' ? 'claude-code' : 'codex';
   const prompt = typeof payload?.prompt === 'string' ? payload.prompt : '';
   let policy;
@@ -24,10 +26,7 @@ export function promptContext(payload, { routerDir = path.join(os.homedir(), '.c
   const configuredMaxAge = policy?.maxAgeMs ?? 604800000;
   const maxAge = Math.min(configuredMaxAge, 604800000);
   const current = policy?.schemaVersion === 1 && Number.isSafeInteger(configuredMaxAge) && configuredMaxAge > 0 && Number.isFinite(reviewed) && age >= 0;
-  if (semantic.status === 'current') lines.push(`Weekly semantic routing review completed ${semantic.completedAt}; changed routes still require independent promotion qualification.`);
-  else if (semantic.launched) lines.push('A bounded native subscription weekly analyst has started. Its result is pending; the approved policy remains unchanged.');
-  else if (evidence.assessment?.analystExecuted === false) lines.push('Weekly evidence assessment is available; a full semantic analyst review and automatic policy promotion are not verified. Do not call metadata refresh a completed routing review.');
-  if (current && age > maxAge) lines.push('Policy review evidence is older than seven days. Retain the owner-approved allocation, preserve its original date, and verify current native availability before every launch; do not infer new recommendations.');
+  if (current && age > maxAge) lines.push('Policy approval is older than seven days. Retain the owner-approved allocation and its original date; verify native availability before every launch. Age alone does not trigger reassessment.');
   lines.push(current ? `Model routing policy reviewed ${policy.reviewedAt}; consult this user's policy for every delegated launch.` : 'Model routing policy is missing or invalid. Establish a valid approved policy before managed dispatch.');
   if (current && prompt && prompt.length <= 65536) {
     const engine = path.join(routerDir, 'bin/model-router-engine.mjs');

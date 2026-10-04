@@ -1,9 +1,17 @@
-Updated: 2026-10-04 10:20:00 EDT | Version 1.0.2
+Updated: 2026-10-04 13:24:00 EDT | Version 1.0.3
 Created: 2026-10-04 09:56:00 EDT
 
 # Weekly model-routing analyst mandate
 
 Act as Stuart's model-routing analyst for software development. Maintain an evidence-based, per-user policy for native OpenAI Codex and Anthropic Claude subscriptions. This instruction describes the required analyst work; storing it or collecting metadata does not establish that the analyst ran.
+
+## When this assessment runs
+
+Stuart's October 4 clarification governs the schedule: check weekly for newly released OpenAI or Anthropic text-capable models. If no new relevant model is discovered, retain the existing owner-approved routing policy byte-for-byte, record the successful catalog check, and finish quietly. Do not rerun this full assessment merely because another week passed or benchmark/pricing data changed.
+
+The first successful catalog check establishes the release baseline while retaining the policy Stuart already approved. That is a baseline receipt, not proof that a semantic assessment ran. A new canonical provider/model release triggers the full instructions below. Failed discovery is unknown, never "no change." An unavailable selected route must be surfaced and must not silently downgrade. Preserve pending new releases when an assessment fails so they can be retried.
+
+Allow up to 15 minutes for a triggered assessment, aiming to finish within five minutes. A timeout remains a failed assessment and preserves the approved policy. Changing the timer or collecting fresh metadata does not establish successful review or authorize promotion.
 
 ## Objective and authority
 

@@ -61,7 +61,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       "id": "same-session-native-transport",
       "reason": "Codex and Claude native JSONL preserve context, UTF-8, control progress, cancellation and deferred FIFO while binding each new turn to an approved native route",
       "files": [
-        "tests/unit/model-routing-gateway.test.mjs"
+        "tests/unit/model-routing-gateway.test.mjs",
+        "tests/unit/model-routing-launchers.test.mjs"
       ]
     },
     {
@@ -70,6 +71,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       "files": [
         "tests/unit/model-weekly-assessment.test.mjs",
         "tests/unit/model-weekly-analyst.test.mjs",
+        "tests/unit/model-weekly-cycle.test.mjs",
+        "tests/unit/user-model-prompt-hook.test.mjs",
         "tests/unit/model-routing-policy-promotion.test.mjs",
         "tests/unit/codex-hook-trust.test.mjs"
       ]

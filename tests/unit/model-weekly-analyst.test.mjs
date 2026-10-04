@@ -109,7 +109,7 @@ it('a delayed superseded analyst cannot publish or remove the successor owner', 
   const f = fixture(); const capture = {};
   const running = runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, nativeModels, spawnNative: native(f.report, capture, true), checkAuth: auth, checkAllowance: allowance });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const successor = maybeLaunchWeeklyAnalyst({ routerDir: f.routerDir, now: NOW + 16 * 60 * 1000, launch: () => ({ once() {}, unref() {} }) });
+  const successor = maybeLaunchWeeklyAnalyst({ routerDir: f.routerDir, now: NOW + 21 * 60 * 1000, launch: () => ({ once() {}, unref() {} }) });
   expect(successor.launched).toBe(true);
   const successorOwner = fs.readFileSync(path.join(f.routerDir, 'analyst-owner.json'), 'utf8');
   capture.child.stdout.emit('data', events(f.report)); capture.child.emit('exit', 0, null);

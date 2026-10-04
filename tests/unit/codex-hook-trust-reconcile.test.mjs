@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { getVersion } from '../../scripts/version.mjs';
+const RELEASE_VERSION = getVersion();
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -39,8 +41,8 @@ function fixture() {
     }
     throw new Error('Unexpected metadata method');
   };
-  const options = { releaseIdentity: { version: '4.5.4', integrity: 'sha512-' + Buffer.alloc(64).toString('base64'),
-    hooksSha256: crypto.createHash('sha256').update(bytes).digest('hex') }, installedVersion: '4.5.4', hooksPath, configPath,
+  const options = { releaseIdentity: { version: RELEASE_VERSION, integrity: 'sha512-' + Buffer.alloc(64).toString('base64'),
+    hooksSha256: crypto.createHash('sha256').update(bytes).digest('hex') }, installedVersion: RELEASE_VERSION, hooksPath, configPath,
     cwd: dir, rpc, backupDir: path.join(dir, 'backups') };
   return { options, calls, rows, configPath, hooksPath, other, setMode: (m) => { mode = m; }, setVersion: (v) => { version = v; } };
 }
@@ -67,7 +69,7 @@ describe('verified released native hook trust reconciliation', () => {
   });
   it('rejects version mismatch and installed source modifications before native calls', async () => {
     const f = fixture(); f.options.installedVersion = '4.5.3'; expect((await reconcileVerifiedCodexHookTrust(f.options)).state).toBe('blocked');
-    f.options.installedVersion = '4.5.4'; fs.appendFileSync(f.hooksPath, ' ');
+    f.options.installedVersion = RELEASE_VERSION; fs.appendFileSync(f.hooksPath, ' ');
     expect((await reconcileVerifiedCodexHookTrust(f.options)).state).toBe('blocked'); expect(f.calls).toHaveLength(0);
   });
   it.each(['bad-registry', 'missing-registry'])('refuses unmatched native identity %s', async (mode) => {
@@ -101,8 +103,8 @@ function publishedFixture(entry = 'package/plugin/hooks/codex-hooks.json') {
   const f = fixture(); const dir = path.dirname(f.hooksPath); const file = path.join(dir, entry);
   fs.mkdirSync(path.dirname(file), { recursive: true }); fs.copyFileSync(f.hooksPath, file);
   const archive = execFileSync('/usr/bin/tar', ['-czf', '-', entry], { cwd: dir });
-  const metadata = { name: 'ruvnet-brain', version: '4.5.4', dist: {
-    tarball: 'https://registry.npmjs.org/ruvnet-brain/-/ruvnet-brain-4.5.4.tgz',
+  const metadata = { name: 'ruvnet-brain', version: RELEASE_VERSION, dist: {
+    tarball: `https://registry.npmjs.org/ruvnet-brain/-/ruvnet-brain-${RELEASE_VERSION}.tgz`,
     integrity: 'sha512-' + crypto.createHash('sha512').update(archive).digest('base64') } };
   const urls = []; const fetch = async (url, options) => {
     urls.push(url); expect(options.redirect).toBe('error'); expect(options.signal).toBeTruthy();
@@ -112,30 +114,30 @@ function publishedFixture(entry = 'package/plugin/hooks/codex-hooks.json') {
 }
 describe('independent published hook identity', () => {
   it('verifies full archive integrity before reading exact stdout-only hooks member', async () => {
-    const p = publishedFixture(); const result = await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch: p.fetch });
+    const p = publishedFixture(); const result = await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch: p.fetch });
     expect(result.state).toBe('verified'); expect(result.releaseIdentity).toEqual({ ...p.f.options.releaseIdentity, integrity: p.metadata.dist.integrity });
     expect(p.urls).toHaveLength(2);
   });
   it('rejects corrupted archive bytes', async () => {
     const p = publishedFixture(); const fetch = async (url) => new Response(url.endsWith('.tgz') ? Buffer.concat([p.archive, Buffer.from('corrupt')]) : JSON.stringify(p.metadata));
-    expect((await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch })).reason).toMatch(/integrity mismatch/);
+    expect((await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch })).reason).toMatch(/integrity mismatch/);
   });
   it('rejects HTTP failure and version/path mismatch without tarball request', async () => {
-    expect((await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch: async () => new Response('', { status: 404 }) })).state).toBe('blocked');
+    expect((await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch: async () => new Response('', { status: 404 }) })).state).toBe('blocked');
     for (const change of [(m) => { m.version = '4.5.3'; }, (m) => { m.dist.tarball = 'https://untrusted.example/package.tgz'; }]) {
       const p = publishedFixture(); change(p.metadata);
-      expect((await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch: p.fetch })).state).toBe('blocked'); expect(p.urls).toHaveLength(1);
+      expect((await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch: p.fetch })).state).toBe('blocked'); expect(p.urls).toHaveLength(1);
     }
   });
   it('rejects wrong archive path, absent platform tar and oversized source', async () => {
     const wrong = publishedFixture('package/unknown/hooks.json');
-    expect((await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch: wrong.fetch })).state).toBe('blocked');
+    expect((await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch: wrong.fetch })).state).toBe('blocked');
     const p = publishedFixture();
-    expect((await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch: p.fetch, tarBinary: '/nonexistent/tar' })).state).toBe('blocked');
-    expect((await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch: p.fetch, maxTarballBytes: 1 })).state).toBe('blocked');
+    expect((await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch: p.fetch, tarBinary: '/nonexistent/tar' })).state).toBe('blocked');
+    expect((await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch: p.fetch, maxTarballBytes: 1 })).state).toBe('blocked');
   });
   it('released digest cannot trust a modified unpublished source checkout', async () => {
-    const p = publishedFixture(); const proof = await obtainVerifiedPublishedHookIdentity({ version: '4.5.4', fetch: p.fetch });
+    const p = publishedFixture(); const proof = await obtainVerifiedPublishedHookIdentity({ version: RELEASE_VERSION, fetch: p.fetch });
     fs.appendFileSync(p.f.hooksPath, ' '); const result = await reconcileVerifiedCodexHookTrust({ ...p.f.options, releaseIdentity: proof.releaseIdentity });
     expect(result.state).toBe('blocked'); expect(p.f.calls).toHaveLength(0);
   });

@@ -79,6 +79,8 @@ import {
 } from '../scripts/console-runtime-identity.mjs';
 import { shellDiff as pluginShellDiff } from '../plugin/scripts/host-shell-boundary.mjs';
 import { codexTrustChanges, CODEX_TRUST_ACTION } from '../scripts/codex-hook-trust.mjs';
+import { repairSecurityGuidance } from '../scripts/security-guidance-codex-compat.mjs';
+import { installNativeLaunchers } from '../scripts/model-routing-launchers.mjs';
 import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
 import { moveBrain, MoveRefused } from '../scripts/move-brain.mjs';
 import { brainLocation } from '../plugin/scripts/brain-location.mjs';
@@ -2020,6 +2022,9 @@ export function repairReleasedCodexHookTrust(status, { codexHome = codexHomeDir(
   let profile;
   try { profile = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'model-router', 'profile.json'), 'utf8')); } catch { return { state: 'not-authorized', changed: false }; }
   if (profile.automaticHookTrustUpdates !== true) return { state: 'not-authorized', changed: false };
+  let compatibility;
+  try { compatibility = repairSecurityGuidance({ codexHome, apply: true }); }
+  catch (error) { compatibility = { status: 'blocked', reason: error.message }; }
   const installedRoot = codexInstalledPluginRoot({ codexHome, status });
   if (!installedRoot) return { state: 'blocked', changed: false, reason: 'Installed plugin root unavailable' };
   const helper = path.join(REPO_ROOT, 'scripts', 'codex-hook-trust-reconcile.mjs');
@@ -2030,7 +2035,7 @@ export function repairReleasedCodexHookTrust(status, { codexHome = codexHomeDir(
   });
   try {
     const receipt = JSON.parse(result.stdout);
-    if (!result.error && ['registry-verified', 'unchanged', 'blocked', 'degraded'].includes(receipt.state)) return receipt;
+    if (!result.error && ['registry-verified', 'unchanged', 'blocked', 'degraded'].includes(receipt.state)) return { ...receipt, compatibility };
   } catch { /* a command exit alone never establishes hook trust */ }
   return result.error?.code === 'ENOENT'
     ? { state: 'blocked', changed: false, reason: 'Verified hook trust helper could not start' }
@@ -4907,9 +4912,38 @@ export function syncManagedRouterDefault({ routerDir = path.join(os.homedir(), '
   return { action: prior ? 'upgraded' : 'created', backup };
 }
 
+export function refreshInstalledModelLaunchers({ sourceRoot = REPO_ROOT, home = os.homedir() } = {}) {
+  const file = path.join(home, '.cache', 'ruvnet-brain', 'model-routing', 'launcher-config.json');
+  if (!fs.existsSync(file)) return { action: 'not-installed' };
+  const previous = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const receipt = installNativeLaunchers({ sourceRoot, home, extensionsRoot: previous.extensionsRoot, nodeBinary: previous.nodeBinary, apply: true });
+  return { action: receipt.config.runtimeDigest === previous.runtimeDigest ? 'unchanged' : 'updated', runtimeDigest: receipt.config.runtimeDigest };
+}
+
+export function syncManagedRouterTools({ routerDir = path.join(os.homedir(), '.claude', 'model-router'), packageRoot = REPO_ROOT } = {}) {
+  const destination = path.join(routerDir, 'bin');
+  fs.mkdirSync(destination, { recursive: true });
+  let copied = 0;
+  for (const name of ['model-router-engine.mjs', 'model-router-setup.mjs', 'model-router-status.mjs', 'model-router-outcome.mjs', 'subscription-hosts.mjs', 'dual-host-deliberation.mjs', 'dual-host-suggest.mjs', 'route-cheap.mjs', 'dispatch-receipt.mjs', 'metaharness-receipts.mjs', 'metaharness-router.mjs', 'model-router-dispatch.mjs', 'model-currency.mjs', 'model-currency-evidence.mjs', 'user-model-prompt-hook.mjs', 'model-router-agent-hook.mjs', 'model-weekly-assessment.mjs', 'model-weekly-analyst.mjs', 'model-weekly-cycle.mjs', 'model-analyst-sandbox.mjs', 'model-routing-policy-promotion.mjs', 'model-routing-gateway.mjs', 'native-subscription-usage.mjs', 'codex-routed.sh', 'goldie-weekly.sh']) {
+    const source = path.join(packageRoot, 'scripts', name);
+    if (!fs.existsSync(source)) throw new Error(`Packaged router tool missing: ${name}`);
+    const target = path.join(destination, name);
+    const bytes = fs.readFileSync(source);
+    if (fs.existsSync(target) && fs.readFileSync(target).equals(bytes)) continue;
+    const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+    try { fs.writeFileSync(temporary, bytes, { mode: name.endsWith('.sh') ? 0o755 : 0o600 }); fs.renameSync(temporary, target); }
+    finally { fs.rmSync(temporary, { force: true }); }
+    copied++;
+  }
+  const launchers = routerDir === path.join(os.homedir(), '.claude', 'model-router')
+    ? refreshInstalledModelLaunchers({ sourceRoot: packageRoot }) : { action: 'custom-router-directory' };
+  return { action: copied ? 'updated' : 'unchanged', copied, launchers };
+}
+
 function refreshManagedRouterDefault() {
   try {
     const receipt = syncManagedRouterDefault();
+    syncManagedRouterTools();
     if (receipt.action === 'created') ok('installed managed model-router default (custom overrides belong in policy.mjs)');
     if (receipt.action === 'upgraded') ok(`upgraded managed model-router default; prior source preserved at ${receipt.backup}`);
     return receipt;
@@ -4947,19 +4981,8 @@ export async function offerRouterProfile() {
   } catch (error) {
     warn(`managed model additions were not merged (${error.message}); your existing catalog was left unchanged`);
   }
-  let copied = 0;
-  // dispatch-receipt + metaharness-receipts added 2026-07-13: without the LOGGER, subagent routing is
-  // invisible; without the VIEWER, the user has no scoreboard to hold it to. Shipping one without the
-  // other is how a router ends up "working" with three test pings in its log and nobody the wiser.
-  // (dispatch-receipt.mjs relative-imports route-cheap.mjs — they land in the same bin/ dir, so it resolves.)
-  for (const t of ['model-router-engine.mjs', 'model-router-setup.mjs', 'model-router-status.mjs', 'model-router-outcome.mjs', 'subscription-hosts.mjs', 'dual-host-deliberation.mjs', 'dual-host-suggest.mjs', 'route-cheap.mjs', 'dispatch-receipt.mjs', 'metaharness-receipts.mjs', 'metaharness-router.mjs', 'model-router-dispatch.mjs', 'model-currency.mjs', 'model-currency-evidence.mjs', 'user-model-prompt-hook.mjs', 'model-router-agent-hook.mjs', 'model-weekly-assessment.mjs', 'model-weekly-analyst.mjs', 'model-analyst-sandbox.mjs', 'model-routing-policy-promotion.mjs', 'model-routing-gateway.mjs', 'native-subscription-usage.mjs', 'codex-routed.sh']) {
-    const s = path.join(pkgRoot, 'scripts', t);
-    if (fs.existsSync(s)) { fs.copyFileSync(s, path.join(routerDir, 'bin', t)); copied++; }
-  }
-  if (copied) {
-    try { fs.chmodSync(path.join(routerDir, 'bin', 'codex-routed.sh'), 0o755); } catch { /* not fatal */ }
-    ok(`${copied} router tools at ~/.claude/model-router/bin/ (stable path — the npx dir vanishes)`);
-  }
+  const toolsReceipt = syncManagedRouterTools({ routerDir, packageRoot: pkgRoot });
+  if (toolsReceipt.copied) ok(`updated ${toolsReceipt.copied} managed routing tools`);
 
   // Allocation is user-owned. A shipped seed retains its real review date; installation never
   // certifies it fresh or overwrites a reviewed user policy.
