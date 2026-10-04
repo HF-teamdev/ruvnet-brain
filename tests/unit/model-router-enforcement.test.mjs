@@ -337,3 +337,16 @@ test('retention cannot authorize unknown native models or expand custom policy a
   const decision={...await route('implement ordinary code','codex',{selection:changed,candidates:expanded}),harness:'codex'};
   expect(()=>validateDispatchDecision(decision,{selection:changed,profile,candidates:expanded,nativeModels:nativeSupport})).toThrow('Native Codex');
 });
+
+test('accepts native six-digit ISO review precision without changing dates or route binding',()=>{
+  const now=Date.parse('2026-10-04T14:00:00Z');
+  for(const reviewedAt of ['2026-10-04T13:32:24.704091Z','2026-10-04T13:32:24.704091123Z']){
+    const original={...selection,reviewedAt}; const bytes=JSON.stringify(original);
+    expect(assertCurrentSelection(original,now)).toBe(original);
+    expect(selectionEvidenceStatus(original,now)).toMatchObject({reviewedAt,routeDigest:selectionEvidenceStatus(selection).routeDigest});
+    expect(JSON.stringify(original)).toBe(bytes);
+  }
+  for(const reviewedAt of ['2026-10-04T13:32:24.7040911234Z','2026-02-30T13:32:24.704091Z','2026-10-04T25:32:24.704091Z','2026-10-05T13:32:24.704091Z'])
+    expect(()=>assertCurrentSelection({...selection,reviewedAt},now)).toThrow('invalid or future');
+  expect(()=>assertCurrentSelection({...selection,reviewedAt:'2026-10-04T13:32:24.704091Z',maxAgeMs:0},now)).toThrow('maxAgeMs');
+});

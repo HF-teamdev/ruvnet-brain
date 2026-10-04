@@ -145,7 +145,7 @@ export function assertCurrentSelection(selection, now = Date.now()) {
     throw new Error('Routing allocation maxAgeMs must be a finite positive integer');
   }
   const reviewedAt = selection?.reviewedAt;
-  const isoDate = typeof reviewedAt === 'string' && /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2}))?$/.test(reviewedAt);
+  const isoDate = typeof reviewedAt === 'string' && /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/.test(reviewedAt);
   const calendarDate = isoDate && Date.parse(reviewedAt.slice(0, 10));
   const validCalendar = Number.isFinite(calendarDate) && new Date(calendarDate).toISOString().slice(0, 10) === reviewedAt.slice(0, 10);
   if (selection?.schemaVersion !== 1 || !isoDate || !validCalendar || !Number.isFinite(age) || age < 0) {
