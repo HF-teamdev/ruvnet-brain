@@ -166,3 +166,24 @@ it('accepts only the sole native deny hook after version-fenced private trust wr
   expect(write.params.edits[0].value).toBe(hook.currentHash);
   expect(calls.some((c) => c.method.startsWith('thread/') || c.method.startsWith('turn/'))).toBe(false);
 });
+it('projects every relevant effort with suite provenance and explicit missing configurations, without outside-provider qualification', () => {
+  const f = fixture(); const file = path.join(f.routerDir, 'currency.json'); const currency = JSON.parse(fs.readFileSync(file)); const source = currency.inventory.source;
+  currency.evaluations.records = ['low', 'medium', 'high', 'xhigh', 'max'].map((effort) => ({ model: 'gpt-6.1-sol', effort, source,
+    benchmark: { suite: 'fixture-suite', version: '4' }, quality: { intelligenceIndex: 63.2 }, benchmarks: [{ suite: 'terminal-fixture', score: 0.8, timeSeconds: 42 }] }));
+  currency.evaluations.records.push({ model: 'outside-paid-model', effort: 'high', source, quality: { intelligenceIndex: 99 } });
+  currency.agentSources = { sources: [source], records: [{ model: 'gpt-6.1-sol', effort: 'medium', provider: 'openai', nativeHost: 'codex', harness: 'Codex', source,
+    benchmark: { suite: 'agent-fixture', version: '2' }, timePerTaskSeconds: 10, components: [{ suite: 'coding-fixture', dataset: 'exact-v1', score: 0.7 }] },
+    { model: null, effort: 'high', provider: 'openai', nativeHost: 'codex', configurationLabel: 'Unbound native model', source }] };
+  fs.writeFileSync(file, JSON.stringify(currency));
+  const inputs = loadAnalystInputs(f.routerDir, NOW); const projected = JSON.parse(inputs.documents.at(-1).body);
+  expect(JSON.stringify(inputs.packet).length).toBeLessThanOrEqual(60000);
+  expect(projected.modelEvidence.map((r) => r.effort)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+  expect(projected.modelEvidence[0].benchmark).toEqual({ suite: 'fixture-suite', version: '4' });
+  expect(projected.modelEvidence[0].benchmarks).toEqual([['terminal-fixture', 0.8, null, 42]]);
+  expect(projected.codingAgents[0].components).toEqual([['coding-fixture', 'exact-v1', 0.7]]);
+  expect(projected.sourceTable).toHaveLength(1); expect(projected.modelEvidence.some((r) => r.model === 'outside-paid-model')).toBe(false);
+  expect(projected.ownerRoles).toHaveLength(2); expect(projected.ownerRoles[0].nativeAgentConfigurationMissing).toBe(true);
+  expect(projected.unknownNativeConfigurations[0]).toMatchObject({ selectionQualified: false, configurationLabel: 'Unbound native model' });
+  const proposal = structuredClone(f.report); proposal.proposedRoutes[0] = { ...proposal.proposedRoutes[0], action: 'propose', model: 'outside-paid-model' };
+  expect(() => validateAnalystReport(proposal, inputs, { candidates, profile, nativeModels })).toThrow('candidate authority');
+});
