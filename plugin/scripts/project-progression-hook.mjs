@@ -137,7 +137,7 @@ function toolAction(payload) {
   return observation;
 }
 
-function enrichStateWithObservation(state, payload) {
+export function enrichStateWithObservation(state, payload) {
   requireRecord(state, 'completeProjectState');
   const observation = toolAction(payload);
   if (!observation) return state;
@@ -164,6 +164,8 @@ export function captureProjectTransition({
   payload,
   projectDir,
   adapterVersion = readProgressionAdapterVersion(),
+  recoverFrozen = false,
+  canCommit,
   storeFactory = (options) => new ProjectProgressionStore(options),
 } = {}) {
   const normalizedHost = requireString(host, 'host').toLowerCase();
@@ -191,7 +193,7 @@ export function captureProjectTransition({
     aliased(progression, 'sourceIdentity', 'source_identity'),
     store.resolution.checkoutRoot, projectDir,
   );
-  const snapshot = createProgressionSnapshot({
+  let snapshot = createProgressionSnapshot({
     projectIdentity: store.resolution.projectIdentity,
     sourceIdentity,
     hostIdentity: { host: normalizedHost, adapterVersion },
@@ -206,7 +208,9 @@ export function captureProjectTransition({
       payload,
     ),
   });
-  const receipt = store.capture(snapshot);
+  let receipt;
+  if (recoverFrozen) ({ snapshot, receipt } = store.captureFrozen(snapshot, { canCommit }));
+  else receipt = store.capture(snapshot);
   verifyReceipt(snapshot, receipt);
   return { snapshot, receipt };
 }
