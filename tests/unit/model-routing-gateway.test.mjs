@@ -431,7 +431,7 @@ describe('native gateway launch and privacy', () => {
     expect(await decideNativeTurn('SECRET PROMPT', 'codex', { spawnEngine: fake })).toEqual(decision());
     expect(actual.input).toBe('SECRET PROMPT'); expect(actual.args).not.toContain('SECRET PROMPT'); expect(actual.args).toContain('--policy-only');
   });
-  it('executes the real strict engine with fresh fixture policy and refuses it when currency expires', async () => {
+  it('retains owner-approved stale policy identity and refuses invalid selections through the real engine', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-policy-')); roots.push(root);
     const selection = { schemaVersion: 1, reviewedAt: new Date().toISOString(), routes: {
       codex: { fast: { model: 'gpt-native-fixture', effort: 'low' }, hard: { model: 'gpt-native-fixture', effort: 'high' } },
@@ -458,7 +458,19 @@ describe('native gateway launch and privacy', () => {
     }
     selection.reviewedAt = '2000-01-01T00:00:00.000Z';
     fs.writeFileSync(path.join(root, 'routing-policy.json'), JSON.stringify(selection));
-    await expect(decideNativeTurn('translate these fixture words', 'codex', { env })).rejects.toThrow(/allocation unavailable/);
+    const retained = await decideNativeTurn('translate these fixture words', 'codex', { env });
+    expect(retained).toMatchObject({ model: d.model, effort: d.effort, selectionReviewedAt: selection.reviewedAt,
+      selectionRouteDigest: d.selectionRouteDigest, selectionEvidence: { reviewedAt: selection.reviewedAt, stale: true, routeDigest: d.selectionRouteDigest } });
+    expect(JSON.parse(fs.readFileSync(env.MODEL_ROUTER_SELECTION, 'utf8'))).toEqual(selection);
+    expect(() => validateDispatchDecision(retained, { selection, profile, candidates,
+      nativeModels: [{ slug: d.model, supported_reasoning_levels: [{ effort: 'low' }] }] })).not.toThrow();
+    expect(() => validateDispatchDecision(retained, { selection, profile, candidates,
+      nativeModels: [{ slug: d.model, supported_reasoning_levels: [{ effort: 'high' }] }] })).toThrow(/does not support/);
+    for (const invalid of [{ ...selection, reviewedAt: 'invalid' }, { ...selection, reviewedAt: '2999-01-01T00:00:00.000Z' },
+      { ...selection, schemaVersion: 0 }, { ...selection, routes: [] }]) {
+      fs.writeFileSync(env.MODEL_ROUTER_SELECTION, JSON.stringify(invalid));
+      await expect(decideNativeTurn('translate these fixture words', 'codex', { env })).rejects.toThrow(/allocation unavailable/);
+    }
     expect(fs.readFileSync(env.MODEL_ROUTER_DECISIONS, 'utf8')).not.toContain('fixture words');
   });
 
