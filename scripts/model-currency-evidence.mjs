@@ -85,5 +85,5 @@ export function currencyStatus(record, now = Date.now()) {
   const failed = !!record?.lastAttempt && record.lastAttempt.status !== 'complete';
   return { status: inventoryFresh && evaluationsFresh && !failed ? 'current' : 'stale', inventoryFresh: !!inventoryFresh,
     evaluationsFresh: !!evaluationsFresh, selectionQualified: false, maxAgeMs: WEEK_MS,
-    errors: record?.lastAttempt?.errors ?? [], reason: failed ? 'last refresh incomplete' : 'weekly evidence required' };
+    errors: record?.lastAttempt?.errors ?? [], reason: failed ? 'last refresh incomplete' : inventoryFresh && evaluationsFresh ? 'fresh independent evidence' : 'weekly evidence required' };
 }

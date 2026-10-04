@@ -73,4 +73,38 @@ describe('independent currency evidence', () => {
     await refreshModelCurrency({ routerDir, now: NOW, fetchImpl: async () => { throw new Error('down'); }, aaUrls: [] });
     expect(maybeLaunchCurrencyRefresh({ routerDir, now: NOW + 1000, launch: () => { throw new Error('must not launch'); } }).deferred).toBe('retry cooldown');
   });
+  it('a delayed expired worker cannot commit or remove a successor claim', async () => {
+    const routerDir = dir(); const oldResolvers = []; const nextResolvers = [];
+    const paused = (resolvers) => (url) => new Promise((resolve) => resolvers.push(() => resolve(goodFetch(url))));
+    const old = refreshModelCurrency({ routerDir, now: NOW, fetchImpl: paused(oldResolvers), aaUrls: [source.url] });
+    const oldOutcome = old.catch((error) => error);
+    const successor = refreshModelCurrency({ routerDir, now: NOW + 11 * 60 * 1000, fetchImpl: paused(nextResolvers), aaUrls: [source.url] });
+    const ownerPath = path.join(routerDir, 'currency-refresh-owner.json');
+    const successorToken = JSON.parse(fs.readFileSync(ownerPath)).token;
+    for (const resolve of oldResolvers) resolve();
+    expect((await oldOutcome).message).toMatch(/superseded/);
+    expect(JSON.parse(fs.readFileSync(ownerPath)).token).toBe(successorToken);
+    expect(fs.existsSync(path.join(routerDir, 'currency.json'))).toBe(false);
+    for (const resolve of nextResolvers) resolve();
+    expect((await successor).status).toBe('current');
+    expect(fs.existsSync(ownerPath)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(routerDir, 'currency.json'))).inventory.checkedAt).toBe(new Date(NOW + 11 * 60 * 1000).toISOString());
+  });
+  it('an expired detached child error cannot remove a new prompt claim', () => {
+    const routerDir = dir(); const errorHandlers = [];
+    const launch = () => ({ once(event, handler) { errorHandlers.push(handler); }, unref() {} });
+    expect(maybeLaunchCurrencyRefresh({ routerDir, now: NOW, launch }).launched).toBe(true);
+    expect(maybeLaunchCurrencyRefresh({ routerDir, now: NOW + 11 * 60 * 1000, launch }).launched).toBe(true);
+    const ownerPath = path.join(routerDir, 'currency-refresh-owner.json');
+    const token = JSON.parse(fs.readFileSync(ownerPath)).token;
+    errorHandlers[0]();
+    expect(JSON.parse(fs.readFileSync(ownerPath)).token).toBe(token);
+  });
+  it('an orphaned transaction guard fails closed without speculatively deleting it', () => {
+    const routerDir = dir(); const guard = path.join(routerDir, 'currency-mutation.lock');
+    fs.mkdirSync(guard); fs.utimesSync(guard, 1, 1);
+    expect(maybeLaunchCurrencyRefresh({ routerDir, now: NOW, launch: () => { throw new Error('must not launch'); } }).launched).toBe(false);
+    expect(fs.existsSync(guard)).toBe(true);
+  });
+
 });
