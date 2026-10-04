@@ -135,3 +135,17 @@ test('explicit reviewed xhigh and max effort reach native argv; unsupported effo
   expect(()=>buildLaunch(decision,{interactive:true})).toThrow('stdin');
   expect(()=>buildLaunch({...decision,effort:'none'})).toThrow('unauthorized');
 });
+
+test('invalid allocation ages cannot bypass stale review rejection',()=>{
+  for(const maxAgeMs of ['invalid','604800000',null,true,NaN,Infinity,-1,0,1.5,Number.MAX_SAFE_INTEGER+1]) {
+    expect(()=>assertCurrentSelection({...selection,reviewedAt:'2020-01-01',maxAgeMs})).toThrow('finite positive integer');
+  }
+  expect(()=>assertCurrentSelection({...selection,maxAgeMs:1000},Date.parse(selection.reviewedAt))).not.toThrow();
+  expect(()=>assertCurrentSelection({...selection,maxAgeMs:604800000,reviewedAt:'2020-01-01'})).toThrow('stale');
+});
+
+test('legacy custom policy without class fails explicitly rather than converting summary to medium',async()=>{
+  await expect(route('summarize this document','claude-code',{
+    policy:{choose:()=>({model:'sonnet',provider:'anthropic',reason:'legacy policy'})},
+  })).rejects.toThrow('update legacy policy');
+});

@@ -136,7 +136,11 @@ export function loadSelection(file = process.env.MODEL_ROUTER_SELECTION || path.
 
 export function assertCurrentSelection(selection, now = Date.now()) {
   const age = now - Date.parse(selection?.reviewedAt);
-  const maxAge = Math.min(selection?.maxAgeMs || 604800000, 604800000);
+  const configuredMaxAge = selection?.maxAgeMs === undefined ? 604800000 : selection.maxAgeMs;
+  if (!Number.isSafeInteger(configuredMaxAge) || configuredMaxAge <= 0) {
+    throw new Error('Routing allocation maxAgeMs must be a finite positive integer');
+  }
+  const maxAge = Math.min(configuredMaxAge, 604800000);
   if (selection?.schemaVersion !== 1 || !Number.isFinite(age) || age < 0 || age > maxAge || maxAge <= 0) {
     throw new Error('Routing allocation missing or stale; review model/effort evidence before managed dispatch');
   }
@@ -161,7 +165,10 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
   const decision = await policy.choose({ features, candidates: pool, harness, profile, selection });
   const chosen = pool.find((m) => m.id === decision?.model);
   if (!chosen) throw new Error(`Policy model unavailable or unauthorized: ${decision?.model || 'none'}`);
-  const taskClass = decision.taskClass || 'medium';
+  const taskClass = decision.taskClass;
+  if (!['fast', 'medium', 'hard'].includes(taskClass)) {
+    throw new Error('Routing policy must return an explicit taskClass (fast, medium, or hard); update legacy policy');
+  }
   const effort = decision.effort || selection.routes?.[harness]?.[taskClass]?.effort;
   if (!['fast', 'medium', 'hard'].includes(taskClass) || !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {
     throw new Error('Policy must specify a supported task class and effort');
@@ -187,7 +194,7 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
       : `user-policy (${learned.routedBy || 'learned decision rejected'})`;
   } catch (e) { routedBy = `user-policy (learned router unavailable: ${e.message})`; }
   return { ...decision, provider: chosen.provider, tier: chosen.tier, taskClass, effort,
-    subscriptionCovered: true, selectionReviewedAt: selection.reviewedAt, selectionMaxAgeMs: Math.min(selection.maxAgeMs || 604800000, 604800000), routedBy };
+    subscriptionCovered: true, selectionReviewedAt: selection.reviewedAt, selectionMaxAgeMs: Math.min(selection.maxAgeMs ?? 604800000, 604800000), routedBy };
 }
 
 async function main() {
