@@ -241,8 +241,9 @@ async function qualify(ctx) {
   const newTurn = await invoke('candidate', candidate.host, candidate, task.prompt);
   const newCheck = checkAnswer(newTurn.output, task);
   const reject = (reason, extra = {}) => {
-    const rejected = result('rejected', reason, { role: key, evidencePaths: [runDir], ...extra });
-    state.outcomes[key] = rejected;
+    const rejected = result('rejected', reason, { role: key, terminal: pending.length === 1,
+      pendingRoles: pending.slice(1).map((r) => `${r.host}/${r.role}`), evidencePaths: [runDir], ...extra });
+    state.outcomes[key] = { ...rejected, terminal: true };
     owned(routerDir, token, () => { atomic(stateFile, state); atomic(path.join(runDir, 'receipt.json'), rejected);
       atomic(path.join(routerDir, 'qualification-last-attempt.json'), rejected); }); return rejected;
   };
@@ -300,8 +301,9 @@ async function qualify(ctx) {
     } }));
   if (!promotion?.ok || !['promoted', 'idempotent'].includes(promotion.status)) throw new Error(`Promotion deferred: ${promotion?.reason ?? 'unqualified'}`);
   const promoted = result('promoted', 'One changed role passed bounded native acceptance and CAS promotion', {
-    role: key, promotion, evidencePaths: [runDir], pendingRoles: pending.slice(1).map((r) => `${r.host}/${r.role}`), backendIdentityProved: false });
-  state.outcomes[key] = promoted; state.expectedPolicySha256 = sha256(read(policyPath));
+    role: key, terminal: pending.length === 1, promotion, evidencePaths: [runDir],
+    pendingRoles: pending.slice(1).map((r) => `${r.host}/${r.role}`), backendIdentityProved: false });
+  state.outcomes[key] = { ...promoted, terminal: true }; state.expectedPolicySha256 = sha256(read(policyPath));
   owned(routerDir, token, () => { atomic(stateFile, state); atomic(path.join(runDir, 'receipt.json'), promoted);
     atomic(path.join(routerDir, 'qualification-last-attempt.json'), promoted); });
   return promoted;

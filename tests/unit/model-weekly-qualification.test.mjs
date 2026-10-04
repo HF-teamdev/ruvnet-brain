@@ -98,7 +98,7 @@ describe('bounded weekly native qualification (synthetic inference only)', () =>
     expect((await runWeeklyQualification(f)).status).toBe('promoted');
   });
   it('caps one changed role and resumes the original bound proposal across only its own CAS lineage', async () => {
-    const f = setup({ two: true }); const first = await runWeeklyQualification(f); expect(first.status).toBe('promoted'); expect(first.pendingRoles).toEqual(['codex/medium']);
+    const f = setup({ two: true }); const first = await runWeeklyQualification(f); expect(first.status).toBe('promoted'); expect(first.terminal).toBe(false); expect(first.pendingRoles).toEqual(['codex/medium']);
     const second = await runWeeklyQualification(f); expect(second.status).toBe('promoted'); expect(f.probe).toHaveBeenCalledTimes(6);
     expect((await runWeeklyQualification(f)).status).toBe('unchanged'); expect(f.probe).toHaveBeenCalledTimes(6);
   });
