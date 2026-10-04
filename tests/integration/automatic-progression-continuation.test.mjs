@@ -252,7 +252,7 @@ describe('customer managed actions and immutable frozen recovery', () => {
       sequence: row.sequence, occurredAt: row.occurredAt, parentEventKeys: row.parentEventKeys,
       dedupId: row.dedupId, completeProjectState: row.completeProjectState };
   }
-  function collidingQueue(f) {
+  function collidingQueue(f, { canonicalOnly = false } = {}) {
     // Same event identity and distinct content, the actual pre-fix frozen SessionEnd shape.
     const first = createProgressionSnapshot({ ...snapshot(f, 'codex'), trigger: 'SessionEnd',
       sourceIdentity: { ...snapshot(f, 'codex').sourceIdentity, capturePath: f.dir },
@@ -262,7 +262,8 @@ describe('customer managed actions and immutable frozen recovery', () => {
       completeProjectState: { ...first.completeProjectState, nextAction: 'Original frozen unfinished action' } });
     expect(second.eventKey).toBe(first.eventKey);
     expect(second.payloadDigest).not.toBe(first.payloadDigest);
-    f.store.capture(first);
+    if (canonicalOnly) f.store.appendExact(first);
+    else f.store.capture(first);
     queueCapture({ projectDir: f.dir, event: 'SessionEnd', host: 'codex', env: f.env,
       payload: { session_id: second.sessionIdentity, projectProgression: extension(second, f) } });
     const later = createProgressionSnapshot({ ...second, sequence: 21, dedupId: 'later',
@@ -296,6 +297,39 @@ describe('customer managed actions and immutable frozen recovery', () => {
     expect(f.store.outbox.quarantinedKeys()).toEqual([expect.objectContaining({ eventKey: first.eventKey })]);
     // Exact deterministic retry verifies the same recovered event; it creates no new identity.
     expect(f.store.captureFrozen(second, { canCommit: () => true }).snapshot).toEqual(recovered);
+  });
+
+  it('settles recovered debt when the immutable original exists only in the canonical store', () => {
+    const f = fixture(); const { first, second } = collidingQueue(f, { canonicalOnly: true });
+    const captured = [];
+    drain(f, { onCaptured: (result) => captured.push(result) });
+    expect(queuedWork(f.dir)).toBe(0);
+    expect(captured).toHaveLength(2);
+    expect(f.store.outbox.pendingSnapshots()).toEqual([]);
+    const records = f.store.outbox.records();
+    expect(records).toContainEqual(expect.objectContaining({ type: 'recovery',
+      eventKey: second.eventKey, payloadDigest: second.payloadDigest,
+      recoveryEventKey: captured[0].receipt.eventKey }));
+    expect(records.filter((row) => row.type === 'commit' && row.eventKey === first.eventKey)).toEqual([]);
+    const before = records.length;
+    expect(drain(f)).toBe(0);
+    expect(f.store.outbox.records()).toHaveLength(before);
+    expect(f.store.retrieveSnapshots([first.eventKey]).snapshots[0]).toEqual(first);
+  });
+
+  it('retries an interruption after recovery readback before the append-only disposition', () => {
+    const f = fixture(); collidingQueue(f, { canonicalOnly: true });
+    const record = f.store.outbox.markRecovered.bind(f.store.outbox);
+    f.store.outbox.markRecovered = () => { throw new Error('interrupted disposition fsync'); };
+    drain(f);
+    expect(queuedWork(f.dir)).toBe(2);
+    expect(f.store.outbox.pendingSnapshots()).toHaveLength(1);
+    const keys = f.store.listSnapshotKeys();
+    f.store.outbox.markRecovered = record;
+    drain(f);
+    expect(queuedWork(f.dir)).toBe(0);
+    expect(f.store.outbox.pendingSnapshots()).toEqual([]);
+    expect(f.store.listSnapshotKeys()).toHaveLength(keys.length + 1); // only later work adds a row
   });
 
   it('retains frozen queue work on failed recovery and retries the deterministic key', () => {

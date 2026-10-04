@@ -456,7 +456,7 @@ export class ProjectProgressionStore {
     if (typeof canCommit !== 'function') throw new Error('frozen recovery requires replay fencing');
     const fenced = () => { if (!canCommit()) throw new Error('progression recovery lost replay fencing'); };
     fenced();
-    try { return { snapshot, receipt: this.capture(snapshot) }; } catch (error) {
+    try { return { snapshot, receipt: this.capture(snapshot, { onPhase: fenced }) }; } catch (error) {
       if (error.message !== 'progression readback digest mismatch') throw error;
     }
     // An independently retrieved exact canonical value must be valid for this project. A failed,
@@ -480,7 +480,10 @@ export class ProjectProgressionStore {
     this.validateSnapshot(recovered);
     this.requireCaptureConsent(recovered);
     fenced();
-    return { snapshot: recovered, receipt: this.capture(recovered) };
+    const receipt = this.capture(recovered, { onPhase: fenced });
+    fenced();
+    this.outbox.markRecovered(snapshot, receipt);
+    return { snapshot: recovered, receipt };
   }
 
   replay() {

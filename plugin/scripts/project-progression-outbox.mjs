@@ -66,6 +66,21 @@ export class ProgressionOutbox {
     return this.appendRecord({ type: 'commit', ...receipt });
   }
 
+  /** Disposition of one frozen payload, never a commit for its conflicting original key. */
+  markRecovered(snapshot, receipt) {
+    for (const [label, value] of Object.entries({ eventKey: snapshot?.eventKey,
+      payloadDigest: snapshot?.payloadDigest, recoveryEventKey: receipt?.eventKey,
+      recoveryPayloadDigest: receipt?.payloadDigest, readbackDigest: receipt?.readbackDigest,
+      committedAt: receipt?.committedAt })) requireIdentity(value, label);
+    if (receipt.eventKey === snapshot.eventKey || receipt.readbackDigest !== receipt.payloadDigest) {
+      throw new Error('unverified recovery disposition');
+    }
+    return this.appendRecord({ type: 'recovery', eventKey: snapshot.eventKey,
+      payloadDigest: snapshot.payloadDigest, recoveryEventKey: receipt.eventKey,
+      recoveryPayloadDigest: receipt.payloadDigest, readbackDigest: receipt.readbackDigest,
+      committedAt: receipt.committedAt });
+  }
+
   records() {
     if (!fs.existsSync(this.path)) return [];
     const content = fs.readFileSync(this.path, 'utf8');
@@ -92,6 +107,7 @@ export class ProgressionOutbox {
     const snapshots = new Map();
     const committed = new Map();
     const quarantined = new Map();
+    const recoveries = [];
     for (const record of this.records()) {
       requireIdentity(record?.eventKey, 'outbox eventKey');
       requireIdentity(record?.payloadDigest, 'outbox payloadDigest');
@@ -103,6 +119,13 @@ export class ProgressionOutbox {
         const prior = committed.get(record.eventKey);
         if (prior && prior !== record.payloadDigest) quarantined.set(record.eventKey, 'outbox commit collision');
         committed.set(record.eventKey, record.payloadDigest);
+      } else if (record.type === 'recovery') {
+        requireIdentity(record.recoveryEventKey, 'recovery event key');
+        requireIdentity(record.recoveryPayloadDigest, 'recovery payload digest');
+        if (record.eventKey === record.recoveryEventKey || record.readbackDigest !== record.recoveryPayloadDigest) {
+          throw new Error('unverified recovery disposition');
+        }
+        recoveries.push(record);
       } else {
         throw new Error('unsupported outbox record');
       }
@@ -113,9 +136,18 @@ export class ProgressionOutbox {
         quarantined.set(record.eventKey, 'outbox commit digest mismatch');
       }
     }
+    const recovered = new Set(recoveries.filter((record) => {
+      const target = snapshots.get(record.recoveryEventKey)?.snapshot;
+      return !quarantined.has(record.recoveryEventKey)
+        && committed.get(record.recoveryEventKey) === record.recoveryPayloadDigest
+        && target?.payloadDigest === record.recoveryPayloadDigest
+        && target.recoveryDiagnostics?.originalEventKey === record.eventKey
+        && target.recoveryDiagnostics?.frozenPayloadDigest === record.payloadDigest;
+    }).map((record) => `${record.eventKey}:${record.payloadDigest}`));
     this.quarantine = [...quarantined].map(([eventKey, reason]) => ({ eventKey, reason }));
     return [...snapshots.values()]
-      .filter((record) => !quarantined.has(record.eventKey) && !committed.has(record.eventKey))
+      .filter((record) => !quarantined.has(record.eventKey) && !committed.has(record.eventKey)
+        && !recovered.has(`${record.eventKey}:${record.payloadDigest}`))
       .sort((left, right) => left.eventKey.localeCompare(right.eventKey))
       .map((record) => record.snapshot);
   }
