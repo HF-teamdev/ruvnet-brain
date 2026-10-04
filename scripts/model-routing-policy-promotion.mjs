@@ -105,7 +105,12 @@ export function validateRoutingProposal({ currentPolicy, candidatePolicy, eviden
   } catch (error) { return fail(error.message); }
 }
 
-function syncDir(dir) { const fd = fs.openSync(dir, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
+function syncDir(dir) {
+  // Windows cannot flush directory descriptors through Node. File contents still fsync
+  // before rename; do not claim POSIX directory-entry crash durability on Windows.
+  if (process.platform === 'win32') return;
+  const fd = fs.openSync(dir, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
 function writeExclusive(file, bytes) {
   const fd = fs.openSync(file, 'wx', 0o600);
   try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -150,7 +155,7 @@ export function promoteRoutingPolicy({ policyPath, candidatePolicy, expectedPrio
       if (fs.existsSync(file)) { if (sha256(fs.readFileSync(file)) !== sha256(body)) return fail('Archive digest mismatch'); }
       else writeExclusive(file, body);
     }
-    const receipt = { schemaVersion: 1, promotedAt: new Date(now).toISOString(), sourceSha,
+    const receipt = { schemaVersion: 1, directorySync: process.platform === 'win32' ? 'unsupported' : 'performed', promotedAt: new Date(now).toISOString(), sourceSha,
       candidateSha: validation.candidateSha, priorSha: expectedPriorSha, policySha: nextSha,
       previousPath, candidatePath, contractSha256: contract.contractSha256, qualifiedRoles: validation.qualifiedRoles };
     const receiptPath = path.join(archiveDir, `${nextSha}.receipt.json`);

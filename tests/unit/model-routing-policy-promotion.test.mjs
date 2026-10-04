@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { sha256, candidateSha256, validateRoutingProposal, promoteRoutingPolicy, rollbackRoutingPolicy } from '../../scripts/model-routing-policy-promotion.mjs';
 import { buildWeeklyAssessment } from '../../scripts/model-weekly-assessment.mjs';
 
@@ -118,4 +118,22 @@ describe('reviewed routing policy promotion boundary', () => {
     fs.writeFileSync(d.policyPath, d.bytes); const promoted = promoteRoutingPolicy({ ...d, ...f }); fs.appendFileSync(d.policyPath, '\n');
     expect(rollbackRoutingPolicy({ policyPath: d.policyPath, expectedCurrentSha: promoted.policySha, previousSha: d.expectedPriorSha }).ok).toBe(false);
   });
+});
+
+
+it('Windows promotion flushes file contents without unsupported directory fsync and preserves rollback', () => {
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+  const original = fs.fsyncSync;
+  const flush = vi.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+    expect(fs.fstatSync(fd).isFile()).toBe(true);
+    return original(fd);
+  });
+  try {
+    const f = { ...fixture(), ...disk() };
+    const r = promoteRoutingPolicy(f);
+    expect(r.status, r.reason).toBe('promoted');
+    expect(r.directorySync).toBe('unsupported');
+    expect(flush).toHaveBeenCalled();
+    expect(rollbackRoutingPolicy({ policyPath: f.policyPath, expectedCurrentSha: r.policySha, previousSha: f.expectedPriorSha }).status).toBe('rolled-back');
+  } finally { vi.restoreAllMocks(); }
 });
