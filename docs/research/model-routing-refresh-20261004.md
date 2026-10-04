@@ -106,3 +106,11 @@ Independent sources checked:
 - https://artificialanalysis.ai/models/releases/comparisons/gpt-6-luna-vs-gpt-6-astra
 - https://artificialanalysis.ai/models/releases/comparisons/claude-opus-5-5-vs-gpt-6-astra
 - https://arena.ai/leaderboard/agent/code
+
+## Additional coding-workflow evidence checked October 4
+
+Artificial Analysis Coding Agent Index v1.5 was inspected in an actual browser, including the owner's selected 13-agent chart. The availability legend marks some model variants as not publicly available; it is not a data-access error. The index combines DeepSWE v1.1, Terminal-Bench 4.0 and SWE-Atlas-QnA. Rounded public summaries show Codex Sol 6.1 xhigh at 63 and 15.5 minutes per task; Codex Astra max at 62 and 29.4 minutes; Claude Code Sonnet 5.5 max at 68 and 1.5 hours; Claude Code Opus 5.5 max at 66 and 1.1 hours. API costs are not subscription usage. Mixed Devin Fusion/SWE-2 variants are different harnesses and cannot be assumed selectable through the owner's native subscriptions. Small score differences and different efforts do not establish architectural or review superiority. Source: https://artificialanalysis.ai/agents/coding-agents
+
+VulcanBench's October 1 Sol 6.1 report uses 23 legacy-program reconstruction tasks per effort, one attempt per task, Codex 0.159.0 on ChatGPT Pro, and quality protocol v3.18. Medium passes 22/23 at 10.6 minutes per task; high passes 23/23 at 10.2 minutes. High API-equivalent cost is $0.33 versus medium $0.40. High, xhigh and max all pass 23/23; their combined scores are close. The small task sample and 33% model-judged code-quality component limit generalization. This supports testing high for demanding implementation, without proving weekly allowance savings or universal optimality. Source: https://vulcanbench.com/benchmarks/swe-v4-gpt61-sol-v318.html
+
+The installed managed dispatcher completed a bounded Sol high acceptance request on October 4, after a fresh ordinary-allowance check. Receipt: /tmp/rnb-managed-sol-high-acceptance-20261004/result.json. This verifies the real dispatcher path accepted and completed its request; it does not independently identify the served backend model or prove arbitrary-parent-client switching, credit-race prevention, task quality, a weekly semantic analyst run or production publication.
