@@ -30,15 +30,17 @@ const summarize = (row) => row ? { model: row.model, effort: row.effort, sourceM
   benchmark: row.benchmark, intelligenceIndex: row.quality?.intelligenceIndex, terminalBench40: terminal(row),
   taskTimeSeconds: row.timePerTaskSeconds, apiBenchmarkCostPerTaskUsd: row.costPerTaskUsd, source: row.source } : null;
 
-export function buildWeeklyAssessment({ currency, policy = null, priorPolicyBytes = null, now = Date.now(), previousAssessment = null } = {}) {
+export function buildWeeklyAssessment({ currency, policy = null, priorPolicyBytes = null, now = Date.now(), previousAssessment = null, instruction = WEEKLY_ANALYST_INSTRUCTION, instructionSource = 'packaged-fallback' } = {}) {
+  if (typeof instruction !== 'string' || !instruction.trim()) throw new Error('weekly instruction must be nonempty text');
+  const instructionSha256 = digest(instruction);
   const checkedAt = new Date(now).toISOString();
   const records = currency?.evaluations?.records ?? [];
   const gaps = ['semantic-native-analyst-not-run', 'current-subscription-allowance-unavailable',
     'native-credit-fallback-disable-control-unverified', 'task-specific-correctness-not-measured', 'official-docs-not-semantically-qualified', 'native-access-revalidation-not-run'];
   const coverage = []; const recommendations = [];
   for (const [host, provider] of Object.entries(providers)) {
-    for (const taskClass of ['fast', 'medium', 'hard']) {
-      const selected = policy?.routes?.[host]?.[taskClass] ?? null;
+    for (const [taskClass, selected] of Object.entries(policy?.routes?.[host] ?? {})) {
+      if (!selected || typeof selected !== 'object' || typeof selected.model !== 'string' || typeof selected.effort !== 'string') continue;
       const current = selected ? records.find((r) => r.model === selected.model && r.effort === selected.effort) : null;
       const alternatives = !current ? [] : records.filter((row) => sameProvider(row.model, host)
         && row.identityEvidence && row.benchmark?.suite === current.benchmark?.suite
@@ -57,16 +59,16 @@ export function buildWeeklyAssessment({ currency, policy = null, priorPolicyByte
     }
   }
   const priorPolicySha256 = priorPolicyBytes === null ? null : digest(priorPolicyBytes);
-  const signature = digest(JSON.stringify({ priorPolicySha256,
+  const signature = digest(JSON.stringify({ priorPolicySha256, instructionSha256,
     coverage: coverage.map((c) => ({ host: c.host, taskClass: c.taskClass, independentCoverage: c.independentCoverage })),
     recommendations: recommendations.map((r) => ({ host: r.host, taskClass: r.taskClass, selected: r.selected,
       shortlist: r.shortlist.map((s) => ({ model: s.model, effort: s.effort })) })) }));
   const changed = signature !== previousAssessment?.signature;
   const missingCoverage = coverage.filter((c) => c.selected && c.independentCoverage === 'missing');
-  const actionable = !policy?.routes || currencyStatus(currency, now).status === 'stale' || missingCoverage.length > 0;
+  const actionable = !coverage.length || currencyStatus(currency, now).status === 'stale' || missingCoverage.length > 0;
   const report = { schemaVersion: 1, checkedAt, method: 'deterministic-comparable-benchmark-shortlist',
     analystExecuted: false, policyPreserved: true, priorPolicySha256, evidenceCurrency: currencyStatus(currency, now),
-    instructionSha256: digest(WEEKLY_ANALYST_INSTRUCTION),
+    instructionSha256, instructionSource,
     nativeAnalystSafety: { executed: false, noCreditFallbackEnforced: false,
       reason: 'Native subscription auth and ordinary usage allowance do not prove purchased credits cannot be consumed.' }, priorities: ['correctness', 'subscription allowance', 'completion time'],
     coverage, recommendations, gaps, signature,
@@ -80,5 +82,5 @@ export function buildWeeklyAssessment({ currency, policy = null, priorPolicyByte
     ...coverage.map((c) => `${c.provider} ${c.taskClass}: ${c.selected ? `${c.selected.model} / ${c.selected.effort}` : 'no allocation'}; independent coverage ${c.independentCoverage}; native allowance unknown.`),
     '', 'Qualification blockers:', ...gaps.map((g) => `- ${g}`), '',
     'API benchmark cost is a comparison proxy; it does not measure subscription usage. MODEL_OK smoke output proves neither task correctness nor quota.', ''].join('\n');
-  return { report, proposal, markdown, instruction: WEEKLY_ANALYST_INSTRUCTION };
+  return { report, proposal, markdown, instruction };
 }

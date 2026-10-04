@@ -42,4 +42,26 @@ describe('weekly deterministic assessment', () => {
     expect(missing.instruction).toBe(WEEKLY_ANALYST_INSTRUCTION);
     expect(missing.instruction).toContain('enforceable no-credit-fallback control');
   });
+  it('covers every actual allocation including substantial and exceptional without treating settings as routes', () => {
+    const extended = structuredClone(policy);
+    extended.routes.codex.substantial = { model: 'gpt-baseline', effort: 'high' };
+    extended.routes.codex.exceptional = { model: 'gpt-astra', effort: 'xhigh' };
+    extended.routes.codex.nativeAgentRouting = { enabled: true, adapter: 'supervised' };
+    extended.routes.codex.codingEffort = 'high';
+    const r = buildWeeklyAssessment({ currency: { ...currency, evaluations: { ...currency.evaluations,
+      records: [...currency.evaluations.records, row('gpt-astra', 200, 60, 'xhigh')] } }, policy: extended, now: NOW });
+    expect(r.report.coverage).toHaveLength(4);
+    expect(r.report.coverage.map((c) => `${c.host}.${c.taskClass}`)).toEqual(['codex.fast', 'codex.substantial', 'codex.exceptional', 'claude-code.fast']);
+    expect(r.report.coverage.find((c) => c.taskClass === 'exceptional').independentCoverage).toBe('matched');
+  });
+  it('snapshots and hashes the effective instruction and changes the assessment signature when it changes', () => {
+    const first = buildWeeklyAssessment({ currency, policy, now: NOW, instruction: 'Owner full mandate v1', instructionSource: 'effective-per-user-file' });
+    const second = buildWeeklyAssessment({ currency, policy, now: NOW, instruction: 'Owner full mandate v2', previousAssessment: first.report });
+    expect(first.instruction).toBe('Owner full mandate v1');
+    expect(first.report.instructionSource).toBe('effective-per-user-file');
+    expect(first.report.instructionSha256).not.toBe(second.report.instructionSha256);
+    expect(first.report.signature).not.toBe(second.report.signature);
+    expect(second.report.notification.changed).toBe(true);
+  });
+
 });

@@ -116,12 +116,25 @@ describe('independent currency evidence', () => {
     const report = JSON.parse(fs.readFileSync(record.assessment.reportPath));
     const proposal = JSON.parse(fs.readFileSync(record.assessment.proposalPath));
     expect(report.analystExecuted).toBe(false); expect(proposal.applied).toBe(false);
+    expect(report.instructionSource).toBe('effective-per-user-file');
+    expect(fs.readFileSync(path.join(path.dirname(record.assessment.reportPath), 'instruction.md'), 'utf8')).toBe('User supplemental instruction.');
+    expect(record.assessment.instructionSha256).toBe(report.instructionSha256);
     expect(fs.readFileSync(path.join(path.dirname(record.assessment.reportPath), 'prior-policy.json'), 'utf8')).toBe(policyBytes);
     expect(fs.readFileSync(path.join(routerDir, 'routing-policy.json'), 'utf8')).toBe(policyBytes);
     expect(fs.readFileSync(path.join(routerDir, 'weekly-analyst-instruction.md'), 'utf8')).toBe('User supplemental instruction.');
     await refreshModelCurrency({ routerDir, now: NOW + 1, fetchImpl: goodFetch, identityBindings: bindings, aaUrls: [source.url] });
     expect(fs.readdirSync(path.join(routerDir, 'assessments'))).toHaveLength(2);
     expect(fs.existsSync(record.assessment.reportPath)).toBe(true);
+  });
+
+  it('bounds effective instruction reads and reports an oversized file without replacing it', async () => {
+    const routerDir = dir(); const target = path.join(routerDir, 'weekly-analyst-instruction.md');
+    fs.writeFileSync(target, 'x'.repeat(128 * 1024 + 1));
+    const result = await refreshModelCurrency({ routerDir, now: NOW, fetchImpl: goodFetch, aaUrls: [source.url] });
+    expect(result.status).toBe('stale');
+    expect(result.errors.join(' ')).toMatch(/instruction.*128 KiB/);
+    expect(fs.statSync(target).size).toBe(128 * 1024 + 1);
+    expect(result.assessment.instructionSource).toBe('fallback-after-read-error');
   });
 
 });

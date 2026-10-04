@@ -151,21 +151,35 @@ export async function refreshModelCurrency({ routerDir = DEFAULT_ROUTER_DIR, now
       else errors.push(`official ${officialSources[i].url}: ${result.reason.message}`);
     }
     if (publicDocs.length === officialSources.length) official = { checkedAt, sources: publicDocs };
+    const instructionPath = path.join(routerDir, 'weekly-analyst-instruction.md');
+    let instruction; let instructionSource = 'packaged-fallback';
+    try {
+      const fd = fs.openSync(instructionPath, 'r');
+      try {
+        const buffer = Buffer.alloc(128 * 1024 + 1);
+        const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        if (size > 128 * 1024) throw new Error('effective weekly instruction exceeds 128 KiB');
+        instruction = buffer.subarray(0, size).toString('utf8');
+        if (!instruction.trim()) throw new Error('effective weekly instruction is empty');
+        instructionSource = 'effective-per-user-file';
+      } finally { fs.closeSync(fd); }
+    } catch (error) {
+      if (error.code !== 'ENOENT') { errors.push(`instruction: ${error.message}`); instruction = undefined; instructionSource = 'fallback-after-read-error'; }
+    }
     const next = { schemaVersion: 1, maxAgeMs: WEEK_MS, inventory, evaluations, officialSources: official,
       lastAttempt: { checkedAt, status: errors.length ? (inventory === prior.inventory && evaluations === prior.evaluations ? 'failed' : 'partial') : 'complete', errors } };
     let priorPolicyBytes = null; let policy = null;
     try { priorPolicyBytes = fs.readFileSync(path.join(routerDir, 'routing-policy.json'), 'utf8'); policy = JSON.parse(priorPolicyBytes); }
     catch { /* no policy: report missing allocation, never synthesize one */ }
-    const assessment = buildWeeklyAssessment({ currency: next, policy, priorPolicyBytes, now, previousAssessment: prior.assessment });
+    const assessment = buildWeeklyAssessment({ currency: next, policy, priorPolicyBytes, now, previousAssessment: prior.assessment, instruction, instructionSource });
     const assessmentDir = path.join(routerDir, 'assessments', `${checkedAt.replaceAll(':', '-')}-${lock}`);
     for (const [name, bytes] of [['report.json', JSON.stringify(assessment.report, null, 2)],
       ['proposal.json', JSON.stringify(assessment.proposal, null, 2)], ['report.md', assessment.markdown],
       ['instruction.md', assessment.instruction], ['prior-policy.json', priorPolicyBytes ?? 'null']]) {
       fencedWrite(routerDir, lock, path.join(assessmentDir, name), bytes);
     }
-    const instructionPath = path.join(routerDir, 'weekly-analyst-instruction.md');
     if (!fs.existsSync(instructionPath)) fencedWrite(routerDir, lock, instructionPath, assessment.instruction);
-    next.assessment = { instructionPath, checkedAt, signature: assessment.report.signature, reportPath: path.join(assessmentDir, 'report.json'),
+    next.assessment = { instructionPath, instructionSha256: assessment.report.instructionSha256, instructionSource, checkedAt, signature: assessment.report.signature, reportPath: path.join(assessmentDir, 'report.json'),
       proposalPath: path.join(assessmentDir, 'proposal.json'), status: 'complete-unqualified', analystExecuted: false,
       notification: assessment.report.notification };
     fencedWrite(routerDir, lock, path.join(routerDir, 'currency.json'), `${JSON.stringify(next, null, 2)}\n`);
