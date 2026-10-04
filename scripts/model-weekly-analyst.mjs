@@ -154,7 +154,7 @@ export async function runWeeklyAnalyst({ routerDir = path.join(os.homedir(), '.c
     const profile = JSON.parse(boundedRead(path.join(routerDir, 'profile.json'), 128 * 1024));
     const candidates = applyProfile(loadCatalog(path.join(routerDir, 'catalog.json')), profile);
     const taskClass = 'substantial'; const selected = inputs.policy.routes?.codex?.[taskClass];
-    if (!selected || selected.model !== 'gpt-6.1-sol' || selected.effort !== 'high') throw new Error('Weekly analyst requires the owner-authorized Sol high substantial route');
+    if (!selected?.model || selected.effort !== 'high') throw new Error('Weekly analyst requires the owner-authorized high-effort substantial route');
     const selectionEvidence = selectionEvidenceStatus(inputs.policy, now);
     const decision = { harness: 'codex', provider: 'openai', taskClass, model: selected.model, effort: selected.effort,
       subscriptionCovered: true, selectionReviewedAt: inputs.policy.reviewedAt, selectionMaxAgeMs: selectionEvidence.maxAgeMs, selectionRouteDigest: selectionEvidence.routeDigest };
