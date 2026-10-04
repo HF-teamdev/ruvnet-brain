@@ -14,7 +14,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { estTokens } from './route-cheap.mjs'; // reuse the verified char/4 estimator (DRY)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const CONFIG_DIR = path.join(os.homedir(), '.claude', 'model-router');
+export const CONFIG_DIR = process.env.MODEL_ROUTER_CONFIG_DIR || path.join(os.homedir(), '.claude', 'model-router');
 // Overridable for hermetic tests + CI (runners have no ~/.claude): the 2026-07-12 CI redness was
 // exactly this — tests that silently depended on one developer's machine state.
 const CATALOG_PATH = process.env.MODEL_ROUTER_CATALOG || path.join(CONFIG_DIR, 'catalog.json');
@@ -167,8 +167,11 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
   if (!policy?.choose) throw new Error('No routing policy available');
   const classifierFile = fs.existsSync(POLICY_SHIPPED) ? POLICY_SHIPPED : POLICY_DEFAULT;
   const classifier = await import(pathToFileURL(classifierFile).href);
-  classifier.validateTaskFacts?.(features.taskFacts);
-  const assessedClass = classifier.classify?.(features, harness);
+  if (typeof classifier.classify !== 'function' || typeof classifier.validateTaskFacts !== 'function') {
+    throw new Error('Managed routing classifier missing required exports; update installed policy.default.mjs before dispatch');
+  }
+  classifier.validateTaskFacts(features.taskFacts);
+  const assessedClass = classifier.classify(features, harness);
   const decision = await policy.choose({ features, candidates: pool, harness, profile, selection });
   if (harness === 'codex' && ['substantial', 'exceptional', 'hard'].includes(assessedClass) && decision?.taskClass !== assessedClass) {
     throw new Error(`Task requires explicit qualified ${assessedClass} route; legacy policy cannot silently use medium`);

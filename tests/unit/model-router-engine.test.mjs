@@ -144,3 +144,18 @@ test('structured request travels through actual engine stdin and selects substan
   expect(JSON.parse(raw)).toMatchObject({taskClass:'substantial',model:'gpt-frontier-fixture',effort:'high',classificationSource:'caller-task-facts'});
   expect(fs.readFileSync(LOG,'utf8')).not.toContain('PRIVATE_STRUCTURED_WORK');
 });
+
+test('installed layout with preserved legacy default cannot silently disable mandatory classification floor',()=>{
+  const home=path.join(TMP,'installed-router');const bin=path.join(home,'bin');
+  fs.mkdirSync(bin,{recursive:true});
+  fs.mkdirSync(path.join(home,'plugin','scripts'),{recursive:true});
+  for(const file of ['model-router-engine.mjs','route-cheap.mjs']) fs.copyFileSync(path.join(ROOT,'scripts',file),path.join(bin,file));
+  fs.copyFileSync(path.join(ROOT,'plugin','scripts','runtime-preferences.mjs'),path.join(home,'plugin','scripts','runtime-preferences.mjs'));
+  fs.writeFileSync(path.join(home,'policy.default.mjs'),"export function choose(){return {model:'gpt-frontier-fixture',taskClass:'medium',effort:'medium'}}");
+  const custom=path.join(home,'policy.mjs');fs.writeFileSync(custom,"export function choose(){return {model:'gpt-frontier-fixture',taskClass:'medium',effort:'medium'}}");
+  const execute=()=>execFileSync(process.execPath,[fs.realpathSync(path.join(bin,'model-router-engine.mjs')),'--harness','codex','--policy-only','--json'],{
+    input:'substantial implementation across modules',encoding:'utf8',stdio:['pipe','pipe','pipe'],
+    env:{...process.env,MODEL_ROUTER_CONFIG_DIR:home,MODEL_ROUTER_CATALOG:CATALOG,MODEL_ROUTER_PROFILE:PROFILE,MODEL_ROUTER_SELECTION:SELECTION,MODEL_ROUTER_DECISIONS:LOG},
+  });
+  expect(execute).toThrow(/classifier missing required exports/);
+});
