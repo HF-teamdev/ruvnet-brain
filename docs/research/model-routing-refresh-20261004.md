@@ -1,4 +1,4 @@
-Updated: 2026-10-04 08:50:00 EDT | Version 1.0.2
+Updated: 2026-10-04 09:54:00 EDT | Version 1.0.3
 Created: 2026-10-04 08:49:00 EDT
 
 # Model routing refresh: Anthropic and OpenAI
@@ -7,16 +7,15 @@ This dated assessment replaces the obsolete model recommendations in rejected AD
 
 ## Executive recommendation
 
-Use GPT-6.1 Sol for ordinary execution and coordination. Use Luna for focused fast work. Escalate a bounded difficult problem or critical review to Astra. On Anthropic, use Sonnet 5.5 for ordinary work and Opus 5.5 for difficult work. Use the same Sonnet at lower effort for fast work because the owner has excluded Haiku. A newer name alone does not establish superior results on this project.
+The owner-reviewed objective is correctness and completeness first, included subscription allowance second, and elapsed time to a verified result third. API prices do not measure subscription consumption.
 
-| Work level | Anthropic | Effort to start | OpenAI / Codex | Effort to start |
-|---|---|---|---|---|
-| Fast: extraction, classification, short summaries | Sonnet 5.5 | low | GPT-6 Luna | low; API-only none for deterministic extraction |
-| Medium: routine coding, tests, debugging, research, operations | Sonnet 5.5 | medium for noncoding; high for coding | GPT-6.1 Sol | medium; low only for measured narrow work |
-| Hard: concurrency, security, difficult architecture, independent review | Opus 5.5 | high; medium for initial bounded analysis | GPT-6 Astra | high; medium for initial bounded analysis |
-| Exceptional: demonstrated failure on the hard tier | Fable 5.1, subject to verified access | high, then xhigh only if justified | Astra at higher effort | xhigh/max only when evals justify the cost |
+For Codex, route consequential architecture, ambiguous requirements, uncertain causal diagnosis and substantive review directly to GPT-6 Astra high. Use GPT-6.1 Sol high for demanding implementation under a sufficiently clear design, and Sol medium for bounded routine work. Keep Astra on implementation when design and execution remain tightly coupled. Luna low is optional for narrowly defined mechanical transformations with complete inexpensive verification; it is not an autonomous coding default. Astra xhigh requires a named exceptional reasoning problem, not a routine retry. Max remains separately qualified rather than a default route.
 
-These effort choices are recommendations, not a completed project-specific speed/quality benchmark. Return execution to the workhorse after an escalation. Deterministic scripts handle polling, inventory and mechanical checks.
+The Anthropic table remains independently qualified: Sonnet 5.5 low for mechanical support, medium for routine noncoding, high for ordinary coding, and Opus 5.5 high for consequential judgment. Current independent comparisons suggest testing Opus medium as an alternative to Sonnet high for demanding implementation; they do not establish the best subscription route. Fable 5.1 native access was verified, but the current aggregate evidence does not justify a default role. Never manufacture equivalent effort controls across providers.
+
+Standard delivery speed is the default for managed Codex workers. OpenAI's current documentation distinguishes included subscription multipliers (Fast 2.5x, Astra Ultrafast 8x) from purchased-credit multipliers (2x and 6x). These are usage multipliers, not completion-speed measurements. Source: https://learn.chatgpt.com/docs/agent-configuration/speed (checked October 4, 2026).
+
+GPT-6 Astra high independently reviewed this policy on October 4 and agreed with the role distinctions. This is a reviewed starting policy, not demonstrated optimality on the owner's projects. Route changes must remain grounded in supported native settings, subscription access, task outcomes, and current evidence.
 
 ## Independent evaluation evidence
 
