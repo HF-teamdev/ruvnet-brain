@@ -51,6 +51,11 @@ export function validateRoutingProposal({ currentPolicy, candidatePolicy, eviden
       || Date.parse(candidatePolicy.reviewedAt) < Date.parse(currentPolicy.reviewedAt)) return fail('Invalid review date');
     if (candidatePolicy.policyRevisionAt !== currentPolicy.policyRevisionAt
       && (!time(candidatePolicy.policyRevisionAt) || Date.parse(candidatePolicy.policyRevisionAt) > now)) return fail('Invalid revision date');
+    if (contract?.schemaVersion !== undefined && ![1, 2].includes(contract.schemaVersion)) return fail('Unsupported qualification contract version');
+    const configuredTurnEvidence = contract?.schemaVersion === 2;
+    if (configuredTurnEvidence && (contract.identityEvidence !== 'native-configured-turn' || contract.backendIdentityProved !== false
+      || !object(contract.reviewer) || typeof contract.reviewer.model !== 'string' || typeof contract.reviewer.effort !== 'string'
+      || !hosts[contract.reviewer.host])) return fail('Explicit native configured-turn qualification boundary required');
     const prior = roleRoutes(currentPolicy); const next = roleRoutes(candidatePolicy);
     if (!same(prior.map((r) => [r.host, r.role]).sort(), next.map((r) => [r.host, r.role]).sort())) return fail('Native provider or role expansion');
     const changed = next.filter((r) => !same(r, prior.find((p) => p.host === r.host && p.role === r.role)));
@@ -85,10 +90,16 @@ export function validateRoutingProposal({ currentPolicy, candidatePolicy, eviden
         if (!row || !Array.isArray(row.sourceIds) || !row.sourceIds.length
           || row.sourceIds.some((id) => !sha(id) || !contract.trustedSourceIds.includes(id)) || !time(row.checkedAt) || Date.parse(row.checkedAt) > now || now - Date.parse(row.checkedAt) > contract.maxEvidenceAgeMs
           || !sha(row.receiptSha256) || contract.trustedReceipts[row.receiptSha256] !== candidateSha256(Object.fromEntries(Object.entries(row).filter(([k]) => k !== 'receiptSha256')))) return fail(`Missing trusted ${kind} evidence: ${route.host}/${route.role}`);
+        if (configuredTurnEvidence && (row.identityEvidence !== 'native-configured-turn' || row.backendIdentityProved !== false
+          || typeof row.nativeSessionId !== 'string' || !row.nativeSessionId || typeof row.nativeTurnId !== 'string' || !row.nativeTurnId
+          || !sha(row.transcriptSha256))) return fail('Completed native configured-turn transcript binding missing');
         if (kind === 'availability' && (row.available !== true || row.nativeSubscription !== true || row.provider !== hosts[route.host])) return fail('Native subscription availability unverified');
         if (kind === 'settings' && row.supported !== true) return fail('Native settings unsupported');
+        if (configuredTurnEvidence && kind === 'handoff' && row.identityReturnedBasis !== 'native-host-confirmed-configuration') return fail('Native handoff configured identity basis missing');
         if (kind === 'handoff' && (row.completed !== true || row.identityReturned !== true || row.effortObserved !== true)) return fail('Native handoff identity/effort unverified');
         if (kind === 'role-quality') {
+          if (configuredTurnEvidence && (row.reviewerHost !== contract.reviewer.host || row.reviewerModel !== contract.reviewer.model || row.reviewerEffort !== contract.reviewer.effort
+            || row.reviewerModel === route.model)) return fail('Separately frozen independent model reviewer required');
           const floors = contract.qualityFloors[`${route.host}/${route.role}`];
           if (row.reviewedBy !== 'independent-reviewer' || row.reviewedOutcome !== 'accepted' || row.selfEvaluation === true
             || !object(row.benchmark) || !row.benchmark.suite || !row.benchmark.version || !object(row.metrics)
@@ -157,7 +168,9 @@ export function promoteRoutingPolicy({ policyPath, candidatePolicy, expectedPrio
     }
     const receipt = { schemaVersion: 1, directorySync: process.platform === 'win32' ? 'unsupported' : 'performed', promotedAt: new Date(now).toISOString(), sourceSha,
       candidateSha: validation.candidateSha, priorSha: expectedPriorSha, policySha: nextSha,
-      previousPath, candidatePath, contractSha256: contract.contractSha256, qualifiedRoles: validation.qualifiedRoles };
+      previousPath, candidatePath, contractSha256: contract.contractSha256, qualifiedRoles: validation.qualifiedRoles,
+      ...(contract.schemaVersion === 2 ? { identityEvidence: 'native-configured-turn', backendIdentityProved: false,
+        qualificationScope: 'bounded local role non-regression; not general superiority or subscription savings' } : {}) };
     const receiptPath = path.join(archiveDir, `${nextSha}.receipt.json`);
     if (!fs.existsSync(receiptPath)) writeExclusive(receiptPath, JSON.stringify(receipt, null, 2));
     if (beforeCommit) beforeCommit(); // fault injection / integration fence; no arbitrary proposal callback.

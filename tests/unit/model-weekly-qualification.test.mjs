@@ -66,16 +66,16 @@ function setup({ two = false, sameReviewer = false, coupled = false, claudeOnly 
   return { routerDir, contractPath, semanticReceipt, policyPath, policy, probe, promote, write, runDir };
 }
 describe('bounded weekly native qualification (synthetic inference only)', () => {
-  it.skipIf(!process.env.QUALIFICATION_PROMOTION_MODULE)('passes the integrated v2 real CAS validator and preserves exact prior bytes', async () => {
+  it('passes the integrated v2 real CAS validator and preserves exact prior bytes', async () => {
     const f = setup(); const prior = fs.readFileSync(f.policyPath);
-    const { promoteRoutingPolicy } = await import(pathToFileURL(process.env.QUALIFICATION_PROMOTION_MODULE).href);
+    const { promoteRoutingPolicy } = await import(pathToFileURL(process.env.QUALIFICATION_PROMOTION_MODULE || path.resolve(import.meta.dirname, '../../scripts/model-routing-policy-promotion.mjs')).href);
     const r = await runWeeklyQualification({ ...f, promote: promoteRoutingPolicy });
     expect(r.status, r.reason).toBe('promoted'); expect(fs.readFileSync(r.promotion.previousPath)).toEqual(prior);
     expect(JSON.parse(fs.readFileSync(f.policyPath)).reviewedAt).toBe(f.policy.reviewedAt);
   });
-  it.skipIf(!process.env.QUALIFICATION_PROMOTION_MODULE)('passes integrated real CAS for BOTH coupled Claude roles without partial adoption', async () => {
+  it('passes integrated real CAS for BOTH coupled Claude roles without partial adoption', async () => {
     const f = setup({ coupled: true }); const prior = fs.readFileSync(f.policyPath);
-    const { promoteRoutingPolicy } = await import(pathToFileURL(process.env.QUALIFICATION_PROMOTION_MODULE).href);
+    const { promoteRoutingPolicy } = await import(pathToFileURL(process.env.QUALIFICATION_PROMOTION_MODULE || path.resolve(import.meta.dirname, '../../scripts/model-routing-policy-promotion.mjs')).href);
     const r = await runWeeklyQualification({ ...f, promote: promoteRoutingPolicy }); expect(r.status, r.reason).toBe('promoted');
     expect(r.promotion.qualifiedRoles).toEqual(['claude-code/medium', 'claude-code/codingEffort']);
     expect(fs.readFileSync(r.promotion.previousPath)).toEqual(prior); expect(f.probe).toHaveBeenCalledTimes(5);

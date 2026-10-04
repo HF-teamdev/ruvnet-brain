@@ -1,4 +1,4 @@
-Updated: 2026-10-04 13:24:00 EDT | Version 1.0.3
+Updated: 2026-10-04 14:16:00 EDT | Version 1.0.4
 Created: 2026-10-04 09:56:00 EDT
 
 # Weekly model-routing analyst mandate
@@ -56,3 +56,5 @@ Research and update proposals automatically. Maintain a last-known-good policy a
 Save an initial full report and concise dated change reports, sources and a versioned policy proposal in the authorized per-user output directory. Include changes; original third-party charts with dates/links; clearly labelled recreated model-and-effort charts with separate quality-versus-cost and quality-versus-completion-time views; API cost versus measured subscription usage; recommended VS Code entry model and reasons; OpenAI, Anthropic and combined routing diagrams/tables; exact identifiers/efforts/speed/fallback; escalation/review rules; confidence, evidence gaps and policy changes. Include a machine-readable candidate compatible with the existing router. Mark unmeasured configurations missing, never invent scores. Preserve source snapshots and policy reasoning. Preserve the prior policy for comparison and recovery.
 
 Keep unchanged findings quiet. Notify for actionable improvement, retirement, availability change, regression, access failure or a required decision. A schedule needs actual run receipts. Active-session weekly catch-up is not a guarantee of execution while clients are closed. Never claim a recommendation is implemented, a model accessible or every prompt enforced without checking the actual supported runtime path.
+
+The native release check also refreshes account-visible model metadata without inference. For newly discovered models only, semantic analysis and independent qualification share one fifteen-minute deadline. A source-reviewed fixed role suite compares the incumbent and candidate, and a separate approved hard reviewer grades anonymized outputs. Automatic application requires standing user authorization, actual native configured-turn evidence, passing quality checks and an unchanged prior policy. Requested settings are not backend identity proof. Incomplete qualification keeps its bound proposal for retry without repeating the completed analysis; terminal rejection retains the approved route.

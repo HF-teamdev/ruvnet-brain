@@ -72,6 +72,9 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/model-weekly-assessment.test.mjs",
         "tests/unit/model-weekly-analyst.test.mjs",
         "tests/unit/model-weekly-cycle.test.mjs",
+        "tests/unit/model-weekly-qualification.test.mjs",
+        "tests/unit/model-native-qualification.test.mjs",
+        "tests/unit/model-native-catalog.test.mjs",
         "tests/unit/user-model-prompt-hook.test.mjs",
         "tests/unit/model-routing-policy-promotion.test.mjs",
         "tests/unit/codex-hook-trust.test.mjs"

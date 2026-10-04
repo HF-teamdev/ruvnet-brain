@@ -32,9 +32,9 @@ it('unchanged weekly discovery never refreshes expensive evidence or runs an old
 });
 it('only genuinely new canonical releases trigger full collection then guarded native analysis',async()=>{
   const dir=fixture(),calls=[],now=NOW+WEEK,before=fs.readFileSync(path.join(dir,'routing-policy.json'));
-  const stage=async options=>{calls.push(options);if(options.script==='model-currency.mjs'){currency(dir,now);return{code:0,result:{status:'current'}};}return{code:0,result:{status:'validated-semantic-report',completedAt:new Date(now).toISOString(),runDir:'/private/receipt'}};};
+  const stage=async options=>{calls.push(options);if(options.script==='model-currency.mjs'){currency(dir,now);return{code:0,result:{status:'current'}};}if(options.script==='model-weekly-qualification.mjs')return{code:0,result:{status:'unchanged',terminal:true}};return{code:0,result:{status:'validated-semantic-report',completedAt:new Date(now).toISOString(),runDir:'/private/receipt'}};};
   const result=await runWeeklyCycle({routerDir:dir,now,stage,fetchImpl:fetcher(inventory([newRelease])),env:{OPENAI_API_KEY:'neverforward',ANTHROPIC_API_KEY:'neverforward',PATH:'/bin'}});
-  expect(result).toMatchObject({status:'complete',reviewExecuted:true,policyApplied:false});expect(calls.map(c=>c.script)).toEqual(['model-currency.mjs','model-weekly-analyst.mjs']);expect(calls[1].timeoutMs).toBeLessThanOrEqual(905000);expect(calls[1].env.OPENAI_API_KEY).toBeUndefined();expect(calls[1].env.ANTHROPIC_API_KEY).toBeUndefined();expect(fs.readFileSync(path.join(dir,'routing-policy.json'))).toEqual(before);
+  expect(result).toMatchObject({status:'complete',reviewExecuted:true,policyApplied:false});expect(calls.map(c=>c.script)).toEqual(['model-currency.mjs','model-weekly-analyst.mjs','model-weekly-qualification.mjs']);expect(calls[1].timeoutMs).toBeLessThanOrEqual(452000);expect(calls[1].env.OPENAI_API_KEY).toBeUndefined();expect(calls[1].env.ANTHROPIC_API_KEY).toBeUndefined();expect(fs.readFileSync(path.join(dir,'routing-policy.json'))).toEqual(before);
   const state=JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json')));expect(state.pendingReleases).toEqual([]);expect(state.baselineReleaseIds).toContain(newRelease.canonical_slug);
 });
 it('failed new-release review preserves pending delta and retries after cooldown without marking it reviewed',async()=>{
@@ -64,4 +64,37 @@ it('deduplicates and fences delayed old-worker writes and cleanup after successo
 it('kills hung subprocesses and rejects malformed completion instead of certifying scheduled success',async()=>{
   const spawnHost=()=>{const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.kill=()=>queueMicrotask(()=>child.emit('exit',null));return child;};await expect(runCycleStage({script:'model-currency.mjs',args:[],timeoutMs:10,env:{},spawnHost})).rejects.toThrow('bounded deadline');
   const invalid=()=>{const child=spawnHost();queueMicrotask(()=>{child.stdout.emit('data','not a receipt');child.emit('exit',0);});return child;};await expect(runCycleStage({script:'model-currency.mjs',args:[],timeoutMs:100,env:{},spawnHost:invalid})).rejects.toThrow('receipt missing');
+});
+
+it('keeps a deferred proposal and resumes only qualification rather than repeating native analysis',async()=>{
+ const dir=fixture(),now=NOW+WEEK,calls=[];
+ const stage=async o=>{calls.push(o.script);if(o.script==='model-currency.mjs'){currency(dir,now);return{code:0,result:{status:'current'}};}
+ if(o.script==='model-weekly-analyst.mjs')return{code:0,result:{status:'validated-semantic-report',runDir:'/private/bound-review',completedAt:new Date(now).toISOString()}};
+ return{code:0,result:{status:'deferred',terminal:false,reason:'native allowance unavailable'}};};
+ const first=await runWeeklyCycle({routerDir:dir,now,stage,fetchImpl:fetcher(inventory([newRelease]))});
+ expect(first.status).toBe('qualification-pending');expect(first.policyApplied).toBe(false);
+ const state=JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json')));expect(state.pendingReleases).toHaveLength(1);expect(state.pendingSemanticReceipt.runDir).toBe('/private/bound-review');
+ calls.length=0;
+ const resumed=await runWeeklyCycle({routerDir:dir,now:now+3600001,stage:async o=>{calls.push(o.script);return{code:0,result:{status:'promoted',terminal:true}};},fetchImpl:fetcher()});
+ expect(calls).toEqual(['model-weekly-qualification.mjs']);expect(resumed).toMatchObject({status:'complete',policyApplied:true,reviewExecuted:false});
+ expect(JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json'))).pendingReleases).toEqual([]);
+});
+it('a reasoned rejected candidate is terminal and does not repeat expensive review',async()=>{
+ const dir=fixture(),state=JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json')));state.pendingReleases=[{id:newRelease.canonical_slug}];state.pendingSemanticReleaseIds=[newRelease.canonical_slug];state.pendingSemanticReceipt={runDir:'/private/bound-review',completedAt:new Date(NOW).toISOString()};write(dir,'weekly-model-discovery.json',state);
+ const before=fs.readFileSync(path.join(dir,'routing-policy.json'));
+ const first=await runWeeklyCycle({routerDir:dir,now:NOW,stage:async()=>({code:0,result:{status:'rejected',terminal:true,reason:'quality below floor'}})});
+ expect(first).toMatchObject({status:'complete',policyApplied:false});expect(fs.readFileSync(path.join(dir,'routing-policy.json'))).toEqual(before);
+ const stage=vi.fn();expect((await runWeeklyCycle({routerDir:dir,now:NOW+1,stage})).status).toBe('unchanged');expect(stage).not.toHaveBeenCalled();
+});
+
+it('refreshes an expired pending semantic review once before retrying qualification',async()=>{
+ const dir=fixture(),state=JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json')));
+ state.pendingReleases=[{id:newRelease.canonical_slug}]; state.pendingSemanticReleaseIds=[newRelease.canonical_slug];
+ state.pendingSemanticReceipt={runDir:'/private/expired',completedAt:new Date(NOW-WEEK-1).toISOString()};write(dir,'weekly-model-discovery.json',state);
+ const calls=[]; const result=await runWeeklyCycle({routerDir:dir,now:NOW,stage:async o=>{
+  calls.push(o.script); if(o.script==='model-currency.mjs'){currency(dir);return {code:0,result:{status:'current'}};}
+  if(o.script==='model-weekly-analyst.mjs')return {code:0,result:{status:'validated-semantic-report',runDir:'/private/new',completedAt:new Date(NOW).toISOString()}};
+  return {code:0,result:{status:'unchanged',terminal:true}};
+ }});
+ expect(result.status).toBe('complete');expect(calls).toEqual(['model-currency.mjs','model-weekly-analyst.mjs','model-weekly-qualification.mjs']);
 });

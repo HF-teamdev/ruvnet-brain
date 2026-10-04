@@ -74,7 +74,7 @@ export function maybeLaunchWeeklyCycle({ routerDir = path.join(os.homedir(), '.c
     if (!reviewRequired && !discoveryDue(state, now) && state?.removedPublicReleases?.length) return { status: 'blocked', launched: false, checkedAt: state.checkedAt, reviewRequired: false, reason: 'Public release removal requires native access verification; policy retained' };
     if (!reviewRequired && !discoveryDue(state, now)) return { status: 'current', launched: false, checkedAt: state.checkedAt, reviewRequired: false };
     const last = json(routerDir, 'weekly-cycle-last-attempt.json'); const tried = Date.parse(last?.checkedAt);
-    if (last?.status === 'failed' && Number.isFinite(tried) && tried <= now && now - tried < RETRY_MS) return { status: 'blocked', launched: false, reason: 'weekly retry cooldown', checkedAt: state?.checkedAt, reviewRequired };
+    if (['failed', 'qualification-pending'].includes(last?.status) && Number.isFinite(tried) && tried <= now && now - tried < RETRY_MS) return { status: 'blocked', launched: false, reason: 'weekly retry cooldown', checkedAt: state?.checkedAt, reviewRequired };
     const token = claim(routerDir, now); if (!token) return { status: 'busy', launched: false, reviewRequired };
     try { const child = launch(process.execPath, [fileURLToPath(import.meta.url), '--router-dir', routerDir, '--claim-token', token], { detached: true, stdio: 'ignore' });
       child.once?.('error', () => release(routerDir, token)); child.unref(); return { status: 'launched', launched: true, checkedAt: state?.checkedAt, reviewRequired };
@@ -82,8 +82,8 @@ export function maybeLaunchWeeklyCycle({ routerDir = path.join(os.homedir(), '.c
   } catch (e) { return { status: 'blocked', launched: false, reason: e.message.slice(0, 240), reviewRequired: false }; }
 }
 export async function runWeeklyCycle({ routerDir = path.join(os.homedir(), '.claude', 'model-router'), now = Date.now(), stage = runCycleStage,
-  env = process.env, maxMs = 990000, fetchImpl = fetch, claimToken = null } = {}) {
-  if (!path.isAbsolute(routerDir) || !Number.isFinite(maxMs) || maxMs <= 0 || maxMs > 990000) throw new Error('Invalid weekly cycle directory or deadline');
+  env = process.env, maxMs = 900000, fetchImpl = fetch, claimToken = null } = {}) {
+  if (!path.isAbsolute(routerDir) || !Number.isFinite(maxMs) || maxMs <= 0 || maxMs > 900000) throw new Error('Invalid weekly cycle directory or deadline');
   if (env.MODEL_ROUTER_WEEKLY_ANALYST === '1') return { status: 'recursive-worker', changed: false, reviewExecuted: false };
   fs.mkdirSync(routerDir, { recursive: true, mode: 0o700 }); const token = claimToken ?? claim(routerDir, now);
   if (!token) return { status: 'busy', changed: false, reviewExecuted: false };
@@ -97,7 +97,7 @@ export async function runWeeklyCycle({ routerDir = path.join(os.homedir(), '.cla
   try {
     assertOwner(routerDir, token); let state = json(routerDir, STATE_FILE, 1048576);
     const last = json(routerDir, 'weekly-cycle-last-attempt.json'); const tried = Date.parse(last?.checkedAt);
-    if (last?.status === 'failed' && Number.isFinite(tried) && tried <= now && now - tried < RETRY_MS) { record.status = 'deferred'; record.reason = 'weekly retry cooldown'; return record; }
+    if (['failed', 'qualification-pending'].includes(last?.status) && Number.isFinite(tried) && tried <= now && now - tried < RETRY_MS) { record.status = 'deferred'; record.reason = 'weekly retry cooldown'; return record; }
     if (discoveryDue(state, now)) {
       let bytes, source;
       // Initial owner-authorized baseline may reuse a recent digest-verified inventory. No semantic review is asserted.
@@ -115,6 +115,16 @@ export async function runWeeklyCycle({ routerDir = path.join(os.homedir(), '.cla
         source = { url: INVENTORY_URL, checkedAt: new Date(Math.max(now, Date.now())).toISOString(), sha256: digest(bytes) };
       }
       const releases = canonicalTextReleases(bytes); const ids = releases.map((r) => r.id);
+      let nativeNewIds = [];
+      const profile = json(routerDir, 'profile.json', 131072);
+      if (profile?.automaticModelRoutingUpdates === true && Object.values(profile.harnesses ?? {}).some(h => h.available === true && h.subscription === true)) {
+        const native = await execute('model-native-catalog.mjs', ['--deadline', String(deadline)], 30000);
+        record.stages.push({ component: 'native-catalog', status: native.result.status, exitCode: native.code });
+        if (native.code !== 0 || native.result.status !== 'current') throw new Error('Native account model catalog refresh unavailable; approved policy retained');
+        nativeNewIds = native.result.newNativeModelIds ?? [];
+        if (!Array.isArray(nativeNewIds) || nativeNewIds.some(id => typeof id !== 'string' || !/^(openai|anthropic)\//.test(id))) throw new Error('Invalid native discovery receipt');
+      }
+
       fs.mkdirSync(path.join(routerDir, 'evidence'), { recursive: true, mode: 0o700 });
       save(path.join('evidence', source.sha256 + '.json'), bytes);
       if (!state) {
@@ -124,6 +134,7 @@ export async function runWeeklyCycle({ routerDir = path.join(os.homedir(), '.cla
       }
       const baseline = new Set(state.baselineReleaseIds); const removed = (state.releases ?? []).filter((r) => !ids.includes(r.id)).map((r) => r.id);
       const pending = new Map((state.pendingReleases ?? []).map((r) => [r.id, r])); for (const r of releases) if (!baseline.has(r.id)) pending.set(r.id, r);
+      for (const id of nativeNewIds) if (!baseline.has(id)) pending.set(id, { id, provider: id.split('/')[0], source: 'native-account-catalog' });
       state = { ...state, checkedAt: source.checkedAt, source, releases, pendingReleases: [...pending.values()], removedPublicReleases: removed };
       save(STATE_FILE, state);
       if (removed.length) { record.publicAvailabilityAlert = { removed, nativeAvailability: 'unknown; public registry removal does not prove subscription revocation', policyRetained: true }; }
@@ -131,16 +142,35 @@ export async function runWeeklyCycle({ routerDir = path.join(os.homedir(), '.cla
     if (state.removedPublicReleases?.length) record.publicAvailabilityAlert = { removed: state.removedPublicReleases, nativeAvailability: 'unknown; public registry removal does not prove subscription revocation', policyRetained: true };
     if (!state.pendingReleases.length) { record.status = record.publicAvailabilityAlert ? 'availability-alert-policy-retained' : 'unchanged'; save('weekly-cycle-last-attempt.json', record); return record; }
     record.reviewRequired = true; record.pendingReleaseIds = state.pendingReleases.map((r) => r.id);
-    // Only a genuinely new release enables expensive evidence collection and native analysis.
-    const collected = await execute('model-currency.mjs', ['--refresh'], 60000);
-    record.stages.push({ component: 'metadata', status: collected.result.status, exitCode: collected.code });
-    if (collected.code !== 0 || currencyStatus(json(routerDir, 'currency.json', 8388608), Math.max(now, Date.now())).status !== 'current') throw new Error('Full evidence refresh failed; new-release review remains pending');
-    const analysed = await execute('model-weekly-analyst.mjs', ['--run'], 905000);
-    record.stages.push({ component: 'semantic', status: analysed.result.status, exitCode: analysed.code });
-    if (analysed.code !== 0 || analysed.result.status !== 'validated-semantic-report') throw new Error('Native semantic review did not complete; new releases remain pending and policy retained');
-    state.baselineReleaseIds = [...new Set([...state.baselineReleaseIds, ...state.pendingReleases.map((r) => r.id)])]; state.pendingReleases = [];
-    state.lastCompletedNewReleaseReviewAt = analysed.result.completedAt; state.semanticReceipt = analysed.result.runDir;
-    save(STATE_FILE, state); record.status = 'complete'; record.changed = true; record.reviewExecuted = true; record.semanticReceipt = analysed.result.runDir;
+    // Resume qualification from the same bound review; never repeat paid analysis merely because adoption was deferred.
+    const releaseIds = state.pendingReleases.map(r => r.id).sort();
+    let semantic = state.pendingSemanticReceipt;
+    const semanticAt = Date.parse(semantic?.completedAt);
+    const semanticFresh = Number.isFinite(semanticAt) && semanticAt <= now && now - semanticAt <= WEEK_MS;
+    if (!semanticFresh || JSON.stringify(state.pendingSemanticReleaseIds) !== JSON.stringify(releaseIds)) {
+      const collected = await execute('model-currency.mjs', ['--refresh'], 60000);
+      record.stages.push({ component: 'metadata', status: collected.result.status, exitCode: collected.code });
+      if (collected.code !== 0 || currencyStatus(json(routerDir, 'currency.json', 8388608), Math.max(now, Date.now())).status !== 'current') throw new Error('Full evidence refresh failed; new-release review remains pending');
+      const analysisBudget = Math.min(450000, deadline - Date.now() - 180000);
+      if (analysisBudget < 1000) throw new Error('Insufficient shared deadline for analysis and independent qualification');
+      const analysed = await execute('model-weekly-analyst.mjs', ['--run', '--timeout-ms', String(analysisBudget)], analysisBudget + 2000);
+      record.stages.push({ component: 'semantic', status: analysed.result.status, exitCode: analysed.code });
+      if (analysed.code !== 0 || analysed.result.status !== 'validated-semantic-report') throw new Error('Native semantic review did not complete; new releases remain pending and policy retained');
+      semantic = analysed.result; state.pendingSemanticReceipt = semantic; state.pendingSemanticReleaseIds = releaseIds;
+      state.lastCompletedNewReleaseReviewAt = semantic.completedAt; state.semanticReceipt = semantic.runDir;
+      save(STATE_FILE, state); record.reviewExecuted = true;
+    }
+    const qualified = await execute('model-weekly-qualification.mjs', ['--semantic-receipt', path.join(semantic.runDir, 'receipt.json'), '--deadline', String(deadline)], deadline - Date.now());
+    record.stages.push({ component: 'qualification', status: qualified.result.status, exitCode: qualified.code });
+    record.semanticReceipt = semantic.runDir; record.qualification = qualified.result;
+    record.policyApplied = qualified.result.status === 'promoted'; record.changed = record.policyApplied;
+    if (qualified.code !== 0 || qualified.result.terminal !== true || !['promoted', 'unchanged', 'rejected'].includes(qualified.result.status)) {
+      record.status = 'qualification-pending'; record.reason = qualified.result.reason ?? 'Qualification incomplete; reviewed proposal retained for retry';
+      save('weekly-cycle-last-attempt.json', record); return record;
+    }
+    state.baselineReleaseIds = [...new Set([...state.baselineReleaseIds, ...releaseIds])]; state.pendingReleases = [];
+    delete state.pendingSemanticReceipt; delete state.pendingSemanticReleaseIds;
+    state.lastQualification = qualified.result; save(STATE_FILE, state); record.status = 'complete';
     save('weekly-cycle-last-attempt.json', record); return record;
   } catch (error) { record.status = 'failed'; record.releaseStatus = 'unknown-or-pending'; record.reason = error.message.slice(0, 240); try { save('weekly-cycle-last-attempt.json', record); } catch { /* superseded cannot write */ } return record;
   } finally { release(routerDir, token); }
@@ -148,6 +178,6 @@ export async function runWeeklyCycle({ routerDir = path.join(os.homedir(), '.cla
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const i = process.argv.indexOf('--router-dir'); const t = process.argv.indexOf('--claim-token'); runWeeklyCycle({ routerDir: i >= 0 ? process.argv[i + 1] : undefined, claimToken: t >= 0 ? process.argv[t + 1] : null }).then((r) => {
     if (r.status !== 'unchanged' || process.argv.includes('--json')) console.log(JSON.stringify(r));
-    if (r.status === 'failed' || r.status === 'deferred') process.exitCode = 1;
+    if (['failed', 'deferred', 'qualification-pending'].includes(r.status)) process.exitCode = 1;
   }).catch(() => { console.error('Weekly cycle could not start'); process.exitCode = 1; });
 }

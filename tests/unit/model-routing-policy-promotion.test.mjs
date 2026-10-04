@@ -137,3 +137,35 @@ it('Windows promotion flushes file contents without unsupported directory fsync 
     expect(rollbackRoutingPolicy({ policyPath: f.policyPath, expectedCurrentSha: r.policySha, previousSha: f.expectedPriorSha }).status).toBe('rolled-back');
   } finally { vi.restoreAllMocks(); }
 });
+
+function configuredTurnFixture() {
+  const f = fixture();
+  Object.assign(f.contract, { schemaVersion: 2, identityEvidence: 'native-configured-turn', backendIdentityProved: false,
+    reviewer: { host: 'codex', model: 'gpt-independent-reviewer', effort: 'high' } });
+  for (const kind of ['availability', 'settings', 'handoff', 'role-quality']) trustedEdit(f, kind, row => Object.assign(row, {
+    identityEvidence: 'native-configured-turn', backendIdentityProved: false, identityReturnedBasis: 'native-host-confirmed-configuration',
+    nativeSessionId: 'fixture-native-session', nativeTurnId: 'fixture-completed-turn', transcriptSha256: 'c'.repeat(64),
+    ...(kind === 'role-quality' ? { reviewerHost: f.contract.reviewer.host, reviewerModel: f.contract.reviewer.model, reviewerEffort: f.contract.reviewer.effort } : {}),
+  }));
+  return f;
+}
+it('v2 expressly qualifies native configured turns without claiming backend identity', () => {
+  const f = configuredTurnFixture();
+  expect(validateRoutingProposal(f).status).toBe('qualified');
+  const result = promoteRoutingPolicy({ ...f, ...disk() });
+  expect(result.status).toBe('promoted');
+  expect(result).toMatchObject({ identityEvidence: 'native-configured-turn', backendIdentityProved: false });
+});
+it.each(['nativeSessionId', 'nativeTurnId', 'transcriptSha256', 'identityReturnedBasis'])('v2 refuses unbound completion missing %s', field => {
+  const f = configuredTurnFixture(); trustedEdit(f, 'handoff', row => { delete row[field]; });
+  expect(validateRoutingProposal(f).reason).toMatch(/transcript binding|configured identity basis/);
+});
+it('v2 refuses requested-only identity or a candidate acting as its own reviewer', () => {
+  const f = configuredTurnFixture(); trustedEdit(f, 'settings', row => { row.identityEvidence = 'requested-argv'; });
+  expect(validateRoutingProposal(f).ok).toBe(false);
+  const self = configuredTurnFixture(); self.contract.reviewer.model = self.candidatePolicy.routes.codex.medium.model;
+  trustedEdit(self, 'role-quality', row => { row.reviewerModel = self.contract.reviewer.model; });
+  expect(validateRoutingProposal(self).reason).toMatch(/independent model reviewer/);
+});
+
+it('v2 refuses a reviewer receipt from a different native host', () => { const f = configuredTurnFixture(); trustedEdit(f, 'role-quality', row => { row.reviewerHost = 'claude-code'; }); expect(validateRoutingProposal(f).reason).toMatch(/independent model reviewer/); });
