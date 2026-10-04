@@ -89,6 +89,7 @@ describe('reviewed routing policy promotion boundary', () => {
   it('retains unchanged review date; semantic research is separate from promotion', () => {
     const f = fixture({ revalidate: true }); expect(validateRoutingProposal(f).ok).toBe(false);
     expect(validateRoutingProposal({ currentPolicy: prior, candidatePolicy: prior, sourceSha, contract: f.contract, now }).status).toBe('unchanged');
+    expect(validateRoutingProposal({ currentPolicy: prior, candidatePolicy: prior, now }).status).toBe('unchanged');
   });
   it('changed role qualification does not require requalifying unchanged approved roles', () => {
     const f = fixture(); f.currentPolicy = structuredClone(prior); f.currentPolicy.routes.codex.fast = { model: 'gpt-fixture-old', effort: 'low' };

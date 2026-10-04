@@ -45,8 +45,6 @@ export function validateRoutingProposal({ currentPolicy, candidatePolicy, eviden
   try {
     if (!object(currentPolicy) || !object(candidatePolicy) || currentPolicy.schemaVersion !== 1
       || candidatePolicy.schemaVersion !== 1 || !time(currentPolicy.reviewedAt) || !object(currentPolicy.routes) || !object(candidatePolicy.routes)) return fail('Invalid policy schema');
-    if (!sha(sourceSha) || !object(contract) || contract.sourceSha !== sourceSha || contract.authority !== 'independent-reviewed'
-      || !sha(contract.contractSha256) || contract.contractSha256 !== candidateSha256(Object.fromEntries(Object.entries(contract).filter(([k]) => k !== 'contractSha256')))) return fail('Missing or unmatched reviewed authority contract');
     const omit = (p) => Object.fromEntries(Object.entries(p).filter(([k]) => !['routes', 'reviewedAt', 'policyRevisionAt'].includes(k)));
     if (!same(omit(currentPolicy), omit(candidatePolicy))) return fail('Non-route settings or billing/control mutation');
     if (!time(candidatePolicy.reviewedAt) || Date.parse(candidatePolicy.reviewedAt) > now
@@ -58,6 +56,8 @@ export function validateRoutingProposal({ currentPolicy, candidatePolicy, eviden
     const changed = next.filter((r) => !same(r, prior.find((p) => p.host === r.host && p.role === r.role)));
     if (!changed.length && candidatePolicy.reviewedAt === currentPolicy.reviewedAt
       && candidatePolicy.policyRevisionAt === currentPolicy.policyRevisionAt) return { ok: true, status: 'unchanged', candidateSha: candidateSha256(candidatePolicy), qualifiedRoles: [] };
+    if (!sha(sourceSha) || !object(contract) || contract.sourceSha !== sourceSha || contract.authority !== 'independent-reviewed'
+      || !sha(contract.contractSha256) || contract.contractSha256 !== candidateSha256(Object.fromEntries(Object.entries(contract).filter(([k]) => k !== 'contractSha256')))) return fail('Missing or unmatched reviewed authority contract');
     if (!object(contract.allowedRoutes) || !object(contract.qualityFloors) || !object(contract.trustedReceipts)
       || !Array.isArray(contract.trustedSourceIds) || !contract.trustedSourceIds.length || contract.trustedSourceIds.some((id) => !sha(id))
       || !Number.isFinite(contract.maxEvidenceAgeMs) || contract.maxEvidenceAgeMs <= 0) return fail('Incomplete qualification contract');
