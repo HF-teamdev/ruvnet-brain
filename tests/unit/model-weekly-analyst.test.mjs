@@ -187,3 +187,11 @@ it('projects every relevant effort with suite provenance and explicit missing co
   const proposal = structuredClone(f.report); proposal.proposedRoutes[0] = { ...proposal.proposedRoutes[0], action: 'propose', model: 'outside-paid-model' };
   expect(() => validateAnalystReport(proposal, inputs, { candidates, profile, nativeModels })).toThrow('candidate authority');
 });
+
+it('private native config identity normalizes Windows separators and case without accepting another home', async () => {
+  const { sameNativeConfigPath } = await import('../../scripts/model-analyst-sandbox.mjs');
+  expect(sameNativeConfigPath('C:/Private/HOME/config.toml', 'c:\\private\\home\\config.toml', 'win32')).toBe(true);
+  expect(sameNativeConfigPath('C:/Private/OTHER/config.toml', 'c:\\private\\home\\config.toml', 'win32')).toBe(false);
+  expect(sameNativeConfigPath('/Private/Home/config.toml', '/private/home/config.toml', 'linux')).toBe(false);
+  expect(sameNativeConfigPath(undefined, '/private/home/config.toml', 'linux')).toBe(false);
+});

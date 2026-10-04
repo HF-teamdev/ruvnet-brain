@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { selectDecision, eligibleCandidates, extractFeatures, assertCurrentSelection, selectionEvidenceStatus, loadCatalog, catalogSource } from '../../scripts/model-router-engine.mjs';
 import { choose, classify } from '../../config/model-router/policy.default.mjs';
 import { buildLaunch, dispatch, validateDispatchDecision, assertSubscriptionAuth, subscriptionEnvironment } from '../../scripts/model-router-dispatch.mjs';
@@ -90,11 +90,11 @@ test('dispatch rechecks current allocation and per-user eligibility before launc
 test('real subprocess receives bound native model+effort argv and prompt stdin without inference',async()=>{
   const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'native-dispatch-'));
   const capture=path.join(tmp,'captured.json');
-  const stub=path.join(tmp,'codex');
+  const stub=path.join(tmp,'codex.mjs');
   fs.writeFileSync(stub,`#!${process.execPath}\nimport fs from 'node:fs';\nfs.writeFileSync(process.env.DISPATCH_CAPTURE,JSON.stringify({args:process.argv.slice(2),stdin:fs.readFileSync(0,'utf8')}));\n`,{mode:0o755});
   const decision={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   try{
-    const code=await dispatch(decision,'extract code implementation',{cwd:tmp,receiptFile:path.join(tmp,'receipt.jsonl'),
+    const code=await dispatch(decision,'extract code implementation',{spawnWorker:(_command,args,options)=>spawn(process.execPath,[stub,...args],options),cwd:tmp,receiptFile:path.join(tmp,'receipt.jsonl'),
       env:{PATH:tmp,DISPATCH_CAPTURE:capture},checkAuth:vi.fn(),checkAllowance:async()=>({ordinaryUsageAllowed:true,checkedAt:'fixture'}),verifyDecision:d=>validateDispatchDecision(d,{selection,profile,candidates,nativeModels:nativeSupport})});
     expect(code).toBe(0);
     const observed=JSON.parse(fs.readFileSync(capture,'utf8'));
@@ -208,8 +208,10 @@ test('managed dispatcher CLI keeps structured task facts out of actual worker pr
     fs.writeFileSync(files.selection,JSON.stringify({...selection,routes:{...selection.routes,codex:{...selection.routes.codex,substantial:{model:'sol',effort:'high'}}}}));
     fs.writeFileSync(files.native,JSON.stringify({models:nativeSupport}));
     fs.writeFileSync(path.join(tmp,'auth.json'),JSON.stringify({auth_mode:'chatgpt',tokens:{fixture:true}}));
-    fs.writeFileSync(path.join(tmp,'codex'),`#!${process.execPath}\nimport fs from 'node:fs'; import readline from 'node:readline'; if(process.argv[2]==='app-server'){readline.createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.id)process.stdout.write(JSON.stringify({id:r.id,result:r.id===1?{}:{ordinaryUsageAllowed:true}})+'\\n');});}else{fs.writeFileSync(process.env.DISPATCH_CAPTURE,JSON.stringify({args:process.argv.slice(2),prompt:fs.readFileSync(0,'utf8')}));}`,{mode:0o755});
-    execFileSync(process.execPath,['scripts/model-router-dispatch.mjs','--harness','codex','--request-json','--policy','config/model-router/policy.default.mjs'],{
+    const stub=path.join(tmp,'codex.mjs'), preload=path.join(tmp,'native-spawn.cjs');
+    fs.writeFileSync(preload,`const cp=require('node:child_process'); const spawn=cp.spawn; cp.spawn=(cmd,args,opts)=>cmd==='codex'?spawn(process.execPath,[${JSON.stringify(stub)},...args],opts):spawn(cmd,args,opts); require('node:module').syncBuiltinESMExports();`);
+    fs.writeFileSync(stub,`#!${process.execPath}\nimport fs from 'node:fs'; import readline from 'node:readline'; if(process.argv[2]==='app-server'){readline.createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.id)process.stdout.write(JSON.stringify({id:r.id,result:r.id===1?{}:{ordinaryUsageAllowed:true}})+'\\n');});}else{fs.writeFileSync(process.env.DISPATCH_CAPTURE,JSON.stringify({args:process.argv.slice(2),prompt:fs.readFileSync(0,'utf8')}));}`,{mode:0o755});
+    execFileSync(process.execPath,['--require',preload,'scripts/model-router-dispatch.mjs','--harness','codex','--request-json','--policy','config/model-router/policy.default.mjs'],{
       input:JSON.stringify({prompt:'implement PRIVATE_STRUCTURED_TASK',taskFacts:{taskType:'coding',scope:'substantial'}}),encoding:'utf8',
       env:{...process.env,PATH:tmp,CODEX_HOME:tmp,MODEL_ROUTER_CATALOG:files.catalog,MODEL_ROUTER_PROFILE:files.profile,MODEL_ROUTER_SELECTION:files.selection,MODEL_ROUTER_NATIVE_MODELS:files.native,MODEL_ROUTER_DECISIONS:path.join(tmp,'decisions.jsonl'),MODEL_ROUTER_DISPATCH_RECEIPTS:path.join(tmp,'receipts.jsonl'),DISPATCH_CAPTURE:files.capture},
     });

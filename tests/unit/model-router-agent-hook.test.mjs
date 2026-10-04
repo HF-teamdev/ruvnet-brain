@@ -67,13 +67,15 @@ test('real hook subprocess returns bounded JSON using engine fixture without inf
     fs.writeFileSync(path.join(tmp,'routing-policy.json'),JSON.stringify(scope));
     const cache=path.join(tmp,'models.json');fs.writeFileSync(cache,JSON.stringify({models:nativeModels()}));
     expect(loadNativeModels(cache)).toEqual(nativeModels());
-    const codex=path.join(tmp,'codex');
+    const codex=path.join(tmp,'codex.mjs');
+    const preload=path.join(tmp,'native-spawn.cjs');
+    fs.writeFileSync(preload,`const cp=require('node:child_process'); const spawn=cp.spawn; cp.spawn=(cmd,args,opts)=>cmd==='codex'?spawn(process.execPath,[${JSON.stringify(codex)},...args],opts):spawn(cmd,args,opts); require('node:module').syncBuiltinESMExports();`);
     fs.writeFileSync(codex,`#!${process.execPath}\nimport readline from 'node:readline'; const lines=readline.createInterface({input:process.stdin}); lines.on('line',line=>{const r=JSON.parse(line);if(r.id)process.stdout.write(JSON.stringify({id:r.id,result:r.id===1?{}:{ordinaryUsageAllowed:true}})+'\\n');});`,{mode:0o755});
-    const raw=execFileSync(process.execPath,['scripts/model-router-agent-hook.mjs','--harness','codex'],{
+    const raw=execFileSync(process.execPath,['--require',preload,'scripts/model-router-agent-hook.mjs','--harness','codex'],{
       input:JSON.stringify(event),encoding:'utf8',env:{...process.env,PATH:tmp,MODEL_ROUTER_ENGINE:engine,MODEL_ROUTER_NATIVE_MODELS:cache,MODEL_ROUTER_PROFILE:path.join(tmp,'profile.json'),MODEL_ROUTER_SELECTION:path.join(tmp,'routing-policy.json')},
     });
     expect(JSON.parse(raw).hookSpecificOutput.updatedInput).toEqual({...input,model,reasoning_effort:'medium'});
-    expect(fs.readdirSync(tmp).sort()).toEqual(['codex','engine.mjs','models.json','profile.json','routing-policy.json']);
+    expect(fs.readdirSync(tmp).sort()).toEqual(['codex.mjs','engine.mjs','models.json','native-spawn.cjs','profile.json','routing-policy.json']);
   }finally{fs.rmSync(tmp,{recursive:true,force:true});}
 });
 

@@ -18,6 +18,12 @@ export function createAnalystHome(runDir) {
   fs.writeFileSync(path.join(home, 'hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command, timeout: 5 }] }] } }), { mode: 0o600 });
   return { home, command };
 }
+export function sameNativeConfigPath(actual, expected, platform = process.platform) {
+  if (typeof actual !== 'string' || !actual) return false;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const normalize = value => { const resolved = paths.resolve(value); return platform === 'win32' ? resolved.toLowerCase() : resolved; };
+  return normalize(actual) === normalize(expected);
+}
 export async function trustAnalystDenial({ home, command, env = process.env, spawnHost = spawn, timeoutMs = 8000 }) {
   const child = spawnHost('codex', ['app-server', '--strict-config', '-c', 'features.plugins=false', '-c', 'service_tier="default"', '--listen', 'stdio://'], { cwd: home, env: { ...env, CODEX_HOME: home }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   let id = 0, buffer = ''; const pending = new Map(); let failure;
@@ -36,7 +42,7 @@ export async function trustAnalystDenial({ home, command, env = process.env, spa
     await request('initialize', { clientInfo: { name: 'weekly_analyst_sandbox', version: '1' }, capabilities: { experimentalApi: true } }); child.stdin.write('{"method":"initialized"}\n');
     const first = oneHook(await request('hooks/list', { cwds: [home] }));
     const config = await request('config/read', { cwd: home, includeLayers: true });
-    const layer = config.layers?.find((l) => l.name?.file === path.join(home, 'config.toml'));
+    const layer = config.layers?.find((l) => sameNativeConfigPath(l.name?.file, path.join(home, 'config.toml')));
     if (!layer?.version) throw new Error('Private native config version missing');
     await request('config/batchWrite', { filePath: path.join(home, 'config.toml'), expectedVersion: layer.version, reloadUserConfig: true,
       edits: [{ keyPath: `hooks.state.${JSON.stringify(first.key)}.trusted_hash`, value: first.currentHash, mergeStrategy: 'replace' }] });
