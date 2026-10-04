@@ -77,7 +77,7 @@ describe('native turn routing transport', () => {
     expect(f.sent.at(-1)).toEqual(routeCodexTurn(original, decision()));
     expect(f.sent.at(-1).params.collaborationMode.settings.developer_instructions).toBe('CONTEXT TO RETAIN');
     expect(f.prompts).toEqual(['PRIVATE PROMPT']);
-    expect(f.receipts).toEqual([expect.objectContaining({ modelObserved: false, serviceMode: 'standard', allowanceVerified: true })]);
+    expect(f.receipts).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'turn-forwarded', modelObserved: false, serviceMode: 'standard', allowanceVerified: true })]));
     expect(JSON.stringify(f.receipts)).not.toContain('PRIVATE');
     const result = { id: 9, result: { turn: { id: 'native-turn', items: [] } } }; f.respond(result);
     expect(f.received).toEqual([result]);
@@ -91,10 +91,10 @@ describe('native turn routing transport', () => {
       { id: 'cancel', method: 'turn/interrupt', params: { threadId: 'existing-thread', turnId: 'prior-active' } },
       { id: 'tool', result: { approved: true } }, { method: 'shutdown', params: {} } ];
     for (const msg of messages) f.send(msg);
-    expect(f.sent).toEqual(messages);
+    expect(f.sent).toEqual(messages.slice(2));
     resolve(decision()); await f.idle();
     expect(f.sent.some((msg) => msg.method === 'turn/start')).toBe(false);
-    expect(f.received.at(-1)).toMatchObject({ id: 9, error: { message: 'Native turn cancelled before dispatch.' } });
+    expect(f.received.find((m) => m.id === 9)).toMatchObject({ id: 9, error: { message: 'Native turn cancelled before dispatch.' } });
   });
 
   it('preserves UTF-8 split across every byte in both protocol directions', async () => {
@@ -260,17 +260,68 @@ describe('native turn routing transport', () => {
     expect(f.received.at(-1)).toMatchObject({ type: 'result', is_error: true });
   });
 
-  it('Claude active user steering preserves native semantics and next completed turn reroutes', async () => {
+  it('defers original Claude active packets until native result then applies a fresh route', async () => {
     const f = fixture('claude-code'); f.initialize(); f.send(user()); await claudeControls(f);
-    const controls = f.sent.filter((m) => m.type === 'control_request').length;
-    const steering = user('STEER ORIGINAL'); f.send(steering); await f.idle();
-    expect(f.sent.at(-1)).toEqual(steering);
-    expect(f.sent.filter((m) => m.type === 'control_request')).toHaveLength(controls);
+    const original = user('NEXT DEFERRED TURN'); f.send(original); await tick();
+    expect(f.sent.filter((m) => m.type === 'user')).toHaveLength(1);
+    expect(f.sent.filter((m) => m.request?.subtype === 'apply_flag_settings')).toHaveLength(1);
+    expect(f.received.some((m) => m.type === 'result')).toBe(false);
+    const tool = { type: 'control_response', response: { request_id: 'permission', subtype: 'success' } }; f.send(tool);
+    expect(f.sent.at(-1)).toEqual(tool);
     f.respond({ type: 'result', subtype: 'success', session_id: 'existing-session' });
-    f.send(user('NEXT TURN')); await until(() => f.sent.filter((m) => m.request?.subtype === 'apply_flag_settings').length === 2);
+    await until(() => f.sent.filter((m) => m.request?.subtype === 'apply_flag_settings').length === 2);
     f.reply(f.sent.at(-1)); await until(() => f.sent.filter((m) => m.request?.subtype === 'get_settings').length === 2);
     f.reply(f.sent.at(-1), { applied: { model: 'native-fixture', effort: 'high' } }); await f.idle();
-    expect(f.prompts).toEqual(['PRIVATE PROMPT', 'NEXT TURN']);
+    expect(f.sent.at(-1)).toEqual(original); expect(f.prompts).toEqual(['PRIVATE PROMPT', 'NEXT DEFERRED TURN']);
+  });
+
+  it('bounds deferred Claude intake and retains original packets in order under backpressure', async () => {
+    const f = fixture('claude-code'); f.initialize();
+    f.child.stdin.on('data', (chunk) => {
+      for (const line of chunk.toString().trim().split('\n')) {
+        const message = JSON.parse(line);
+        if (message.request?.subtype === 'apply_flag_settings') f.reply(message);
+        if (message.request?.subtype === 'get_settings') f.reply(message, { applied: { model: 'native-fixture', effort: 'high' } });
+      }
+    });
+    f.send(user()); await f.idle();
+    const packets = Array.from({ length: 33 }, (_, index) => ({ ...user(`DEFERRED ${index}`), uuid: `original-${index}` }));
+    f.input.write(packets.map((message) => JSON.stringify(message)).join('\n') + '\n'); await tick();
+    expect(f.input.isPaused()).toBe(true); expect(f.sent.filter((m) => m.type === 'user')).toHaveLength(1);
+    for (let index = 0; index < packets.length; index++) {
+      f.respond({ type: 'result', subtype: 'success' });
+      await until(() => f.sent.filter((m) => m.type === 'user').length === index + 2);
+    }
+    expect(f.sent.filter((m) => m.type === 'user').slice(1)).toEqual(packets);
+    await f.idle(); expect(f.received.filter((m) => m.type === 'result')).toHaveLength(33);
+  });
+
+  it('allows Codex active additions only for exact native accepted configured pair', async () => {
+    let d = decision(); const f = fixture('codex', { decide: () => d }); autoCodex(f);
+    f.send(turn()); await f.idle();
+    const steer = { id: 'steer', method: 'turn/steer', params: { threadId: 'existing-thread', input: turn().params.input } };
+    f.send(steer); await f.idle(); expect(f.received.at(-1).error.message).toContain('requires a new turn');
+    f.respond({ id: 9, result: { turn: { id: 'accepted-native-turn' } } });
+    f.send(steer); await f.idle(); expect(f.sent.at(-1)).toEqual(steer);
+    d = { ...decision(), model: 'different-native' };
+    const queue = { ...steer, id: 'queue', method: 'thread/queue/add' }; f.send(queue); await f.idle();
+    expect(f.sent.at(-1)).toEqual(steer); expect(f.received.at(-1)).toMatchObject({ id: 'queue', error: { code: -32001 } });
+    expect(f.receipts.find((r) => r.status === 'active-input-approved')).toMatchObject({ modelObserved: false, evidence: 'native-turn-start.accepted-configured-pair' });
+    f.respond({ method: 'turn/completed', params: { threadId: 'existing-thread' } });
+    d = decision(); f.send(steer); await f.idle(); expect(f.received.at(-1).error.message).toContain('requires a new turn');
+  });
+
+  it('fails before dispatch on receipt failure without falsely completing already dispatched work', async () => {
+    const f = fixture('codex', { receipt: () => { throw new Error('receipt unavailable'); } }); autoCodex(f);
+    f.send(turn()); await f.idle(); expect(f.sent.some((m) => m.method === 'turn/start')).toBe(false);
+    let failReceipt = false;
+    const g = fixture('claude-code', { receipt: (r) => { if (failReceipt && r.status === 'turn-forwarded') throw new Error('receipt lost after dispatch'); } });
+    g.initialize(); g.send(user()); failReceipt = true; await claudeControls(g);
+    expect(g.sent.some((m) => m.type === 'user')).toBe(true);
+    expect(g.received.some((m) => m.type === 'result')).toBe(false);
+    g.send(user('DEFERRED')); await tick(); g.child.stdin.emit('error', new Error('EPIPE')); await g.idle();
+    expect(g.sent.filter((m) => m.type === 'user')).toHaveLength(1);
+    expect(g.received.some((m) => m.type === 'result')).toBe(false);
   });
 
   it('Claude rejection and initialize timeout never submit a user prompt', async () => {

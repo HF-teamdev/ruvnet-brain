@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // DISTINCT-FROM: scripts/model-router-dispatch.mjs — same-session native JSONL proxy, never a worker.
 // Manual host adapter: Codex cliExecutable / Claude claudeProcessWrapper. No settings are installed.
-// New turns fail closed. Steering, queued additions, approvals, tools and shutdown remain native.
+// New turns fail closed. Active Codex additions require an exact approved pair; Claude packets defer.
+// Approvals, tools, cancellation and shutdown retain native protocols.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -134,8 +135,10 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
   receipt = appendGatewayReceipt, timeoutMs = 5000, now = () => new Date().toISOString() } = {}) {
   const nonce = crypto.randomUUID();
   const pending = new Map(), initIds = new Set(), ownIds = new Set(), held = new Set();
+  const accepted = new Map(), starts = new Map(), inactiveWaiters = new Set();
   let serial = Promise.resolve(), ready = harness === 'codex', active = false, closed = false, serialNumber = 0;
   let readiness = null, resolveReady;
+  const waitInactive = () => !active ? Promise.resolve() : new Promise((resolve) => inactiveWaiters.add(resolve));
   // Honor writable backpressure while preserving order and pausing its upstream.
   const writer = (destination, source) => {
     const queue = [], idleWaiters = []; let blocked = false, stopped = false, resuming = false;
@@ -208,9 +211,10 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
     try {
       await waitReady();
       assertLive();
-      // Claude's active user input is native steering/queueing. Never mutate an in-flight model.
+      // Active Claude packets become unchanged next-turn input after the current result.
       if (harness === 'claude-code' && active) {
-        record('active-input-passthrough'); writeHost(message); return;
+        try { record('active-input-deferred'); } catch { diagnostics.write('[native-model-routing] Deferred-input receipt unavailable; current work continues.\n'); }
+        await waitInactive(); assertLive();
       }
       const facts = promptFor(message, harness);
       const decision = await bounded(decide(facts.prompt, harness, { multimodal: facts.multimodal }));
@@ -227,12 +231,22 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
       await bounded(checkAuth(harness));
       assertLive();
       if (harness === 'codex') {
+        if (message.method !== 'turn/start') {
+          const pair = accepted.get(message.params?.threadId);
+          if (!pair || pair.model !== decision.model || pair.effort !== decision.effort) {
+            fail(message, 'Input not submitted: requires a new turn with reviewed allocation; current work continues.'); return;
+          }
+          record('active-input-approved', decision, false, { evidence: 'native-turn-start.accepted-configured-pair' });
+          await writeHost(message, token); return;
+        }
         const account = await control({ method: 'account/read', params: { refreshToken: false } });
         assertLive();
         if (account?.account?.type !== 'chatgpt') throw new Error(REFUSED);
         const allowance = await control({ method: 'account/rateLimits/read', params: { excludeResetCreditDetails: true, supportsLunaReserve: false } });
         assertLive();
         if (allowance?.ordinaryUsageAllowed !== true) throw new Error(REFUSED);
+        record('turn-ready', decision, false, { serviceMode: 'standard', allowanceVerified: true, reservation: false });
+        starts.set(message.id, { threadId: message.params?.threadId, model: decision.model, effort: decision.effort });
         if (await writeHost(routeCodexTurn(message, decision), token)) {
           record('turn-forwarded', decision, false, { serviceMode: 'standard', allowanceVerified: true, reservation: false });
         }
@@ -243,30 +257,37 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         const settings = await control({ subtype: 'get_settings' });
         assertLive();
         if (settings?.applied?.model !== decision.model || settings?.applied?.effort !== decision.effort) throw new Error(REFUSED);
+        record('turn-ready', decision, true, { evidence: 'native-get_settings.applied' });
         if (await writeHost(message, token)) record('turn-forwarded', decision, true, { evidence: 'native-get_settings.applied' });
       }
-    } catch { if (!closed && !token.cancelled) fail(message); }
-    finally { held.delete(token); }
+    } catch {
+      if (!closed && !token.cancelled && !token.dispatched && !(harness === 'claude-code' && active)) fail(message);
+      else if (token.dispatched) diagnostics.write('[native-model-routing] Post-dispatch receipt unavailable; native work continues.\n');
+    }
+    finally { held.delete(token); if (held.size < 32 && !closed) input.resume(); }
   }
   const listenLines = (stream, handler) => {
     let buffer = ''; const decoder = new StringDecoder('utf8');
-    stream.on('data', (chunk) => {
-      buffer += decoder.write(chunk);
+    const pump = () => {
       let split;
       while ((split = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, split); buffer = buffer.slice(split + 1);
-        handler(line);
+        if (handler(line) === false) { buffer = line + '\n' + buffer; stream.pause(); break; }
       }
-    });
+    };
+    stream.on('data', (chunk) => { buffer += decoder.write(chunk); pump(); });
+    stream.on('resume', () => { if (buffer) setImmediate(pump); });
     stream.on('end', () => { buffer += decoder.end(); if (buffer) handler(buffer); });
   };
   listenLines(input, (line) => {
     let message;
     try { message = JSON.parse(line); } catch { if (!closed) writeHost(line); return; }
     if (harness === 'claude-code' && message.type === 'control_request' && message.request?.subtype === 'initialize') initIds.add(message.request_id);
+    const routable = harness === 'codex' ? ['turn/start', 'turn/steer', 'thread/queue/add'].includes(message.method) : message.type === 'user';
+    if (routable && held.size >= 32) return false; // bounded intake; original line remains buffered
     const cancel = harness === 'codex' ? message.method === 'turn/interrupt' : message.request?.subtype === 'interrupt';
     const shutdown = message.method === 'shutdown';
-    if (cancel || shutdown) {
+    if (shutdown || (cancel && (harness === 'codex' || !active))) {
       for (const token of held) {
         if (!token.cancelled && (shutdown || harness !== 'codex' || !message.params?.threadId || message.params.threadId === token.message.params?.threadId)) {
           token.cancelled = true; fail(token.message, 'Native turn cancelled before dispatch.');
@@ -288,12 +309,8 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         || (['apply_flag_settings', 'update_settings'].includes(request.subtype) && unsafeSettings(request.settings || request, '', true));
     }
     if (unsafe) { fail(message, 'Native allocation/provider override refused; reviewed gateway routing owns model and effort.'); return; }
-    const newTurn = harness === 'codex' ? message.method === 'turn/start' : message.type === 'user';
-    if (newTurn) { const token = { message, cancelled: false }; held.add(token); serial = serial.then(() => route(message, token)); }
+    if (routable) { const token = { message, cancelled: false }; held.add(token); serial = serial.then(() => route(message, token)); }
     else {
-      if (['turn/steer', 'thread/queue/add'].includes(message.method)) {
-        try { record('active-input-passthrough'); } catch { /* preserve native cancellation/steering */ }
-      }
       if (!closed) writeHost(line);
     }
   });
@@ -307,22 +324,27 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
       failed ? waiter.reject(new Error(REFUSED)) : waiter.resolve(harness === 'codex' ? message.result : message.response.response);
       return;
     }
+    if (starts.has(id)) {
+      const pair = starts.get(id); starts.delete(id);
+      if (!message.error && message.result?.turn) accepted.set(pair.threadId, pair);
+    }
+    if (message.method === 'turn/completed') accepted.delete(message.params?.threadId);
     if (ownIds.has(id)) return; // late own-control replies never escape into the host client
     if (initIds.has(id) && message.response?.subtype === 'success') {
       ready = true; active = message.response.response?.session_state && message.response.response.session_state !== 'idle'; resolveReady?.();
     }
     if (harness === 'claude-code' && ['assistant', 'stream_event'].includes(message.type)) active = true;
-    if (harness === 'claude-code' && message.type === 'result') active = false;
+    if (harness === 'claude-code' && message.type === 'result') { active = false; inactiveWaiters.forEach((resolve) => resolve()); inactiveWaiters.clear(); }
     writeClient(line);
   });
   child.stderr?.on('data', (chunk) => diagnostics.write(chunk));
   const close = () => {
-    closed = true; hostWriter.close();
+    closed = true; hostWriter.close(); inactiveWaiters.forEach((resolve) => resolve()); inactiveWaiters.clear();
     for (const token of held) token.cancelled = true;
     for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(REFUSED)); }
     pending.clear();
   };
-  child.once('error', close); child.once('exit', close);
+  child.once('error', close); child.once('exit', close); child.stdin.on('error', close); child.stdout.on('error', close);
   input.on('end', () => { serial.finally(async () => { await hostWriter.idle(); if (!closed) child.stdin.end(); }); });
   return { idle: () => serial, close };
 }
