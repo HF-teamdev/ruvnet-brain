@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { estTokens } from './route-cheap.mjs'; // reuse the verified char/4 estimator (DRY)
 
@@ -143,11 +144,32 @@ export function assertCurrentSelection(selection, now = Date.now()) {
   if (!Number.isSafeInteger(configuredMaxAge) || configuredMaxAge <= 0) {
     throw new Error('Routing allocation maxAgeMs must be a finite positive integer');
   }
-  const maxAge = Math.min(configuredMaxAge, 604800000);
-  if (selection?.schemaVersion !== 1 || !Number.isFinite(age) || age < 0 || age > maxAge || maxAge <= 0) {
-    throw new Error('Routing allocation missing or stale; review model/effort evidence before managed dispatch');
+  const reviewedAt = selection?.reviewedAt;
+  const isoDate = typeof reviewedAt === 'string' && /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2}))?$/.test(reviewedAt);
+  const calendarDate = isoDate && Date.parse(reviewedAt.slice(0, 10));
+  const validCalendar = Number.isFinite(calendarDate) && new Date(calendarDate).toISOString().slice(0, 10) === reviewedAt.slice(0, 10);
+  if (selection?.schemaVersion !== 1 || !isoDate || !validCalendar || !Number.isFinite(age) || age < 0) {
+    throw new Error('Routing allocation missing, invalid or future-dated; owner-reviewed policy required');
   }
+  // Evidence age is not revocation of an approved allocation. Retain the original reviewedAt;
+  // every managed launch still rechecks allocation integrity, native support, auth and allowance.
   return selection;
+}
+
+function normalizedRoutes(value) {
+  if (Array.isArray(value)) return value.map(normalizedRoutes);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort()
+    .map((key) => [key, normalizedRoutes(value[key])]));
+  return value;
+}
+
+export function selectionEvidenceStatus(selection, now = Date.now()) {
+  assertCurrentSelection(selection, now);
+  const maxAgeMs = Math.min(selection.maxAgeMs ?? 604800000, 604800000);
+  const ageMs = now - Date.parse(selection.reviewedAt);
+  const routeDigest = selection.routes && typeof selection.routes === 'object' && !Array.isArray(selection.routes)
+    ? crypto.createHash('sha256').update(JSON.stringify(normalizedRoutes(selection.routes))).digest('hex') : null;
+  return { reviewedAt: selection.reviewedAt, maxAgeMs, ageMs, stale: ageMs > maxAgeMs, routeDigest };
 }
 
 // Eligibility is independent of policy and learning: catalog pricing is never spend permission.
@@ -161,7 +183,7 @@ export function eligibleCandidates(candidates, profile, harness) {
 
 export async function selectDecision({ prompt, harness, candidates, profile, policy,
   features = extractFeatures(prompt, harness), learnedRoute, selection = loadSelection(), now = Date.now() } = {}) {
-  assertCurrentSelection(selection, now);
+  const evidence = selectionEvidenceStatus(selection, now);
   const pool = eligibleCandidates(candidates, profile, harness);
   if (!pool.length) throw new Error(`No available native subscription candidates for ${harness}; no metered fallback`);
   if (!policy?.choose) throw new Error('No routing policy available');
@@ -212,7 +234,8 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
       : `user-policy (${learned.routedBy || 'learned decision rejected'})`;
   } catch (e) { routedBy = `user-policy (learned router unavailable: ${e.message})`; }
   return { ...decision, provider: chosen.provider, tier: chosen.tier, taskClass, effort,
-    subscriptionCovered: true, selectionReviewedAt: selection.reviewedAt, selectionMaxAgeMs: Math.min(selection.maxAgeMs ?? 604800000, 604800000), routedBy };
+    subscriptionCovered: true, selectionReviewedAt: selection.reviewedAt, selectionMaxAgeMs: evidence.maxAgeMs,
+    selectionRouteDigest: evidence.routeDigest, selectionEvidence: evidence, routedBy };
 }
 
 async function main() {
@@ -258,6 +281,8 @@ async function main() {
     subscriptionCovered: decision.subscriptionCovered,
     selectionReviewedAt: decision.selectionReviewedAt,
     selectionMaxAgeMs: decision.selectionMaxAgeMs,
+    selectionRouteDigest: decision.selectionRouteDigest,
+    selectionEvidence: decision.selectionEvidence,
     reason: decision.reason,
     confidence: decision.confidence,
     // WHO decided. Never let a caller assume the learned router made a call the heuristic made.

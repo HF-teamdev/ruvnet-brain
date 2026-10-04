@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
-import { selectDecision, eligibleCandidates, extractFeatures, assertCurrentSelection, loadCatalog, catalogSource } from '../../scripts/model-router-engine.mjs';
+import { selectDecision, eligibleCandidates, extractFeatures, assertCurrentSelection, selectionEvidenceStatus, loadCatalog, catalogSource } from '../../scripts/model-router-engine.mjs';
 import { choose, classify } from '../../config/model-router/policy.default.mjs';
 import { buildLaunch, dispatch, validateDispatchDecision, assertSubscriptionAuth, subscriptionEnvironment } from '../../scripts/model-router-dispatch.mjs';
 
@@ -39,13 +39,15 @@ test('missing subscription profile, unavailable harness, and unqualified policy 
   await expect(route('hello','codex',{policy:{choose:()=>({model:'paid'})}})).rejects.toThrow('unauthorized');
   await expect(route('hello','codex',{policy:{choose:()=>({model:'astra',taskClass:'medium',effort:'high'})}})).rejects.toThrow('exceeds reviewed');
 });
-test('stale allocation rejects, and inventory freshness does not renew allocation',()=>{
-  expect(()=>assertCurrentSelection({...selection,reviewedAt:'2020-01-01',inventory:{checkedAt:new Date().toISOString()}})).toThrow('stale');
-  expect(()=>assertCurrentSelection({...selection,reviewedAt:'2020-01-01',maxAgeMs:1e15})).toThrow('stale');
+test('stale evidence retains owner approval without renewing its original date',()=>{
+  const approved={...selection,reviewedAt:'2020-01-01',inventory:{checkedAt:new Date().toISOString()}};
+  expect(assertCurrentSelection(approved)).toBe(approved);
+  expect(selectionEvidenceStatus(approved)).toMatchObject({reviewedAt:'2020-01-01',stale:true});
+  expect(selectionEvidenceStatus({...approved,maxAgeMs:1e15})).toMatchObject({maxAgeMs:604800000,stale:true});
 });
 test('native launch argv binds effort and model and cannot silently fallback',()=>{
   const decision={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,
-    selectionReviewedAt:selection.reviewedAt};
+    selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   expect(buildLaunch(decision,{cwd:'/tmp/code'})).toEqual({command:'codex',args:['exec','--ignore-user-config','--model','sol','-c','model_reasoning_effort="medium"','-c','model_provider="openai"','-c','service_tier="default"','-c','features.fast_mode=false','--cd','/tmp/code','-']});
   expect(buildLaunch({...decision,harness:'claude-code',provider:'anthropic',model:'sonnet'}).args).toContain('--effort');
   expect(()=>buildLaunch(decision,{interactive:true})).toThrow('stdin');
@@ -58,7 +60,7 @@ test('actual dispatch uses argv arrays and stdin; receipts never retain raw prom
   const end=vi.fn();
   const spawnWorker=vi.fn(()=>{const child=new EventEmitter();child.stdin={end};queueMicrotask(()=>child.emit('exit',0,null));return child;});
   const prompt='private $(touch unsafe) `token`';
-  const decision={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt};
+  const decision={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   try{
     expect(await dispatch(decision,prompt,{spawnWorker,checkAuth:vi.fn(),checkAllowance:async()=>({ordinaryUsageAllowed:true,checkedAt:'fixture'}),verifyDecision:vi.fn(),receiptFile,env:{OPENAI_API_KEY:'secret',PATH:'/bin'}})).toBe(0);
     expect(spawnWorker.mock.calls[0][2]).toMatchObject({shell:false,env:{PATH:'/bin'}});
@@ -78,7 +80,7 @@ test('OAuth shape and auth status fail closed without exposing credentials',()=>
 });
 
 test('dispatch rechecks current allocation and per-user eligibility before launch',()=>{
-  const d={harness:'codex',model:'sol',taskClass:'medium',effort:'medium',selectionReviewedAt:selection.reviewedAt};
+  const d={harness:'codex',model:'sol',taskClass:'medium',effort:'medium',selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   expect(()=>validateDispatchDecision(d,{selection,profile,candidates,nativeModels:nativeSupport})).not.toThrow();
   expect(()=>validateDispatchDecision({...d,model:'paid'},{selection,profile,candidates,nativeModels:nativeSupport})).toThrow('allocation');
   expect(()=>validateDispatchDecision(d,{selection,profile:{harnesses:{}},candidates})).toThrow('allocation');
@@ -90,7 +92,7 @@ test('real subprocess receives bound native model+effort argv and prompt stdin w
   const capture=path.join(tmp,'captured.json');
   const stub=path.join(tmp,'codex');
   fs.writeFileSync(stub,`#!${process.execPath}\nimport fs from 'node:fs';\nfs.writeFileSync(process.env.DISPATCH_CAPTURE,JSON.stringify({args:process.argv.slice(2),stdin:fs.readFileSync(0,'utf8')}));\n`,{mode:0o755});
-  const decision={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt};
+  const decision={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   try{
     const code=await dispatch(decision,'extract code implementation',{cwd:tmp,receiptFile:path.join(tmp,'receipt.jsonl'),
       env:{PATH:tmp,DISPATCH_CAPTURE:capture},checkAuth:vi.fn(),checkAllowance:async()=>({ordinaryUsageAllowed:true,checkedAt:'fixture'}),verifyDecision:d=>validateDispatchDecision(d,{selection,profile,candidates,nativeModels:nativeSupport})});
@@ -136,17 +138,19 @@ test('exceptional xhigh requires a named caller reason and native support; arbit
   await expect(route('check a proof','codex',{selection:maxPolicy,features})).rejects.toThrow('no automatic max');
   const normalHigh={...selection,routes:{...selection.routes,codex:{...selection.routes.codex,hard:{model:'astra',effort:'xhigh'}}}};
   await expect(route('independent review','codex',{selection:normalHigh})).rejects.toThrow('named reason');
-  const d={harness:'claude-code',provider:'anthropic',model:'opus',taskClass:'hard',effort:'high',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt};
+  const d={harness:'claude-code',provider:'anthropic',model:'opus',taskClass:'hard',effort:'high',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   expect(()=>buildLaunch(d,{interactive:true})).toThrow('stdin');
   expect(()=>buildLaunch({...d,effort:'none'})).toThrow('unauthorized');
 });
 
-test('invalid allocation ages cannot bypass stale review rejection',()=>{
+test('invalid allocation ages still reject even when evidence expiry does not revoke approval',()=>{
   for(const maxAgeMs of ['invalid','604800000',null,true,NaN,Infinity,-1,0,1.5,Number.MAX_SAFE_INTEGER+1]) {
     expect(()=>assertCurrentSelection({...selection,reviewedAt:'2020-01-01',maxAgeMs})).toThrow('finite positive integer');
   }
   expect(()=>assertCurrentSelection({...selection,maxAgeMs:1000},Date.parse(selection.reviewedAt))).not.toThrow();
-  expect(()=>assertCurrentSelection({...selection,maxAgeMs:604800000,reviewedAt:'2020-01-01'})).toThrow('stale');
+  for(const reviewedAt of ['not-a-date','1','2026-02-30']) expect(()=>assertCurrentSelection({...selection,reviewedAt})).toThrow('invalid');
+  expect(()=>assertCurrentSelection({...selection,reviewedAt:new Date(Date.now()+60000).toISOString()})).toThrow('future');
+  expect(()=>assertCurrentSelection(undefined)).toThrow('missing');
 });
 
 test('legacy custom policy without class fails explicitly rather than converting summary to medium',async()=>{
@@ -176,14 +180,14 @@ test('structured caller facts distinguish reasoning uncertainty from missing inf
 });
 
 test('native dispatch rejects an unsupported model or effort even when policy approves it',()=>{
-  const d={harness:'codex',model:'sol',taskClass:'medium',effort:'medium',selectionReviewedAt:selection.reviewedAt};
+  const d={harness:'codex',model:'sol',taskClass:'medium',effort:'medium',selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   expect(()=>validateDispatchDecision(d,{selection,profile,candidates,nativeModels:[]})).toThrow('Native Codex');
   expect(()=>validateDispatchDecision(d,{selection,profile,candidates,nativeModels:[{slug:'sol',supported_reasoning_levels:[{effort:'low'}]}]})).toThrow('Native Codex');
 });
 
 test('allowance denial blocks actual worker launch even with subscription auth and credits',async()=>{
   const spawnWorker=vi.fn();
-  const d={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt};
+  const d={harness:'codex',provider:'openai',model:'sol',taskClass:'medium',effort:'medium',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt,selectionRouteDigest:selectionEvidenceStatus(selection).routeDigest};
   await expect(dispatch(d,'implementation',{spawnWorker,checkAuth:vi.fn(),verifyDecision:vi.fn(),checkAllowance:async()=>{throw Error('ordinary allowance denied');}})).rejects.toThrow('allowance denied');
   expect(spawnWorker).not.toHaveBeenCalled();
 });
@@ -291,4 +295,45 @@ test('coordinated implementation surfaces receive substantial effort without reo
     'Replace validation across every importer, preserve compatibility, and add integration fixtures']) {
     expect(await route(prompt,'codex',{selection:updated})).toMatchObject({taskClass:'substantial',model:'sol',effort:'high'});
   }
+});
+
+test('retained stale approved route passes mandatory native checks and receipts disclose original evidence age',async()=>{
+  const retained={...selection,reviewedAt:'2020-01-01'};
+  const decision={...await route('implement an ordinary endpoint','codex',{selection:retained}),harness:'codex'};
+  expect(decision).toMatchObject({model:'sol',effort:'medium',selectionReviewedAt:'2020-01-01',selectionEvidence:{stale:true}});
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'retained-selection-'));
+  const receiptFile=path.join(tmp,'receipt.jsonl');
+  const checkAuth=vi.fn(); const checkAllowance=vi.fn(async()=>({ordinaryUsageAllowed:true,checkedAt:'fixture'}));
+  const spawnWorker=vi.fn(()=>{const child=new EventEmitter();child.stdin={end:vi.fn()};queueMicrotask(()=>child.emit('exit',0,null));return child;});
+  try {
+    await dispatch(decision,'PRIVATE retained prompt',{spawnWorker,checkAuth,checkAllowance,receiptFile,
+      verifyDecision:d=>validateDispatchDecision(d,{selection:retained,profile,candidates,nativeModels:nativeSupport})});
+    expect(checkAuth).toHaveBeenCalledOnce(); expect(checkAllowance).toHaveBeenCalledOnce(); expect(spawnWorker).toHaveBeenCalledOnce();
+    const raw=fs.readFileSync(receiptFile,'utf8');
+    expect(JSON.parse(raw.split('\n')[0])).toMatchObject({selectionReviewedAt:'2020-01-01',selectionRouteDigest:decision.selectionRouteDigest,
+      selectionEvidenceStale:true,modelObserved:false});
+    expect(raw).not.toContain('PRIVATE');
+    expect(()=>validateDispatchDecision(decision,{selection:retained,profile,candidates,nativeModels:[]})).toThrow('Native Codex');
+    expect(()=>validateDispatchDecision(decision,{selection:retained,profile:{harnesses:{}},candidates,nativeModels:nativeSupport})).toThrow('allocation');
+  } finally {fs.rmSync(tmp,{recursive:true,force:true});}
+});
+
+test('route digest is stable under key reordering but detects mutations with the same approval date',async()=>{
+  const decision={...await route('implement ordinary code'),harness:'codex'};
+  const reordered={...selection,routes:Object.fromEntries(Object.entries(selection.routes).reverse().map(([host,routes])=>
+    [host,Object.fromEntries(Object.entries(routes).reverse())]))};
+  expect(selectionEvidenceStatus(reordered).routeDigest).toBe(decision.selectionRouteDigest);
+  expect(()=>validateDispatchDecision(decision,{selection:reordered,profile,candidates,nativeModels:nativeSupport})).not.toThrow();
+  const changed={...selection,routes:{...selection.routes,codex:{...selection.routes.codex,medium:{model:'astra',effort:'high'}}}};
+  expect(()=>validateDispatchDecision(decision,{selection:changed,profile,candidates,nativeModels:nativeSupport})).toThrow('changed');
+  expect(()=>validateDispatchDecision({...decision,selectionRouteDigest:undefined},{selection,profile,candidates,nativeModels:nativeSupport})).toThrow('changed');
+});
+
+test('retention cannot authorize unknown native models or expand custom policy authority',async()=>{
+  const retained={...selection,reviewedAt:'2020-01-01'};
+  await expect(route('implement ordinary code','codex',{selection:retained,policy:{choose:()=>({model:'astra',taskClass:'medium',effort:'high'})}})).rejects.toThrow('exceeds reviewed');
+  const changed={...retained,routes:{...retained.routes,codex:{...retained.routes.codex,medium:{model:'unknown-native',effort:'medium'}}}};
+  const expanded=[...candidates,{id:'unknown-native',provider:'openai',harness:['codex'],subscription:['codex']}];
+  const decision={...await route('implement ordinary code','codex',{selection:changed,candidates:expanded}),harness:'codex'};
+  expect(()=>validateDispatchDecision(decision,{selection:changed,profile,candidates:expanded,nativeModels:nativeSupport})).toThrow('Native Codex');
 });

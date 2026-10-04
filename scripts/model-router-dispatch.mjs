@@ -6,7 +6,7 @@ import os from 'node:os';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { assertCurrentSelection, loadSelection, loadCatalog, loadProfile, applyProfile, eligibleCandidates, TASK_CLASSES } from './model-router-engine.mjs';
+import { assertCurrentSelection, selectionEvidenceStatus, loadSelection, loadCatalog, loadProfile, applyProfile, eligibleCandidates, TASK_CLASSES } from './model-router-engine.mjs';
 
 import { readCodexAllowance } from './native-subscription-usage.mjs';
 
@@ -48,8 +48,8 @@ export function loadNativeCodexModels() {
 
 export function validateDispatchDecision(decision, { selection = loadSelection(), profile = loadProfile(),
   candidates = applyProfile(loadCatalog(), profile), nativeModels } = {}) {
-  assertCurrentSelection(selection);
-  if (selection.reviewedAt !== decision.selectionReviewedAt) throw new Error('Allocation changed since selection; reclassify prompt');
+  const evidence = selectionEvidenceStatus(selection);
+  if (selection.reviewedAt !== decision.selectionReviewedAt || !evidence.routeDigest || evidence.routeDigest !== decision.selectionRouteDigest) throw new Error('Allocation changed since selection; reclassify prompt');
   const approved = selection.routes?.[decision.harness]?.[decision.taskClass];
   const efforts = [approved?.effort];
   if (decision.harness === 'claude-code' && decision.taskClass === 'medium') {
@@ -70,6 +70,7 @@ export function validateDispatchDecision(decision, { selection = loadSelection()
       throw new Error('Native Codex host does not support the reviewed model/effort dispatch');
     }
   }
+  return evidence;
 }
 
 export function buildLaunch(decision, { cwd = process.cwd(), interactive = false } = {}) {
@@ -95,7 +96,8 @@ export function buildLaunch(decision, { cwd = process.cwd(), interactive = false
 export async function dispatch(decision, prompt, { spawnWorker = spawn, checkAuth = assertSubscriptionAuth, verifyDecision = validateDispatchDecision,
   env = process.env, cwd = process.cwd(), interactive = false, checkAllowance = readCodexAllowance,
   receiptFile = process.env.MODEL_ROUTER_DISPATCH_RECEIPTS || path.join(os.homedir(), '.claude', 'metaharness', 'dispatch-decisions.jsonl') } = {}) {
-  verifyDecision(decision);
+  const evidence = verifyDecision(decision) || selectionEvidenceStatus({ schemaVersion: 1,
+    reviewedAt: decision.selectionReviewedAt, maxAgeMs: decision.selectionMaxAgeMs });
   const launch = buildLaunch(decision, { cwd, interactive });
   const cleanEnv = subscriptionEnvironment(env);
   checkAuth(decision.harness, { env: cleanEnv });
@@ -103,6 +105,8 @@ export async function dispatch(decision, prompt, { spawnWorker = spawn, checkAut
     : { checkedAt: null, ordinaryUsageAllowed: null, status: 'native-claude-allowance-not-verified' };
   const receipt = { ts: new Date().toISOString(), harness: decision.harness, model: decision.model,
     effort: decision.effort, taskClass: decision.taskClass, exceptionalReason: decision.exceptionalReason, subscriptionCovered: true,
+    selectionReviewedAt: evidence.reviewedAt, selectionRouteDigest: evidence.routeDigest || decision.selectionRouteDigest,
+    selectionEvidenceStale: evidence.stale,
     status: 'launch-requested', modelObserved: false, serviceMode: decision.harness === 'codex' ? 'standard' : 'existing-claude-policy',
     allowance: { checkedAt: allowance.checkedAt, ordinaryUsageAllowed: allowance.ordinaryUsageAllowed, reservation: false, raceSafe: false } };
   // Durable receipt is required. It never contains the prompt or policy-supplied reason.
