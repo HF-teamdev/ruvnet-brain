@@ -8,7 +8,7 @@ import { promptContext } from '../../scripts/user-model-prompt-hook.mjs';
 test('prompt recommendation keeps sensitive text on stdin and states execution boundary', () => {
   const routerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-prompt-'));
   try {
-    fs.writeFileSync(path.join(routerDir, 'routing-policy.json'), JSON.stringify({ reviewedAt: new Date().toISOString() }));
+    fs.writeFileSync(path.join(routerDir, 'routing-policy.json'), JSON.stringify({ schemaVersion: 1, reviewedAt: new Date().toISOString() }));
     const prompt = 'summarize synthetic-secret-test-only';
     const context = promptContext({ prompt }, { routerDir, refresh: () => ({ status: 'current' }), run(command, args, options) {
       assert.equal(args.join(' ').includes(prompt), false);
@@ -19,6 +19,16 @@ test('prompt recommendation keeps sensitive text on stdin and states execution b
     assert.match(context, /gpt-6-luna, effort low/);
     assert.match(context, /does not switch the active parent/);
     assert.equal(context.includes(prompt), false);
+  } finally { fs.rmSync(routerDir, { recursive: true, force: true }); }
+});
+
+test('invalid expiry and inventory-only assessment cannot certify routing review', () => {
+  const routerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-prompt-'));
+  try {
+    fs.writeFileSync(path.join(routerDir, 'routing-policy.json'), JSON.stringify({ schemaVersion: 1, reviewedAt: new Date().toISOString(), maxAgeMs: 'invalid' }));
+    const context = promptContext({ prompt: 'build it' }, { routerDir, refresh: () => ({ status: 'current', assessment: { analystExecuted: false } }), run() { assert.fail('invalid allocation must not select'); } });
+    assert.match(context, /missing, invalid/);
+    assert.match(context, /full semantic analyst review and automatic policy promotion are not verified/);
   } finally { fs.rmSync(routerDir, { recursive: true, force: true }); }
 });
 

@@ -19,8 +19,10 @@ export function promptContext(payload, { routerDir = path.join(os.homedir(), '.c
   try { policy = JSON.parse(fs.readFileSync(path.join(routerDir, 'routing-policy.json'), 'utf8')); } catch { /* report absence below */ }
   const reviewed = Date.parse(policy?.reviewedAt);
   const age = now - reviewed;
-  const maxAge = Math.min(policy?.maxAgeMs || 604800000, 604800000);
-  const current = Number.isFinite(reviewed) && age >= 0 && age <= maxAge;
+  const configuredMaxAge = policy?.maxAgeMs ?? 604800000;
+  const maxAge = Math.min(configuredMaxAge, 604800000);
+  const current = policy?.schemaVersion === 1 && Number.isSafeInteger(configuredMaxAge) && configuredMaxAge > 0 && Number.isFinite(reviewed) && age >= 0 && age <= maxAge;
+  if (evidence.assessment?.analystExecuted === false) lines.push('Weekly evidence assessment is available; a full semantic analyst review and automatic policy promotion are not verified. Do not call metadata refresh a completed routing review.');
   lines.push(current ? `Model routing policy reviewed ${policy.reviewedAt}; consult this user's policy for every delegated launch.` : 'Model routing policy is missing, invalid or older than seven days. Refresh and qualify it before managed model dispatch; do not claim current model recommendations.');
   if (current && prompt && prompt.length <= 65536) {
     const engine = path.join(routerDir, 'bin/model-router-engine.mjs');
