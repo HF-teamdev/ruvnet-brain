@@ -2014,6 +2014,29 @@ export function codexPluginStatus(options = {}) {
   };
 }
 
+// User-scoped standing consent applies across projects, never implicitly to other installations.
+export function repairReleasedCodexHookTrust(status, { codexHome = codexHomeDir(), codexBin = process.env.CODEX_BIN || 'codex', cwd = process.cwd(), run = spawnSync } = {}) {
+  if (TEST_MODE || !status?.installed || !status?.enabled) return { state: 'not-applicable', changed: false };
+  let profile;
+  try { profile = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'model-router', 'profile.json'), 'utf8')); } catch { return { state: 'not-authorized', changed: false }; }
+  if (profile.automaticHookTrustUpdates !== true) return { state: 'not-authorized', changed: false };
+  const installedRoot = codexInstalledPluginRoot({ codexHome, status });
+  if (!installedRoot) return { state: 'blocked', changed: false, reason: 'Installed plugin root unavailable' };
+  const helper = path.join(REPO_ROOT, 'scripts', 'codex-hook-trust-reconcile.mjs');
+  const result = run(process.execPath, [helper, '--reconcile-installed'], {
+    input: JSON.stringify({ installedVersion: status.version, hooksPath: path.join(installedRoot, 'hooks', 'codex-hooks.json'),
+      configPath: path.join(codexHome, 'config.toml'), nativeBinary: codexBin, cwd }),
+    encoding: 'utf8', timeout: 30000, maxBuffer: 128 * 1024, env: process.env,
+  });
+  try {
+    const receipt = JSON.parse(result.stdout);
+    if (!result.error && ['registry-verified', 'unchanged', 'blocked', 'degraded'].includes(receipt.state)) return receipt;
+  } catch { /* a command exit alone never establishes hook trust */ }
+  return result.error?.code === 'ENOENT'
+    ? { state: 'blocked', changed: false, reason: 'Verified hook trust helper could not start' }
+    : { state: 'degraded', changed: 'unknown', reason: 'Hook trust helper acknowledgement unavailable; inspect native registry before retrying' };
+}
+
 export function wireCodexPlugin({
   codexDir = codexHomeDir(),
   codexHome = codexDir,
@@ -2062,9 +2085,13 @@ export function wireCodexPlugin({
   const hooksNeedingReview = codexHooksNeedingReview(before.installed
     ? codexInstalledPluginRoot({ codexHome, status: before }) : null, path.join(REPO_ROOT, 'plugin'));
   if (before.installed && before.enabled && versionSatisfies(before.version, expectedVersion)) {
-    if (announce) ok(`Codex Brain plugin already installed and enabled (${before.version || 'version unknown'}) — no changes.`);
+    const hookTrust = runJson === runCodexJson ? repairReleasedCodexHookTrust(before, options) : null;
+    if (announce) {
+      ok(`Codex Brain plugin already installed and enabled (${before.version || 'version unknown'}).`);
+      if (hookTrust && ['blocked', 'degraded'].includes(hookTrust.state)) warn(`Automatic Brain hook trust repair ${hookTrust.state}: ${hookTrust.reason}`);
+    }
     return {
-      host: true, action: 'unchanged', ...before,
+      host: true, action: 'unchanged', ...before, ...(hookTrust ? { hookTrust } : {}),
       shellChanged: shellBoundary.changed, shellChangedPaths: shellBoundary.paths,
       restartRequired: false,
     };
@@ -2107,14 +2134,17 @@ export function wireCodexPlugin({
     if (announce) warn('Codex accepted the install command but the Brain plugin is not installed and enabled.');
     return { host: true, action: 'verification-failed', expectedVersion, ...after };
   }
+  const hookTrust = runJson === runCodexJson ? repairReleasedCodexHookTrust(after, options) : null;
+  const trustVerified = hookTrust && ['registry-verified', 'unchanged'].includes(hookTrust.state);
   if (announce) {
     ok(`Codex Brain plugin installed and enabled (${after.version || 'version unknown'}).`);
+    if (hookTrust && ['blocked', 'degraded'].includes(hookTrust.state)) warn(`Automatic Brain hook trust repair ${hookTrust.state}: ${hookTrust.reason}`);
     if (shellBoundary.restartRequired) {
       warn(`boot-level plugin declarations changed; restart Codex, then review them in /hooks (${shellBoundary.paths.join(', ') || shellBoundary.reason}).`);
     } else if (before.installed && before.version !== after.version) {
       info('  body-only update: the Stable Spine is live on the next hook/MCP call; no restart is required.');
     }
-    if (hooksNeedingReview.length) {
+    if (hooksNeedingReview.length && !trustVerified) {
       warn(`Codex will NOT run ${hooksNeedingReview.length} Brain hook${hooksNeedingReview.length === 1 ? '' : 's'} until you review`
         + ` ${hooksNeedingReview.length === 1 ? 'it' : 'them'} (${hooksNeedingReview.map((h) => `${h.key.split(':').slice(-3).join(':')} ${h.status}`).join(', ')}).`);
       info(`  ${CODEX_TRUST_ACTION}`);
@@ -2123,7 +2153,8 @@ export function wireCodexPlugin({
   return {
     host: true,
     action: before.installed ? 'updated' : 'installed',
-    hooksNeedingReview,
+    hooksNeedingReview: trustVerified ? [] : hooksNeedingReview,
+    ...(hookTrust ? { hookTrust } : {}),
     ...after,
     shellChanged: shellBoundary.changed,
     shellChangedPaths: shellBoundary.paths,
