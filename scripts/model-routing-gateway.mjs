@@ -53,8 +53,8 @@ export function nativeGatewayLaunch({ harness, realBinary, args = [], env = proc
   const nativeArgs = [...args];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (harness === 'codex' && (arg === '-c' || arg === '--config' || arg.startsWith('--config='))) {
-      const setting = arg.includes('=') ? arg.slice(9) : args[++index];
+    if (harness === 'codex' && (arg.startsWith('-c') || arg === '--config' || arg.startsWith('--config='))) {
+      const setting = arg.startsWith('--config=') ? arg.slice(9) : arg.startsWith('-c') && arg.length > 2 ? arg.slice(2).replace(/^=/, '') : args[++index];
       const at = setting?.indexOf('=');
       if (at == null || at < 0) throw new Error(REFUSED);
       const key = setting.slice(0, at), raw = setting.slice(at + 1);
@@ -68,6 +68,7 @@ export function nativeGatewayLaunch({ harness, realBinary, args = [], env = proc
       catch { throw new Error(REFUSED); }
       if (unsafeSettings(settings)) throw new Error(REFUSED);
     }
+    if (harness === 'codex' && /^(--profile(?:=|$)|-p)/.test(arg)) throw new Error(REFUSED);
     if (/^--(?:betas|model-provider|api-key|base-url)(?:=|$)/.test(arg)) throw new Error(REFUSED);
   }
   if (harness === 'codex') {
@@ -105,11 +106,11 @@ function unsafeSettings(value, prefix = '', routing = false) {
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, entry]) => {
     const name = prefix ? `${prefix}.${key}` : key;
-    if (/model_providers|apiKeyHelper|api_key|apiKey|base_url|baseUrl|auth_token|authToken|customHeaders|\benv\b/.test(name)) return true;
-    if (/model_provider|modelProvider/.test(name) && entry !== 'openai') return true;
-    if (/service_tier|serviceTier/.test(name) && entry != null && entry !== 'default') return true;
-    if (/fast_mode|fastMode/.test(name) && entry !== false) return true;
-    if (routing && /(^|\.)(model|effort|effortLevel|reasoning_effort|collaborationMode)$/.test(name)) return true;
+    if (/^(model_providers|apiKeyHelper|api_key|apiKey|base_url|baseUrl|auth_token|authToken|customHeaders|env)(\.|$)/.test(name)) return true;
+    if (/^(model_provider|modelProvider)$/.test(name) && entry !== 'openai') return true;
+    if (/^(service_tier|serviceTier)$/.test(name) && entry != null && entry !== 'default') return true;
+    if (/^(features\.fast_mode|fastMode)$/.test(name) && entry !== false) return true;
+    if (routing && /^(model|effort|effortLevel|reasoning_effort|collaborationMode)(\.|$)/.test(name)) return true;
     return unsafeSettings(entry, name, routing);
   });
 }
@@ -137,16 +138,33 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
   let readiness = null, resolveReady;
   // Honor writable backpressure while preserving order and pausing its upstream.
   const writer = (destination, source) => {
-    const queue = []; let blocked = false;
+    const queue = [], idleWaiters = []; let blocked = false, stopped = false, resuming = false;
+    const settle = () => { if (!queue.length && !blocked) idleWaiters.splice(0).forEach((resolve) => resolve()); };
     const flush = () => {
-      while (!blocked && queue.length) blocked = !destination.write(queue.shift());
-      if (blocked) source.pause(); else source.resume();
+      while (!stopped && !blocked && !resuming && queue.length) {
+        const entry = queue.shift();
+        if (entry.token?.cancelled) { entry.resolve(false); continue; }
+        blocked = !destination.write(entry.line);
+        if (entry.token) { entry.token.dispatched = true; held.delete(entry.token); if (harness === 'claude-code') active = true; }
+        entry.resolve(true);
+      }
+      if (blocked) source.pause(); else if (!stopped) source.resume();
+      settle();
     };
-    destination.on('drain', () => { blocked = false; flush(); });
-    return (value) => { queue.push(typeof value === 'string' ? value + '\n' : JSON.stringify(value) + '\n'); flush(); };
+    destination.on('drain', () => {
+      blocked = false; resuming = true; if (!stopped) source.resume();
+      setImmediate(() => { resuming = false; flush(); });
+    });
+    const write = (value, token) => new Promise((resolve) => {
+      if (stopped) { resolve(false); return; }
+      queue.push({ line: typeof value === 'string' ? value + '\n' : JSON.stringify(value) + '\n', token, resolve }); flush();
+    });
+    write.idle = () => !queue.length && !blocked ? Promise.resolve() : new Promise((resolve) => idleWaiters.push(resolve));
+    write.close = () => { stopped = true; queue.splice(0).forEach((entry) => entry.resolve(false)); blocked = false; settle(); };
+    return write;
   };
   const hostWriter = writer(child.stdin, input), writeClient = writer(output, child.stdout);
-  const writeHost = (value) => { if (closed) throw new Error(REFUSED); hostWriter(value); };
+  const writeHost = (value, token) => { if (closed) throw new Error(REFUSED); return hostWriter(value, token); };
   const record = (status, decision, observed = false, extra = {}) => receipt({ ts: now(), harness, status,
     ...(decision ? { model: decision.model, effort: decision.effort, taskClass: decision.taskClass } : {}),
     modelObserved: observed, ...(decision?.classificationSource ? { classificationSource: decision.classificationSource } : {}), ...extra });
@@ -209,11 +227,15 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
       await bounded(checkAuth(harness));
       assertLive();
       if (harness === 'codex') {
+        const account = await control({ method: 'account/read', params: { refreshToken: false } });
+        assertLive();
+        if (account?.account?.type !== 'chatgpt') throw new Error(REFUSED);
         const allowance = await control({ method: 'account/rateLimits/read', params: { excludeResetCreditDetails: true, supportsLunaReserve: false } });
         assertLive();
         if (allowance?.ordinaryUsageAllowed !== true) throw new Error(REFUSED);
-        record('turn-forwarded', decision, false, { serviceMode: 'standard', allowanceVerified: true, reservation: false });
-        writeHost(routeCodexTurn(message, decision));
+        if (await writeHost(routeCodexTurn(message, decision), token)) {
+          record('turn-forwarded', decision, false, { serviceMode: 'standard', allowanceVerified: true, reservation: false });
+        }
       } else {
         if (!['low', 'medium', 'high', 'xhigh'].includes(decision.effort)) throw new Error(REFUSED);
         await control({ subtype: 'apply_flag_settings', settings: { model: decision.model, effortLevel: decision.effort } });
@@ -221,8 +243,7 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         const settings = await control({ subtype: 'get_settings' });
         assertLive();
         if (settings?.applied?.model !== decision.model || settings?.applied?.effort !== decision.effort) throw new Error(REFUSED);
-        record('turn-forwarded', decision, true, { evidence: 'native-get_settings.applied' });
-        active = true; writeHost(message);
+        if (await writeHost(message, token)) record('turn-forwarded', decision, true, { evidence: 'native-get_settings.applied' });
       }
     } catch { if (!closed && !token.cancelled) fail(message); }
     finally { held.delete(token); }
@@ -256,7 +277,7 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
     if (harness === 'codex') {
       const params = message.params || {};
       unsafe = unsafeSettings(params.config) || unsafeSettings({ modelProvider: params.modelProvider ?? 'openai', serviceTier: params.serviceTier ?? 'default' });
-      if (message.method === 'account/login/start' && params.type === 'apiKey') unsafe = true;
+      if (message.method === 'account/login/start' && !['chatgpt', 'chatgptDeviceCode', 'chatgptAuthTokens'].includes(params.type)) unsafe = true;
       if (message.method === 'thread/settings/update') unsafe ||= unsafeSettings(params, '', true);
       const edits = message.method === 'config/value/write' ? [params] : message.method === 'config/batchWrite' ? params.edits || [] : [];
       if (message.method === 'config/batchWrite' && params.reloadUserConfig === true) unsafe = true;
@@ -296,13 +317,13 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
   });
   child.stderr?.on('data', (chunk) => diagnostics.write(chunk));
   const close = () => {
-    closed = true;
+    closed = true; hostWriter.close();
     for (const token of held) token.cancelled = true;
     for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(REFUSED)); }
     pending.clear();
   };
   child.once('error', close); child.once('exit', close);
-  input.on('end', () => { serial.finally(() => { if (!closed) child.stdin.end(); }); });
+  input.on('end', () => { serial.finally(async () => { await hostWriter.idle(); if (!closed) child.stdin.end(); }); });
   return { idle: () => serial, close };
 }
 

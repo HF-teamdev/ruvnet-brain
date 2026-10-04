@@ -56,6 +56,7 @@ function autoCodex(f, allowance = true) {
   f.child.stdin.on('data', (chunk) => {
     for (const line of chunk.toString().trim().split('\n')) {
       const msg = JSON.parse(line);
+      if (msg.method === 'account/read') f.reply(msg, { account: { type: 'chatgpt' } });
       if (msg.method === 'account/rateLimits/read') f.reply(msg, { ordinaryUsageAllowed: allowance });
     }
   });
@@ -114,11 +115,11 @@ describe('native turn routing transport', () => {
     const gateway = connectNativeGateway({ harness: 'codex', child, input, output }); gateways.push(gateway);
     input.write('{"id":1,"method":"ping"}\n{"id":2,"method":"ping"}\n');
     expect(input.isPaused()).toBe(true); expect(observedHost).toHaveLength(1);
-    callbacks.shift()(); await tick(); expect(observedHost).toHaveLength(2);
+    callbacks.shift()(); await until(() => observedHost.length === 2);
     callbacks.shift()(); await tick(); expect(input.isPaused()).toBe(false);
     child.stdout.write('{"id":1,"result":"🧠"}\n{"id":2,"result":true}\n');
     expect(child.stdout.isPaused()).toBe(true); expect(observedClient).toHaveLength(1);
-    clientCallbacks.shift()(); await tick(); expect(observedClient).toHaveLength(2);
+    clientCallbacks.shift()(); await until(() => observedClient.length === 2);
     clientCallbacks.shift()(); await tick(); expect(child.stdout.isPaused()).toBe(false);
     expect(observedHost.map(JSON.parse).map((m) => m.id)).toEqual([1, 2]);
     expect(observedClient.map(JSON.parse).map((m) => m.id)).toEqual([1, 2]);
@@ -127,10 +128,36 @@ describe('native turn routing transport', () => {
   it('cancels held turns during native allowance verification and close suppresses late decisions', async () => {
     const f = fixture('codex'); f.send(turn()); await until(() => f.sent.length === 1);
     f.send({ id: 'cancel', method: 'turn/interrupt', params: { threadId: 'existing-thread' } });
-    f.reply(f.sent[0], { ordinaryUsageAllowed: true }); await f.idle();
+    f.reply(f.sent[0], { account: { type: 'chatgpt' } }); await f.idle();
     expect(f.sent.some((m) => m.method === 'turn/start')).toBe(false);
     let resolve; const g = fixture('codex', { decide: () => new Promise((r) => { resolve = r; }) });
     g.send(turn()); await tick(); g.close(); resolve(decision()); await g.idle(); expect(g.sent).toEqual([]);
+  });
+
+  it('drops backpressured held turns on cancellation or close and drains EOF safely', async () => {
+    for (const action of ['cancel', 'close']) {
+      const f = fixture('codex'); let blocked = false;
+      const nativeWrite = f.child.stdin.write.bind(f.child.stdin);
+      f.child.stdin.write = (line) => { nativeWrite(line); if (JSON.parse(line).method === 'account/rateLimits/read') { blocked = true; return false; } return true; };
+      autoCodex(f); f.send(turn()); await until(() => blocked);
+      await tick(); expect(f.sent.some((m) => m.method === 'turn/start')).toBe(false);
+      if (action === 'close') f.close();
+      else f.send({ id: 'cancel', method: 'turn/interrupt', params: { threadId: 'existing-thread' } });
+      f.child.stdin.emit('drain'); await f.idle();
+      expect(f.sent.some((m) => m.method === 'turn/start')).toBe(false);
+      expect(f.receipts.some((r) => r.status === 'turn-forwarded')).toBe(false);
+    }
+    const f = fixture('codex'); const nativeWrite = f.child.stdin.write.bind(f.child.stdin);
+    f.child.stdin.write = (line) => { nativeWrite(line); return false; };
+    f.input.end('{"id":1,"method":"ping"}\n{"id":2,"method":"ping"}\n'); await tick();
+    expect(f.child.stdin.writableEnded).toBe(false);
+    f.child.stdin.emit('drain'); await until(() => f.sent.length === 2);
+    expect(f.child.stdin.writableEnded).toBe(false);
+    f.child.stdin.emit('drain'); await until(() => f.child.stdin.writableEnded);
+    const g = fixture('codex'); const write = g.child.stdin.write.bind(g.child.stdin);
+    g.child.stdin.write = (line) => { write(line); return false; };
+    g.input.write('{"id":1,"method":"ping"}\n{"id":2,"method":"ping"}\n');
+    g.close(); g.child.stdin.emit('drain'); await tick(); await tick(); expect(g.sent.map((m) => m.id)).toEqual([1]);
   });
 
   it('refuses allocation mutations during Claude readback while permissions stay immediate', async () => {
@@ -170,7 +197,7 @@ describe('native turn routing transport', () => {
   it('preserves native thread resume context but refuses explicit provider or credit-tier overrides', () => {
     const f = fixture('codex');
     const resume = { id: 'resume', method: 'thread/resume', params: { threadId: 'retained-thread',
-      modelProvider: 'openai', history: [{ type: 'retain' }], config: { sandbox_mode: 'read-only' } } };
+      modelProvider: 'openai', history: [{ type: 'retain' }], config: { sandbox_mode: 'read-only', mcp_servers: { retained: { env: { api_key: 'tool-private' }, base_url: 'tool-endpoint' } } } } };
     f.send(resume); expect(f.sent).toEqual([resume]);
     for (const params of [{ modelProvider: 'foreign' }, { serviceTier: 'priority' },
       { config: { model_provider: 'foreign' } }, { config: { features: { fast_mode: true } } }]) {
@@ -290,6 +317,9 @@ describe('native gateway launch and privacy', () => {
     const binary = executable(), codexArgs = ['app-server'];
     for (const setting of ['model_providers.openai.base_url="foreign"', 'model_providers={openai={base_url="foreign"}}', 'service_tier="priority"']) {
       expect(() => nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: [...codexArgs, '-c', setting], env: {} })).toThrow();
+    }
+    for (const arg of ['-cmodel_providers.openai.base_url="foreign"', '-c=model_providers.openai.base_url="foreign"', '--profile=unsafe']) {
+      expect(() => nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: [...codexArgs, arg], env: {} })).toThrow();
     }
     const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
     for (const settings of [{ apiKeyHelper: 'secret-helper' }, { env: { ANTHROPIC_BASE_URL: 'foreign' } }]) {
