@@ -6,12 +6,14 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { maybeLaunchCurrencyRefresh } from './model-currency.mjs';
+import { maybeLaunchWeeklyAnalyst } from './model-weekly-analyst.mjs';
 
 export const PRESENTATION = 'For terminal briefings: give concise executive status; use narrow padded ASCII tables with borders, plain cell text, aligned columns and short rows. Never send pipe-delimited Markdown tables to this terminal. Use short lists when a table would wrap. Do not flood the response with commands or technical logs.';
 
-export function promptContext(payload, { routerDir = path.join(os.homedir(), '.claude/model-router'), run = spawnSync, now = Date.now(), refresh = maybeLaunchCurrencyRefresh } = {}) {
+export function promptContext(payload, { routerDir = path.join(os.homedir(), '.claude/model-router'), run = spawnSync, now = Date.now(), refresh = maybeLaunchCurrencyRefresh, analyst = maybeLaunchWeeklyAnalyst } = {}) {
   const lines = [PRESENTATION];
   const evidence = refresh({ routerDir, now });
+  const semantic = analyst({ routerDir, now });
   lines.push(evidence.status === 'current' ? 'Weekly independent model evidence is current. API reference cost is not subscription allowance usage.' : `Weekly model evidence is stale or unverified${evidence.launched ? '; a bounded background refresh started' : ''}. Do not present old benchmarks as current.`);
   const harness = payload?.host === 'claude-code' ? 'claude-code' : 'codex';
   const prompt = typeof payload?.prompt === 'string' ? payload.prompt : '';
@@ -21,9 +23,12 @@ export function promptContext(payload, { routerDir = path.join(os.homedir(), '.c
   const age = now - reviewed;
   const configuredMaxAge = policy?.maxAgeMs ?? 604800000;
   const maxAge = Math.min(configuredMaxAge, 604800000);
-  const current = policy?.schemaVersion === 1 && Number.isSafeInteger(configuredMaxAge) && configuredMaxAge > 0 && Number.isFinite(reviewed) && age >= 0 && age <= maxAge;
-  if (evidence.assessment?.analystExecuted === false) lines.push('Weekly evidence assessment is available; a full semantic analyst review and automatic policy promotion are not verified. Do not call metadata refresh a completed routing review.');
-  lines.push(current ? `Model routing policy reviewed ${policy.reviewedAt}; consult this user's policy for every delegated launch.` : 'Model routing policy is missing, invalid or older than seven days. Refresh and qualify it before managed model dispatch; do not claim current model recommendations.');
+  const current = policy?.schemaVersion === 1 && Number.isSafeInteger(configuredMaxAge) && configuredMaxAge > 0 && Number.isFinite(reviewed) && age >= 0;
+  if (semantic.status === 'current') lines.push(`Weekly semantic routing review completed ${semantic.completedAt}; changed routes still require independent promotion qualification.`);
+  else if (semantic.launched) lines.push('A bounded native subscription weekly analyst has started. Its result is pending; the approved policy remains unchanged.');
+  else if (evidence.assessment?.analystExecuted === false) lines.push('Weekly evidence assessment is available; a full semantic analyst review and automatic policy promotion are not verified. Do not call metadata refresh a completed routing review.');
+  if (current && age > maxAge) lines.push('Policy review evidence is older than seven days. Retain the owner-approved allocation, preserve its original date, and verify current native availability before every launch; do not infer new recommendations.');
+  lines.push(current ? `Model routing policy reviewed ${policy.reviewedAt}; consult this user's policy for every delegated launch.` : 'Model routing policy is missing or invalid. Establish a valid approved policy before managed dispatch.');
   if (current && prompt && prompt.length <= 65536) {
     const engine = path.join(routerDir, 'bin/model-router-engine.mjs');
     const result = run(process.execPath, [engine, '--harness', harness, '--policy-only', '--json'], {

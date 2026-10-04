@@ -27,16 +27,28 @@ test('invalid expiry and inventory-only assessment cannot certify routing review
   try {
     fs.writeFileSync(path.join(routerDir, 'routing-policy.json'), JSON.stringify({ schemaVersion: 1, reviewedAt: new Date().toISOString(), maxAgeMs: 'invalid' }));
     const context = promptContext({ prompt: 'build it' }, { routerDir, refresh: () => ({ status: 'current', assessment: { analystExecuted: false } }), run() { assert.fail('invalid allocation must not select'); } });
-    assert.match(context, /missing, invalid/);
+    assert.match(context, /missing or invalid/);
     assert.match(context, /full semantic analyst review and automatic policy promotion are not verified/);
   } finally { fs.rmSync(routerDir, { recursive: true, force: true }); }
 });
 
-test('stale policy does not query a model selector', () => {
+test('stale approval is retained without claiming fresh evidence', () => {
   const routerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-prompt-'));
   try {
-    fs.writeFileSync(path.join(routerDir, 'routing-policy.json'), JSON.stringify({ reviewedAt: '2020-01-01T00:00:00Z' }));
-    const context = promptContext({ prompt: 'fix code' }, { routerDir, refresh: () => ({ status: 'stale', launched: false }), run() { assert.fail('stale policy must not dispatch'); } });
+    fs.writeFileSync(path.join(routerDir, 'routing-policy.json'), JSON.stringify({ schemaVersion: 1, reviewedAt: '2020-01-01T00:00:00Z' }));
+    const context = promptContext({ prompt: 'fix code' }, { routerDir, refresh: () => ({ status: 'stale', launched: false }), analyst: () => ({status:'blocked',launched:false}), run() { return {status:0,stdout:JSON.stringify({model:'gpt-6.1-sol',effort:'medium'})}; } });
     assert.match(context, /older than seven days/);
+    assert.match(context, /Retain the owner-approved allocation/);
+    assert.match(context, /gpt-6.1-sol, effort medium/);
   } finally { fs.rmSync(routerDir, { recursive: true, force: true }); }
+});
+
+test('completed native semantic review is distinct from inventory refresh and promotion', () => {
+  const routerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-prompt-'));
+  try {
+    const context = promptContext({}, { routerDir, refresh: () => ({status:'current',assessment:{analystExecuted:false}}), analyst: () => ({status:'current',completedAt:'2026-10-04T14:00:00Z'}) });
+    assert.match(context, /Weekly semantic routing review completed/);
+    assert.match(context, /independent promotion qualification/);
+    assert.doesNotMatch(context, /full semantic analyst review and automatic policy promotion are not verified/);
+  } finally { fs.rmSync(routerDir, {recursive:true,force:true}); }
 });
