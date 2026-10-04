@@ -61,7 +61,7 @@ it('uses the real dispatch boundary, Standard argv, stdin and bounded structured
     env: { PATH: '/bin', OPENAI_API_KEY: 'secret', OPENROUTER_API_KEY: 'secret', RUVNET_SIGNING_KEY: 'secret' } });
   expect(result.status).toBe('validated-semantic-report'); expect(result.modelObserved).toBe(false);
   expect(capture.args).not.toContain('--ignore-user-config'); expect(capture.options.env.CODEX_HOME).toContain('fixture-native-home'); expect(result.toolUseDeniedByTrustedNativeHook.trusted).toBe(true); expect(capture.args).toContain('service_tier="default"');
-  expect(capture.args).toContain('features.fast_mode=false'); expect(capture.args).toContain('--output-schema');
+  expect(capture.args).toContain('features.fast_mode=false'); expect(capture.args).toContain('--output-schema'); expect(capture.args).toContain('--skip-git-repo-check');
   for (const feature of ['shell_tool', 'unified_exec', 'multi_agent', 'multi_agent_v2', 'plugins', 'skill_search']) expect(capture.args).toContain(`features.${feature}=false`);
   expect(capture.args).toContain('web_search="disabled"');
   expect(result.completeToolRegistryVerifiedAbsent).toBe(false);

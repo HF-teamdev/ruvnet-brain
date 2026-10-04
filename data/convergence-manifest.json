@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "ruvnet-brain-convergence-manifest",
   "version": "4.5.4",
-  "sourceIdentity": "adec832ea492f2ac8f626dded2a1492a271c5213e14ccdc1b505fb5b07361bed",
+  "sourceIdentity": "3244d0edf8d5388a35adfef09cd143d590bccd47fb3567d0997cfd5ad10fdadd",
   "versionSurfaces": {
     "package.json": "4.5.4",
     "plugin/.claude-plugin/plugin.json": "4.5.4",
@@ -112,7 +112,7 @@
     "README.md"
   ],
   "trackedFileCount": 1853,
-  "trackedFilesSha256": "4269a920dd73f1fe00d7303dfebe522a3865013ff1714c3e87199a330c4b0792",
+  "trackedFilesSha256": "dfda702d11b20d8f0c14b7a98767b49d176648543c46800d71123b00641d830f",
   "ownershipChecks": [
     "version:check",
     "doc:currency",
