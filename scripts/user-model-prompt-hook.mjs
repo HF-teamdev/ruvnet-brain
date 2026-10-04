@@ -5,11 +5,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { maybeLaunchCurrencyRefresh } from './model-currency.mjs';
 
 export const PRESENTATION = 'For terminal briefings: give concise executive status; use narrow padded ASCII tables with borders, plain cell text, aligned columns and short rows. Never send pipe-delimited Markdown tables to this terminal. Use short lists when a table would wrap. Do not flood the response with commands or technical logs.';
 
-export function promptContext(payload, { routerDir = path.join(os.homedir(), '.claude/model-router'), run = spawnSync, now = Date.now() } = {}) {
+export function promptContext(payload, { routerDir = path.join(os.homedir(), '.claude/model-router'), run = spawnSync, now = Date.now(), refresh = maybeLaunchCurrencyRefresh } = {}) {
   const lines = [PRESENTATION];
+  const evidence = refresh({ routerDir, now });
+  lines.push(evidence.status === 'current' ? 'Weekly independent model evidence is current. API reference cost is not subscription allowance usage.' : `Weekly model evidence is stale or unverified${evidence.launched ? '; a bounded background refresh started' : ''}. Do not present old benchmarks as current.`);
   const harness = payload?.host === 'claude-code' ? 'claude-code' : 'codex';
   const prompt = typeof payload?.prompt === 'string' ? payload.prompt : '';
   let policy;
