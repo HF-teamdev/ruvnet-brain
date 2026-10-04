@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dispatch, validateDispatchDecision, subscriptionEnvironment, loadNativeCodexModels } from './model-router-dispatch.mjs';
 import { subscriptionOnlyEnv } from './subscription-hosts.mjs';
-import { applyProfile, loadCatalog } from './model-router-engine.mjs';
+import { applyProfile, loadCatalog, selectionEvidenceStatus } from './model-router-engine.mjs';
 import { digest, currencyStatus, WEEK_MS } from './model-currency-evidence.mjs';
 
 const text = { type: 'string' };
@@ -153,14 +153,11 @@ export async function runWeeklyAnalyst({ routerDir = path.join(os.homedir(), '.c
     const candidates = applyProfile(loadCatalog(path.join(routerDir, 'catalog.json')), profile);
     const taskClass = 'substantial'; const selected = inputs.policy.routes?.codex?.[taskClass];
     if (!selected || selected.model !== 'gpt-6.1-sol' || selected.effort !== 'high') throw new Error('Weekly analyst requires the owner-authorized Sol high substantial route');
+    const selectionEvidence = selectionEvidenceStatus(inputs.policy, now);
     const decision = { harness: 'codex', provider: 'openai', taskClass, model: selected.model, effort: selected.effort,
-      subscriptionCovered: true, selectionReviewedAt: inputs.policy.reviewedAt, selectionMaxAgeMs: inputs.policy.maxAgeMs };
-    // Analysis-only standing authorization may outlive a policy review. Revalidate exact existing
-    // model/effort against current native metadata; this projection never changes policy.reviewedAt.
+      subscriptionCovered: true, selectionReviewedAt: inputs.policy.reviewedAt, selectionMaxAgeMs: selectionEvidence.maxAgeMs, selectionRouteDigest: selectionEvidence.routeDigest };
     const executionAt = new Date(now).toISOString();
-    const executionSelection = { ...inputs.policy, reviewedAt: executionAt };
-    decision.selectionReviewedAt = executionAt;
-    const verifyDecision = (value) => validateDispatchDecision(value, { selection: executionSelection, profile, candidates, nativeModels });
+    const verifyDecision = (value) => validateDispatchDecision(value, { selection: inputs.policy, profile, candidates, nativeModels });
     verifyDecision(decision);
     writeOwned(routerDir, token, path.join(runDir, 'original-policy.json'), inputs.policyBytes);
     writeOwned(routerDir, token, path.join(runDir, 'instruction.md'), inputs.instruction);
@@ -197,7 +194,7 @@ export async function runWeeklyAnalyst({ routerDir = path.join(os.homedir(), '.c
     // No trusted role-quality contract is supplied by this analyst. Qualification never triggers application here.
     proposal.promotion = { status: qualification?.status === 'unchanged' ? 'unchanged-no-promotion' : 'blocked', applied: false, validation: qualification };
     const reportBytes = JSON.stringify(report, null, 2); const proposalBytes = JSON.stringify(proposal, null, 2);
-    const receipt = { reportSha256: digest(reportBytes), proposalSha256: digest(proposalBytes), schemaVersion: 1, status: 'validated-semantic-report', completedAt, lastCompletedEvidenceReviewAt: completedAt, routeSha256: digest(JSON.stringify(inputs.policy.routes)), runDir,
+    const receipt = { reportSha256: digest(reportBytes), proposalSha256: digest(proposalBytes), schemaVersion: 1, status: 'validated-semantic-report', completedAt, lastCompletedEvidenceReviewAt: completedAt, routeSha256: selectionEvidence.routeDigest, runDir,
       policySha256: inputs.policySha256, instructionSha256: inputs.instructionSha256, currencySha256: inputs.currencySha256,
       sourceIds: inputs.documents.map((d) => d.id), executionAuthorizationAt: executionAt, originalPolicyReviewedAt: inputs.policy.reviewedAt, requestedModel: decision.model, effort: decision.effort,
       modelObserved: false, nativeCompletionObserved: true, serviceMode: 'standard', applied: false,

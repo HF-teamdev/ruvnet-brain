@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { afterEach, expect, it, vi } from 'vitest';
+import { selectionEvidenceStatus } from '../../scripts/model-router-engine.mjs';
 import { digest } from '../../scripts/model-currency-evidence.mjs';
 import { loadAnalystInputs, validateAnalystReport, runWeeklyAnalyst, maybeLaunchWeeklyAnalyst, parseNativeReport } from '../../scripts/model-weekly-analyst.mjs';
 const NOW = Date.now(); const dirs = [];
@@ -69,6 +70,8 @@ it('uses the real dispatch boundary, Standard argv, stdin and bounded structured
   expect(proposal.status).toBe('unqualified');
   expect(result.reportSha256).toBe(digest(fs.readFileSync(path.join(result.runDir, 'report.json')))); expect(proposal.applied).toBe(false);
   expect(result.creditDrawRaceEliminated).toBe(false);
+  expect(result.routeSha256).toBe(selectionEvidenceStatus(f.policy).routeDigest);
+  expect(proposal.promotion.validation).toMatchObject({ ok: true, status: 'unchanged' });
 });
 it('blocks exhausted allowance before inference and keeps last-known-good semantic timestamp', async () => {
   const f = fixture(); fs.writeFileSync(path.join(f.routerDir, 'semantic-current.json'), '{"completedAt":"old-valid"}');
@@ -113,4 +116,21 @@ it('a delayed superseded analyst cannot publish or remove the successor owner', 
 it('requires native completion evidence rather than just a final string', () => {
   expect(() => parseNativeReport('{"type":"item.completed","item":{"type":"command_execution"}}')).toThrow('unauthorized tool');
   expect(() => parseNativeReport('{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}')).toThrow('completion envelope');
+});
+
+it('launches through the current real dispatcher with an old approved review and normalized route digest', async () => {
+  const f = fixture();
+  f.policy.reviewedAt = new Date(NOW - 9 * 86400000).toISOString();
+  f.policy.maxAgeMs = 604800000;
+  fs.writeFileSync(path.join(f.routerDir, 'routing-policy.json'), JSON.stringify(f.policy));
+  const result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, nativeModels,
+    spawnNative: native(f.report, {}), checkAuth: auth, checkAllowance: allowance });
+  expect(result.status).toBe('validated-semantic-report');
+  expect(result.originalPolicyReviewedAt).toBe(f.policy.reviewedAt);
+  expect(result.routeSha256).toBe(selectionEvidenceStatus(f.policy).routeDigest);
+  const dispatchReceipt = JSON.parse(fs.readFileSync(path.join(result.runDir, 'dispatch.jsonl'), 'utf8').trim().split('\n')[0]);
+  expect(dispatchReceipt.selectionReviewedAt).toBe(f.policy.reviewedAt);
+  expect(dispatchReceipt.selectionRouteDigest).toBe(result.routeSha256);
+  expect(dispatchReceipt.selectionEvidenceStale).toBe(true);
+  expect(JSON.parse(fs.readFileSync(path.join(f.routerDir, 'routing-policy.json'))).reviewedAt).toBe(f.policy.reviewedAt);
 });
