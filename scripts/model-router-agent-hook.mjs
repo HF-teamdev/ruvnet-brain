@@ -9,7 +9,10 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { readCodexAllowance } from './native-subscription-usage.mjs';
+
 const DIR = path.dirname(fileURLToPath(import.meta.url));
+const TASK_CLASSES = new Set(['fast', 'medium', 'substantial', 'hard', 'exceptional']);
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_AGENT = /^(?:(?:functions|collaboration|multi_agent_v2)\.)?spawn_agent$/;
 const CLAUDE_AGENT = /^(?:Agent|Task)$/;
@@ -64,9 +67,13 @@ export function routeAgentLaunch(event, { harness, decide = decideViaEngine, nat
   let decision;
   try { decision = decide(prompt, harness); }
   catch { return refuse('Current reviewed model/effort allocation unavailable; review routing policy before agent dispatch.'); }
-  if (!decision?.subscriptionCovered || decision.harness !== harness || !['fast', 'medium', 'hard'].includes(decision.taskClass) ||
+  if (!decision?.subscriptionCovered || decision.harness !== harness || !TASK_CLASSES.has(decision.taskClass) ||
       !EFFORTS.has(decision.effort) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(decision.model || '')) {
     return refuse('Agent routing did not produce a qualified native subscription model and effort.');
+  }
+  if (harness === 'codex' && ['xhigh', 'max'].includes(decision.effort) &&
+      (decision.taskClass !== 'exceptional' || decision.effort !== 'xhigh' || !/^[a-z][a-z0-9-]{2,79}$/.test(decision.exceptionalReason || ''))) {
+    return refuse('Exceptional native agent effort requires an explicit named reason and qualified xhigh route.');
   }
   if (harness === 'claude-code') {
     return advisory(`Native Claude Agent cannot enforce this reviewed ${decision.taskClass} model and ${decision.effort} effort through its current per-call schema. Use model-router-dispatch.mjs; do not add unsupported effort fields.`);
@@ -92,10 +99,11 @@ export function routeAgentLaunch(event, { harness, decide = decideViaEngine, nat
   }
   // updatedInput replaces the COMPLETE object. No context, capabilities, auth, or task fields dropped.
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow',
-    updatedInput: { ...input, model: decision.model, reasoning_effort: decision.effort } } };
+    updatedInput: { ...input, model: decision.model, reasoning_effort: decision.effort },
+    ...(decision.exceptionalReason ? { additionalContext: `Qualified exceptional reason: ${decision.exceptionalReason}` } : {}) } };
 }
 
-function main(argv) {
+async function main(argv) {
   const at = argv.indexOf('--harness');
   const harness = at < 0 ? null : argv[at + 1];
   if (!['codex', 'claude-code'].includes(harness)) throw new Error('Explicit supported --harness required');
@@ -107,11 +115,22 @@ function main(argv) {
       ? deny('Malformed agent hook input; launch was not classified.') : advisory('Malformed agent hook input; launch was not classified.');
     process.stdout.write(JSON.stringify(output) + '\n'); return;
   }
-  const output = routeAgentLaunch(event, { harness });
+  let output = routeAgentLaunch(event, { harness });
+  if (harness === 'codex' && output.hookSpecificOutput?.permissionDecision === 'allow') {
+    try { await readCodexAllowance(); }
+    catch {
+      output = loadScope(harness).strict ? deny('Current native ordinary subscription allowance unavailable; no credit fallback authorized.')
+        : advisory('Current native ordinary subscription allowance unavailable; managed dispatch cannot proceed without fresh allowance.');
+    }
+  }
   // The host's normal transcript records its tool input. This hook persists no task text.
   process.stdout.write(JSON.stringify(output) + '\n');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try { main(process.argv.slice(2)); }
-  catch { process.stdout.write(JSON.stringify(advisory('Agent routing hook failed; managed worker dispatch remains the supported enforcement path.')) + '\n'); }
+  main(process.argv.slice(2)).catch(() => {
+    const args = process.argv.slice(2); const harness = args[args.indexOf('--harness') + 1];
+    const result = harness === 'codex' && loadScope(harness).strict ? deny('Agent routing hook failed; managed dispatch required.')
+      : advisory('Agent routing hook failed; managed dispatch remains the supported enforcement path.');
+    process.stdout.write(JSON.stringify(result) + '\n');
+  });
 }

@@ -21,6 +21,7 @@ const CATALOG_PATH = process.env.MODEL_ROUTER_CATALOG || path.join(CONFIG_DIR, '
 const POLICY_USER = path.join(CONFIG_DIR, 'policy.mjs');
 const POLICY_DEFAULT = path.join(CONFIG_DIR, 'policy.default.mjs');
 const POLICY_SHIPPED = path.join(__dirname, '..', 'config', 'model-router', 'policy.default.mjs');
+export const TASK_CLASSES = ['fast', 'medium', 'substantial', 'hard', 'exceptional'];
 const DECISIONS_LOG =
   process.env.MODEL_ROUTER_DECISIONS ||
   path.join(os.homedir(), '.claude', 'metaharness', 'routing-decisions.jsonl');
@@ -28,7 +29,7 @@ const DECISIONS_LOG =
 // ─── feature extraction: this is "based on what the prompt is" ────────────────────────────────
 // Pure and deterministic. Emits SIGNALS only — it never decides. Policies consume these; extend
 // this object as your research identifies new predictive features (it is the documented surface).
-export function extractFeatures(prompt, harness) {
+export function extractFeatures(prompt, harness, taskFacts) {
   const text = prompt || '';
   const codeFences = Math.floor((text.match(/```/g) || []).length / 2);
   const fileTypes = [...new Set((text.match(/\.[a-z0-9]{1,5}\b/gi) || []).map((s) => s.toLowerCase()))].slice(0, 12);
@@ -43,6 +44,7 @@ export function extractFeatures(prompt, harness) {
     questionCount: (text.match(/\?/g) || []).length,
     taskHints: text, // policies may regex over the actual prompt head
     harness,
+    taskFacts,
   };
 }
 
@@ -103,12 +105,13 @@ export async function loadPolicy(explicit) {
 }
 
 function parseArgs(argv) {
-  const a = { harness: null, prompt: null, policy: null, mode: 'json', policyOnly: false };
+  const a = { harness: null, prompt: null, policy: null, mode: 'json', policyOnly: false, requestJson: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--prompt') a.prompt = argv[++i];
     else if (k === '--harness') a.harness = argv[++i];
     else if (k === '--policy') a.policy = argv[++i];
+    else if (k === '--request-json') a.requestJson = true;
     else if (k === '--policy-only') a.policyOnly = true;
     else if (k === '--line') a.mode = 'line';
     else if (k === '--json') a.mode = 'json';
@@ -162,15 +165,22 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
   const pool = eligibleCandidates(candidates, profile, harness);
   if (!pool.length) throw new Error(`No available native subscription candidates for ${harness}; no metered fallback`);
   if (!policy?.choose) throw new Error('No routing policy available');
+  const classifierFile = fs.existsSync(POLICY_SHIPPED) ? POLICY_SHIPPED : POLICY_DEFAULT;
+  const classifier = await import(pathToFileURL(classifierFile).href);
+  classifier.validateTaskFacts?.(features.taskFacts);
+  const assessedClass = classifier.classify?.(features, harness);
   const decision = await policy.choose({ features, candidates: pool, harness, profile, selection });
+  if (harness === 'codex' && (['substantial', 'exceptional'].includes(assessedClass) || (features.taskFacts && assessedClass === 'hard')) && decision?.taskClass !== assessedClass) {
+    throw new Error(`Task requires explicit qualified ${assessedClass} route; legacy policy cannot silently use medium`);
+  }
   const chosen = pool.find((m) => m.id === decision?.model);
   if (!chosen) throw new Error(`Policy model unavailable or unauthorized: ${decision?.model || 'none'}`);
   const taskClass = decision.taskClass;
-  if (!['fast', 'medium', 'hard'].includes(taskClass)) {
-    throw new Error('Routing policy must return an explicit taskClass (fast, medium, or hard); update legacy policy');
+  if (!TASK_CLASSES.includes(taskClass)) {
+    throw new Error('Routing policy must return an explicit qualified taskClass; update legacy policy');
   }
   const effort = decision.effort || selection.routes?.[harness]?.[taskClass]?.effort;
-  if (!['fast', 'medium', 'hard'].includes(taskClass) || !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {
+  if (!TASK_CLASSES.includes(taskClass) || !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {
     throw new Error('Policy must specify a supported task class and effort');
   }
   const approved = selection.routes?.[harness]?.[taskClass];
@@ -178,6 +188,11 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
   const coding = features.hasCode || /\b(implement|code|coding|debug|refactor|test|endpoint|API|repository|module|function)\b/i.test(features.taskHints || '');
   const approvedEffort = harness === 'claude-code' && taskClass === 'medium' && coding
     ? codingEffort || approved?.effort : approved?.effort;
+  if (harness === 'codex' && ['xhigh', 'max'].includes(effort) &&
+      (taskClass !== 'exceptional' || effort !== 'xhigh' || !approved?.requiresNamedReason ||
+       !/^[a-z][a-z0-9-]{2,79}$/.test(decision.exceptionalReason || ''))) {
+    throw new Error('Exceptional xhigh requires an explicit qualified route and named reason; no automatic max effort');
+  }
   if (approved?.model !== chosen.id || approvedEffort !== effort) {
     throw new Error('Custom policy decision exceeds reviewed model/effort allocation; update per-user routing-policy.json');
   }
@@ -208,7 +223,10 @@ async function main() {
     args.harness ||
     (process.env.CODEX_SANDBOX || fs.existsSync(path.join(os.homedir(), '.codex', 'config.toml')) && process.env.CODEX ? 'codex' : null) ||
     'claude-code';
-  const prompt = args.prompt || readStdin();
+  const raw = args.prompt || readStdin();
+  const request = args.requestJson ? JSON.parse(raw) : { prompt: raw };
+  const prompt = request.prompt;
+  if (typeof prompt !== 'string') throw new Error('Request prompt must be a string');
   if (!prompt || !prompt.trim()) {
     process.stderr.write('model-router-engine: no prompt (use --prompt "..." or pipe text on stdin)\n');
     process.exit(2);
@@ -217,7 +235,7 @@ async function main() {
   const profile = loadProfile();
   const candidates = applyProfile(loadCatalog(), profile);
   const policy = await loadPolicy(args.policy);
-  const features = extractFeatures(prompt, harness);
+  const features = extractFeatures(prompt, harness, request.taskFacts);
 
   const decision = await selectDecision({ prompt, harness, candidates, profile, policy, features,
     learnedRoute: args.policyOnly ? async () => ({ routedBy: 'SKIPPED (policy-only)' }) : undefined });
@@ -231,6 +249,8 @@ async function main() {
     provider: decision.provider,
     tier: decision.tier,
     taskClass: decision.taskClass,
+    exceptionalReason: decision.exceptionalReason,
+    classificationSource: decision.classificationSource,
     effort: decision.effort,
     subscriptionCovered: decision.subscriptionCovered,
     selectionReviewedAt: decision.selectionReviewedAt,
@@ -250,7 +270,7 @@ async function main() {
   // Durable decision log (append-only; separate from route-cheap's execution/savings ledger).
   try {
     fs.mkdirSync(path.dirname(DECISIONS_LOG), { recursive: true });
-    fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ ts: out.ts, harness, model: out.model, effort: out.effort, taskClass: out.taskClass, subscriptionCovered: out.subscriptionCovered, policy_source: out.policy_source }) + '\n');
+    fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ ts: out.ts, harness, model: out.model, effort: out.effort, taskClass: out.taskClass, exceptionalReason: out.exceptionalReason, subscriptionCovered: out.subscriptionCovered, policy_source: out.policy_source }) + '\n');
   } catch { /* logging must never break selection */ }
 
   if (args.mode === 'line') {

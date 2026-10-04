@@ -67,11 +67,13 @@ test('real hook subprocess returns bounded JSON using engine fixture without inf
     fs.writeFileSync(path.join(tmp,'routing-policy.json'),JSON.stringify(scope));
     const cache=path.join(tmp,'models.json');fs.writeFileSync(cache,JSON.stringify({models:nativeModels()}));
     expect(loadNativeModels(cache)).toEqual(nativeModels());
+    const codex=path.join(tmp,'codex');
+    fs.writeFileSync(codex,`#!${process.execPath}\nimport readline from 'node:readline'; const lines=readline.createInterface({input:process.stdin}); lines.on('line',line=>{const r=JSON.parse(line);if(r.id)process.stdout.write(JSON.stringify({id:r.id,result:r.id===1?{}:{ordinaryUsageAllowed:true}})+'\\n');});`,{mode:0o755});
     const raw=execFileSync(process.execPath,['scripts/model-router-agent-hook.mjs','--harness','codex'],{
-      input:JSON.stringify(event),encoding:'utf8',env:{...process.env,MODEL_ROUTER_ENGINE:engine,MODEL_ROUTER_NATIVE_MODELS:cache,MODEL_ROUTER_PROFILE:path.join(tmp,'profile.json'),MODEL_ROUTER_SELECTION:path.join(tmp,'routing-policy.json')},
+      input:JSON.stringify(event),encoding:'utf8',env:{...process.env,PATH:tmp,MODEL_ROUTER_ENGINE:engine,MODEL_ROUTER_NATIVE_MODELS:cache,MODEL_ROUTER_PROFILE:path.join(tmp,'profile.json'),MODEL_ROUTER_SELECTION:path.join(tmp,'routing-policy.json')},
     });
     expect(JSON.parse(raw).hookSpecificOutput.updatedInput).toEqual({...input,model,reasoning_effort:'medium'});
-    expect(fs.readdirSync(tmp).sort()).toEqual(['engine.mjs','models.json','profile.json','routing-policy.json']);
+    expect(fs.readdirSync(tmp).sort()).toEqual(['codex','engine.mjs','models.json','profile.json','routing-policy.json']);
   }finally{fs.rmSync(tmp,{recursive:true,force:true});}
 });
 
@@ -103,4 +105,14 @@ test('Claude classification failure remains advisory even when strict opt-in is 
   const result=routeAgentLaunch({tool_name:'Agent',tool_input:{prompt:'private'}},{harness:'claude-code',scope:()=>({enabled:true,strict:true}),decide:()=>{throw Error('stale');}});
   expect(result.hookSpecificOutput.permissionDecision).toBeUndefined();
   expect(result.hookSpecificOutput.additionalContext).toContain('allocation unavailable');
+});
+
+test('substantial native agent selection carries Sol high, exceptional xhigh requires named reason',()=>{
+  const models=()=>[{slug:model,multi_agent_version:'v2',supported_reasoning_levels:[{effort:'high'},{effort:'xhigh'}]}];
+  const substantial=hook(event,{nativeModels:models,decide:()=>({harness:'codex',model,effort:'high',taskClass:'substantial',subscriptionCovered:true})});
+  expect(substantial.hookSpecificOutput.updatedInput.reasoning_effort).toBe('high');
+  const exceptional=hook(event,{nativeModels:models,decide:()=>({harness:'codex',model,effort:'xhigh',taskClass:'exceptional',exceptionalReason:'cryptographic-proof',subscriptionCovered:true})});
+  expect(exceptional.hookSpecificOutput.additionalContext).toContain('cryptographic-proof');
+  const unnamed=hook(event,{nativeModels:models,decide:()=>({harness:'codex',model,effort:'xhigh',taskClass:'exceptional',subscriptionCovered:true})});
+  expect(unnamed.hookSpecificOutput.permissionDecision).toBe('deny');
 });

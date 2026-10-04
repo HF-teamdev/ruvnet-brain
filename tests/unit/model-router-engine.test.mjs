@@ -131,3 +131,16 @@ test('decision receipt excludes raw prompt and custom reason',()=>{
   run(['--harness','codex','--prompt',prompt]);
   expect(fs.readFileSync(LOG,'utf8')).not.toContain('PRIVATE_TOKEN_876');
 });
+
+test('structured request travels through actual engine stdin and selects substantial qualified effort',()=>{
+  const selected=path.join(TMP,'substantial-policy.json');
+  const fixture=JSON.parse(fs.readFileSync(SELECTION,'utf8'));
+  fixture.routes.codex.substantial={model:'gpt-frontier-fixture',effort:'high'};
+  fs.writeFileSync(selected,JSON.stringify(fixture));
+  const raw=execFileSync(process.execPath,[ENGINE,'--harness','codex','--request-json','--policy-only','--policy',POLICY,'--json'],{
+    input:JSON.stringify({prompt:'implement PRIVATE_STRUCTURED_WORK',taskFacts:{taskType:'coding',scope:'substantial'}}),encoding:'utf8',
+    env:{...process.env,MODEL_ROUTER_CATALOG:CATALOG,MODEL_ROUTER_PROFILE:PROFILE,MODEL_ROUTER_SELECTION:selected,MODEL_ROUTER_DECISIONS:LOG},
+  });
+  expect(JSON.parse(raw)).toMatchObject({taskClass:'substantial',model:'gpt-frontier-fixture',effort:'high',classificationSource:'caller-task-facts'});
+  expect(fs.readFileSync(LOG,'utf8')).not.toContain('PRIVATE_STRUCTURED_WORK');
+});

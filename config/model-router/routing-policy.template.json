@@ -15,6 +15,15 @@
       "hard": {
         "model": "gpt-6-astra",
         "effort": "high"
+      },
+      "substantial": {
+        "model": "gpt-6.1-sol",
+        "effort": "high"
+      },
+      "exceptional": {
+        "model": "gpt-6-astra",
+        "effort": "xhigh",
+        "requiresNamedReason": true
       }
     },
     "claude-code": {
@@ -51,7 +60,17 @@
       "Not project-specific optimality proof",
       "Luna fast limited to noncoding",
       "No automatic newmodel entitlement claim",
-      "Parent conversation model remains host-controlled"
+      "Parent conversation model remains host-controlled",
+      "Substantial/exceptional allocation reflects user correctness preference, not newly measured optimality",
+      "Free-text task classes are heuristic; caller taskFacts can express uncertainty and scope",
+      "No assumed completion-speed or subscription-quota multipliers",
+      "Native agent hook updatedInput rewrite has not passed host acceptance proof"
     ]
-  }
+  },
+  "policyRevisionAt": "2026-10-04T13:50:05.851549+00:00",
+  "objectivePriority": [
+    "correctness",
+    "subscription-allowance",
+    "completion-time"
+  ]
 }
