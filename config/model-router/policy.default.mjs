@@ -2,7 +2,7 @@
 // Task-fit heuristics are recommendations, not measured accuracy guarantees.
 export function classify(features) {
   const text = String(features.taskHints || '');
-  const hard = /cryptograph|consensus|race condition|irreversible|critical independent review|security audit|security vulnerability|unresolved architectur|production incident|prove correctness/i.test(text);
+  const hard = /cryptograph|consensus|race condition|irreversible|final review|independent review|difficult planning|complex architecture|security audit|security vulnerability|unresolved architectur|production incident|prove correctness/i.test(text);
   // General coding stays on Sol even when a prompt includes "extract" or "format".
   const coding = features.hasCode || /\b(implement|code|coding|debug|refactor|test|endpoint|API|repository|module|function)\b/i.test(text);
   const fast = !hard && !coding && /\b(summari[sz]e|classify|extract|translate|rephrase|format|typo)\b/i.test(text);

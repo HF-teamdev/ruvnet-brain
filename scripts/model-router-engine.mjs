@@ -71,34 +71,18 @@ export function applyProfile(candidates, profile) {
   }));
 }
 
-// Honest provenance of the catalog the engine is actually using, so no surface can pass the
-// built-in stub off as a real personal catalog (trust rule: never present a fallback as the thing).
-// Returns 'catalog' when a real ~/.claude/model-router/catalog.json is present + valid, else
-// 'built-in-fallback'. Same check loadCatalog() uses — kept in lockstep.
-export function catalogSource() {
-  try {
-    const j = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
-    if (Array.isArray(j.candidates) && j.candidates.length) return 'catalog';
-  } catch { /* fall through */ }
-  return 'built-in-fallback';
+// Catalog absence is not permission to use stale built-in identities.
+export function catalogSource(file = CATALOG_PATH) {
+  try { loadCatalog(file); return 'catalog'; }
+  catch { return 'unavailable'; }
 }
 
-export function loadCatalog() {
+export function loadCatalog(file = CATALOG_PATH) {
   try {
-    const j = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
-    if (Array.isArray(j.candidates) && j.candidates.length) return j.candidates;
-  } catch {
-    /* fall through to a minimal built-in so the engine still answers */
-  }
-  // Built-in fallback. Claude launchability was verified against Claude Code 2.1.220 on 2026-08-02;
-  // prices remain null where the subscription host, rather than a metered API, is authoritative.
-  return [
-    { id: 'deepseek/deepseek-chat', provider: 'openrouter', harness: ['claude-code', 'codex'], tier: 'cheap', costPerMTok: { in: 0.2, out: 0.8 }, verified: '2026-07-07' },
-    { id: 'claude-opus-4-8', provider: 'anthropic', harness: ['claude-code'], tier: 'frontier', costPerMTok: { in: 5.0, out: 25.0 }, verified: '2026-07-07' },
-    { id: 'claude-opus-5', provider: 'anthropic', harness: ['claude-code'], subscription: ['claude-code'], tier: 'frontier', costPerMTok: null, verified: '2026-08-02 Claude Code 2.1.220 launch' },
-    { id: 'claude-fable-5', provider: 'anthropic', harness: ['claude-code'], subscription: ['claude-code'], tier: 'frontier', costPerMTok: null, verified: '2026-08-02 Claude Code 2.1.220 launch' },
-    { id: 'gpt-5.5', provider: 'openai', harness: ['codex'], tier: 'frontier', costPerMTok: null, verified: null },
-  ];
+    const catalog = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (Array.isArray(catalog.candidates) && catalog.candidates.length) return catalog.candidates;
+  } catch { /* report one bounded configuration error, never substitute old models */ }
+  throw new Error('Current per-user model catalog missing or invalid; no built-in model fallback');
 }
 
 export async function loadPolicy(explicit) {
@@ -179,7 +163,7 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
   if (!chosen) throw new Error(`Policy model unavailable or unauthorized: ${decision?.model || 'none'}`);
   const taskClass = decision.taskClass || 'medium';
   const effort = decision.effort || selection.routes?.[harness]?.[taskClass]?.effort;
-  if (!['fast', 'medium', 'hard'].includes(taskClass) || !['low', 'medium', 'high'].includes(effort)) {
+  if (!['fast', 'medium', 'hard'].includes(taskClass) || !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {
     throw new Error('Policy must specify a supported task class and effort');
   }
   const approved = selection.routes?.[harness]?.[taskClass];

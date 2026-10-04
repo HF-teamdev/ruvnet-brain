@@ -48,20 +48,20 @@ export function validateDispatchDecision(decision, { selection = loadSelection()
 }
 
 export function buildLaunch(decision, { cwd = process.cwd(), interactive = false } = {}) {
+  if (interactive) throw new Error('Interactive host cannot keep managed-worker prompts on stdin; use managed worker launch');
   assertCurrentSelection({ schemaVersion: 1, reviewedAt: decision.selectionReviewedAt, maxAgeMs: decision.selectionMaxAgeMs });
   if (!decision.subscriptionCovered || !['fast', 'medium', 'hard'].includes(decision.taskClass) ||
-      !['low', 'medium', 'high'].includes(decision.effort) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(decision.model || '')) {
+      !['low', 'medium', 'high', 'xhigh', 'max'].includes(decision.effort) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(decision.model || '')) {
     throw new Error('Invalid or unauthorized routing decision');
   }
   if (decision.harness === 'codex' && decision.provider === 'openai') {
-    if (interactive) throw new Error('Codex interactive host lacks config isolation; use managed exec worker');
-    return { command: 'codex', args: [ ...(interactive ? [] : ['exec']), '--ignore-user-config',
+    return { command: 'codex', args: ['exec', '--ignore-user-config',
       '--model', decision.model, '-c', `model_reasoning_effort="${decision.effort}"`,
-      '-c', 'model_provider="openai"', '--cd', cwd, ...(interactive ? [] : ['-'])] };
+      '-c', 'model_provider="openai"', '--cd', cwd, '-'] };
   }
   if (decision.harness === 'claude-code' && decision.provider === 'anthropic') {
     // Ignore user/project API-key helpers and provider redirects. Native OAuth remains readable.
-    return { command: 'claude', args: [ ...(interactive ? [] : ['--print']), '--model', decision.model,
+    return { command: 'claude', args: ['--print', '--model', decision.model,
       '--effort', decision.effort, '--setting-sources', '', '--settings', '{"apiKeyHelper":""}'] };
   }
   throw new Error('Decision does not target a supported native subscription host');
@@ -80,11 +80,10 @@ export async function dispatch(decision, prompt, { spawnWorker = spawn, checkAut
   // Durable receipt is required. It never contains the prompt or policy-supplied reason.
   fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
   fs.appendFileSync(receiptFile, JSON.stringify(receipt) + '\n', { mode: 0o600 });
-  if (interactive) launch.args.push('--', prompt);
   const child = spawnWorker(launch.command, launch.args, {
-    cwd, env: cleanEnv, shell: false, stdio: [interactive ? 'inherit' : 'pipe', 'inherit', 'inherit'],
+    cwd, env: cleanEnv, shell: false, stdio: ['pipe', 'inherit', 'inherit'],
   });
-  if (!interactive) child.stdin.end(prompt);
+  child.stdin.end(prompt);
   return await new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('exit', (code, signal) => {

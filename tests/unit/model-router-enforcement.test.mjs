@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { selectDecision, eligibleCandidates, extractFeatures, assertCurrentSelection } from '../../scripts/model-router-engine.mjs';
+import { selectDecision, eligibleCandidates, extractFeatures, assertCurrentSelection, loadCatalog, catalogSource } from '../../scripts/model-router-engine.mjs';
 import { choose, classify } from '../../config/model-router/policy.default.mjs';
 import { buildLaunch, dispatch, validateDispatchDecision, assertSubscriptionAuth, subscriptionEnvironment } from '../../scripts/model-router-dispatch.mjs';
 
@@ -46,7 +46,7 @@ test('native launch argv binds effort and model and cannot silently fallback',()
     selectionReviewedAt:selection.reviewedAt};
   expect(buildLaunch(decision,{cwd:'/tmp/code'})).toEqual({command:'codex',args:['exec','--ignore-user-config','--model','sol','-c','model_reasoning_effort="medium"','-c','model_provider="openai"','--cd','/tmp/code','-']});
   expect(buildLaunch({...decision,harness:'claude-code',provider:'anthropic',model:'sonnet'}).args).toContain('--effort');
-  expect(()=>buildLaunch(decision,{interactive:true})).toThrow('config isolation');
+  expect(()=>buildLaunch(decision,{interactive:true})).toThrow('stdin');
   expect(()=>buildLaunch({...decision,model:null})).toThrow();
   expect(()=>buildLaunch({...decision,subscriptionCovered:false})).toThrow();
 });
@@ -97,4 +97,41 @@ test('real subprocess receives bound native model+effort argv and prompt stdin w
     expect(observed.args).toEqual(buildLaunch(decision,{cwd:tmp}).args);
     expect(observed.stdin).toBe('extract code implementation');
   }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+
+test('missing or malformed catalog fails without stale built-in candidates',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'router-catalog-required-'));
+  try{
+    const file=path.join(tmp,'catalog.json');
+    expect(()=>loadCatalog(file)).toThrow('no built-in');
+    expect(catalogSource(file)).toBe('unavailable');
+    fs.writeFileSync(file,'{"candidates":[]}');
+    expect(()=>loadCatalog(file)).toThrow('no built-in');
+    fs.writeFileSync(file,JSON.stringify({candidates}));
+    expect(loadCatalog(file)).toEqual(candidates);
+    expect(catalogSource(file)).toBe('catalog');
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+
+test('bounded difficult reviews and planning escalate, routine inspection stays medium',async()=>{
+  for(const prompt of ['perform final review','do an independent review','difficult planning of rollout','review complex architecture']) {
+    expect(await route(prompt)).toMatchObject({taskClass:'hard',model:'astra',effort:'high'});
+  }
+  expect(await route('inspect architecture documentation')).toMatchObject({taskClass:'medium',model:'sol',effort:'medium'});
+  expect(await route('plan ordinary implementation work')).toMatchObject({taskClass:'medium',model:'sol',effort:'medium'});
+});
+
+test('explicit reviewed xhigh and max effort reach native argv; unsupported effort rejects',async()=>{
+  for(const effort of ['xhigh','max']) {
+    const reviewed={...selection,routes:{...selection.routes,codex:{...selection.routes.codex,hard:{model:'astra',effort}}}};
+    const decision=await route('independent review','codex',{selection:reviewed});
+    const launch=buildLaunch({...decision,harness:'codex'});
+    expect(launch.args).toContain(`model_reasoning_effort="${effort}"`);
+    expect(()=>validateDispatchDecision({...decision,harness:'codex'},{selection:reviewed,profile,candidates})).not.toThrow();
+    const supported=candidates.map(m=>({...m,supportedEfforts:['low','medium','high']}));
+    await expect(route('independent review','codex',{selection:reviewed,candidates:supported})).rejects.toThrow('effort unavailable');
+  }
+  const decision={harness:'claude-code',provider:'anthropic',model:'opus',taskClass:'hard',effort:'high',subscriptionCovered:true,selectionReviewedAt:selection.reviewedAt};
+  expect(()=>buildLaunch(decision,{interactive:true})).toThrow('stdin');
+  expect(()=>buildLaunch({...decision,effort:'none'})).toThrow('unauthorized');
 });
