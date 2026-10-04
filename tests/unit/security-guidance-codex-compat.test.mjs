@@ -105,7 +105,27 @@ otherOld=capture(old['emit_metrics'],{'skipped':True},rewake_summary='review',ho
 otherNew=capture(new['emit_metrics'],{'skipped':True},rewake_summary='review',hook_event_name='Stop')
 prints=lambda tree:[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='print']
 redirects=[n for n in ast.walk(newtree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='_emit_codex_json']
-print(json.dumps({'baseline':json.loads(baseline),'fixed':json.loads(fixed),'telemetry':telemetry,'blocked':json.loads(blocked),'controls':controls,'otherOld':otherOld,'otherNew':otherNew,'originalPrintSites':len(prints(oldtree)),'patchedPrintSites':len(prints(newtree)),'redirects':len(redirects),'telemetryEntries':len(logs)}))
+# Compare the entire actual source AST after reversing only the output-boundary changes.
+# This checks review conditions, dedup, state handling, and all other logic without running them.
+class ReverseBoundary(ast.NodeTransformer):
+    def visit_FunctionDef(self,node):
+        if node.name=='_emit_codex_json':return None
+        return self.generic_visit(node)
+    def visit_Global(self,node):
+        if node.names==['_CODEX_POST_TOOL_USE']:return None
+        return node
+    def visit_Assign(self,node):
+        if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id=='_CODEX_POST_TOOL_USE':return None
+        return self.generic_visit(node)
+    def visit_Call(self,node):
+        node=self.generic_visit(node)
+        if isinstance(node.func,ast.Name) and node.func.id=='_emit_codex_json':
+            node.func=ast.Name(id='print',ctx=ast.Load())
+            node.args=[ast.Call(func=ast.Attribute(value=ast.Name(id='json',ctx=ast.Load()),attr='dumps',ctx=ast.Load()),args=node.args,keywords=[])]
+        return node
+reversedTree=ReverseBoundary().visit(ast.parse(sources['patched']))
+logicUnchanged=ast.dump(reversedTree)==ast.dump(oldtree)
+print(json.dumps({'baseline':json.loads(baseline),'fixed':json.loads(fixed),'telemetry':telemetry,'blocked':json.loads(blocked),'controls':controls,'otherOld':otherOld,'otherNew':otherNew,'originalPrintSites':len(prints(oldtree)),'patchedPrintSites':len(prints(newtree)),'redirects':len(redirects),'telemetryEntries':len(logs),'logicUnchanged':logicUnchanged}))
 `;
     const result = spawnSync('python3', ['-c', program], { input: JSON.stringify({ original: original.toString(), patched: patched.toString() }), encoding: 'utf8', timeout: 5000 });
     expect(result.status, result.stderr).toBe(0);
@@ -123,5 +143,6 @@ print(json.dumps({'baseline':json.loads(baseline),'fixed':json.loads(fixed),'tel
     expect(evidence.patchedPrintSites).toBe(1);
     expect(evidence.redirects).toBe(4);
     expect(evidence.telemetryEntries).toBe(3);
+    expect(evidence.logicUnchanged).toBe(true);
   });
 });
