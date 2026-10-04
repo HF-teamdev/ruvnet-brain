@@ -5,7 +5,8 @@ import { EventEmitter } from 'node:events';
 import { afterEach, expect, it, vi } from 'vitest';
 import { selectionEvidenceStatus } from '../../scripts/model-router-engine.mjs';
 import { digest } from '../../scripts/model-currency-evidence.mjs';
-import { loadAnalystInputs, validateAnalystReport, runWeeklyAnalyst, maybeLaunchWeeklyAnalyst, parseNativeReport } from '../../scripts/model-weekly-analyst.mjs';
+import { loadAnalystInputs, validateAnalystReport, runWeeklyAnalyst as runWeeklyAnalystCore, maybeLaunchWeeklyAnalyst, parseNativeReport } from '../../scripts/model-weekly-analyst.mjs';
+const runWeeklyAnalyst = (options) => runWeeklyAnalystCore({ prepareSandbox: async (runDir) => ({ home: path.join(runDir, 'fixture-native-home'), proof: { trusted: true, currentHash: 'sha256:' + 'a'.repeat(64), inferenceStarted: false } }), ...options });
 const NOW = Date.now(); const dirs = [];
 const profile = { harnesses: { codex: { available: true, subscription: true }, 'claude-code': { available: true, subscription: true } } };
 const candidates = [{ id: 'gpt-6.1-sol', provider: 'openai', harness: ['codex'], subscription: ['codex'], supportedEfforts: ['high'] },
@@ -59,7 +60,7 @@ it('uses the real dispatch boundary, Standard argv, stdin and bounded structured
   const result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, nativeModels, spawnNative: native(f.report, capture), checkAuth: auth, checkAllowance: allowance,
     env: { PATH: '/bin', OPENAI_API_KEY: 'secret', OPENROUTER_API_KEY: 'secret', RUVNET_SIGNING_KEY: 'secret' } });
   expect(result.status).toBe('validated-semantic-report'); expect(result.modelObserved).toBe(false);
-  expect(capture.args).toContain('--ignore-user-config'); expect(capture.args).toContain('service_tier="default"');
+  expect(capture.args).not.toContain('--ignore-user-config'); expect(capture.options.env.CODEX_HOME).toContain('fixture-native-home'); expect(result.toolUseDeniedByTrustedNativeHook.trusted).toBe(true); expect(capture.args).toContain('service_tier="default"');
   expect(capture.args).toContain('features.fast_mode=false'); expect(capture.args).toContain('--output-schema');
   for (const feature of ['shell_tool', 'unified_exec', 'multi_agent', 'multi_agent_v2', 'plugins', 'skill_search']) expect(capture.args).toContain(`features.${feature}=false`);
   expect(capture.args).toContain('web_search="disabled"');
@@ -136,4 +137,32 @@ it('launches through the current real dispatcher with an old approved review and
   expect(dispatchReceipt.selectionRouteDigest).toBe(result.routeSha256);
   expect(dispatchReceipt.selectionEvidenceStale).toBe(true);
   expect(JSON.parse(fs.readFileSync(path.join(f.routerDir, 'routing-policy.json'))).reviewedAt).toBe(f.policy.reviewedAt);
+});
+
+it('blocks native inference when deny-hook trust metadata is not accepted', async () => {
+  const f = fixture(); const spawnNative = vi.fn();
+  const result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, nativeModels, spawnNative,
+    prepareSandbox: async () => ({ home: '/unused', proof: { trusted: false } }), checkAuth: auth, checkAllowance: allowance });
+  expect(result.status).toBe('failed'); expect(result.reason).toContain('tool-denial'); expect(spawnNative).not.toHaveBeenCalled();
+});
+it('accepts only the sole native deny hook after version-fenced private trust write', async () => {
+  const { trustAnalystDenial, TOOL_DENIAL } = await import('../../scripts/model-analyst-sandbox.mjs');
+  expect(TOOL_DENIAL.hookSpecificOutput).toMatchObject({ hookEventName: 'PreToolUse', permissionDecision: 'deny' });
+  const calls = []; const home = '/private/fixture'; const command = '/absolute/node deny-script';
+  const hook = { key: 'private:pre_tool_use:0:0', eventName: 'preToolUse', matcher: '.*', command, enabled: true, currentHash: 'sha256:' + 'b'.repeat(64) };
+  const spawnHost = (_cmd, _args, options) => {
+    expect(options.env.CODEX_HOME).toBe(home); const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+    let trusted = false; child.kill = () => {}; child.stdin = new EventEmitter(); child.stdin.end = () => {};
+    child.stdin.write = (line) => { const req = JSON.parse(line); if (!req.id) return; calls.push(req);
+      let result = {}; if (req.method === 'hooks/list') result = { data: [{ errors: [], hooks: [{ ...hook, trustStatus: trusted ? 'trusted' : 'untrusted' }] }] };
+      if (req.method === 'config/read') result = { layers: [{ name: { type: 'user', file: home + '/config.toml' }, version: 'VERSION' }] };
+      if (req.method === 'config/batchWrite') trusted = true;
+      queueMicrotask(() => child.stdout.emit('data', JSON.stringify({ id: req.id, result }) + '\n'));
+    }; return child;
+  };
+  expect((await trustAnalystDenial({ home, command, spawnHost })).trusted).toBe(true);
+  const write = calls.find((c) => c.method === 'config/batchWrite');
+  expect(write.params).toMatchObject({ filePath: home + '/config.toml', expectedVersion: 'VERSION', reloadUserConfig: true });
+  expect(write.params.edits[0].value).toBe(hook.currentHash);
+  expect(calls.some((c) => c.method.startsWith('thread/') || c.method.startsWith('turn/'))).toBe(false);
 });
