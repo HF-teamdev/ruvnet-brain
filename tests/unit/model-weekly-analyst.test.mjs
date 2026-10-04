@@ -162,7 +162,7 @@ it('accepts only the sole native deny hook after version-fenced private trust wr
   };
   expect((await trustAnalystDenial({ home, command, spawnHost })).trusted).toBe(true);
   const write = calls.find((c) => c.method === 'config/batchWrite');
-  expect(write.params).toMatchObject({ filePath: home + '/config.toml', expectedVersion: 'VERSION', reloadUserConfig: true });
+  expect(write.params).toMatchObject({ filePath: path.join(home, 'config.toml'), expectedVersion: 'VERSION', reloadUserConfig: true });
   expect(write.params.edits[0].value).toBe(hook.currentHash);
   expect(calls.some((c) => c.method.startsWith('thread/') || c.method.startsWith('turn/'))).toBe(false);
 });
