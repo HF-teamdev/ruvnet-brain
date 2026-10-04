@@ -29,23 +29,22 @@ export function classify(features, harness = features.harness || 'codex') {
   if (harness === 'claude-code') {
     return HARD.test(text) ? 'hard' : !coding && MECHANICAL.test(text) ? 'fast' : 'medium';
   }
-  const facts = validateTaskFacts(features.taskFacts);
-  if (facts) {
-    if (facts.exceptionalReason) return 'exceptional';
-    if (['architecture','coupled-implementation'].includes(facts.uncertainty) ||
-        facts.consequentialPlanning || facts.finalSubstantiveReview) return 'hard';
-    if (facts.scope === 'substantial') return 'substantial';
-    // A mechanical flag cannot override clear implementation/code requirements in the task.
-    if (facts.taskType === 'mechanical' && !coding) return 'fast';
-    return 'medium';
-  }
-  const consequential = /\b(consequential planning|final substantive review|ambiguous architecture|architecture ambiguity|architectur\w* tradeoff|tightly coupled uncertain implementation|uncertain tightly coupled implementation)\b/i.test(text);
+  const consequential = /\b(consequential planning|substantive planning|substantive review|final substantive review|plan (?:a |the )?new system|design (?:a |the )?new architecture|ambiguous architecture|architecture ambiguity|architectur\w* tradeoff|tightly coupled uncertain implementation|uncertain tightly coupled implementation)\b/i.test(text);
   const architectureAmbiguity = /architectur\w*/i.test(text) && /\b(ambiguous|ambiguity|unresolved|uncertain|trade[- ]?off)\b/i.test(text);
   const coupledUncertainty = /tightly coupled/i.test(text) && /implementation|coding/i.test(text) && /uncertain|unresolved|ambiguous/i.test(text);
-  if (HARD.test(text) || consequential || architectureAmbiguity || coupledUncertainty) return 'hard';
-  const substantial = /\b(substantial (?:implementation|coding|feature|task)|cross-module (?:implementation|feature|refactor)|multi-file (?:implementation|feature|refactor)|end-to-end implementation|broad refactor)\b/i.test(text);
-  if (substantial) return 'substantial';
-  return !coding && MECHANICAL.test(text) ? 'fast' : 'medium';
+  const hardText = HARD.test(text) || consequential || architectureAmbiguity || coupledUncertainty;
+  const substantialText = /\b(substantial (?:implementation|coding|feature|task)|cross-module (?:implementation|feature|refactor)|multi-file (?:implementation|feature|refactor)|end-to-end implementation|broad refactor)\b/i.test(text);
+  const facts = validateTaskFacts(features.taskFacts);
+  // Partial caller metadata supplements the assessment; it cannot lower explicit high-consequence text.
+  if (facts?.exceptionalReason) return 'exceptional';
+  if (hardText) return 'hard';
+  if (facts && (['architecture','coupled-implementation'].includes(facts.uncertainty) ||
+      facts.consequentialPlanning || facts.finalSubstantiveReview ||
+      ((facts.scope === 'substantial' || substantialText) && ['planning','review'].includes(facts.taskType)))) return 'hard';
+  if (facts?.scope === 'substantial' || substantialText) return 'substantial';
+  // A mechanical flag cannot override clear implementation/code requirements in the task.
+  return !coding && (facts?.taskType === 'mechanical' || MECHANICAL.test(text)) ? 'fast' : 'medium';
+
 }
 
 export function choose({ features, candidates, harness, profile, selection }) {

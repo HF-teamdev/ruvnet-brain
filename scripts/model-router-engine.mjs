@@ -170,7 +170,7 @@ export async function selectDecision({ prompt, harness, candidates, profile, pol
   classifier.validateTaskFacts?.(features.taskFacts);
   const assessedClass = classifier.classify?.(features, harness);
   const decision = await policy.choose({ features, candidates: pool, harness, profile, selection });
-  if (harness === 'codex' && (['substantial', 'exceptional'].includes(assessedClass) || (features.taskFacts && assessedClass === 'hard')) && decision?.taskClass !== assessedClass) {
+  if (harness === 'codex' && ['substantial', 'exceptional', 'hard'].includes(assessedClass) && decision?.taskClass !== assessedClass) {
     throw new Error(`Task requires explicit qualified ${assessedClass} route; legacy policy cannot silently use medium`);
   }
   const chosen = pool.find((m) => m.id === decision?.model);

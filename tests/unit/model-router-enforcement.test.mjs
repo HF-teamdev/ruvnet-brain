@@ -216,3 +216,34 @@ test('managed dispatcher CLI keeps structured task facts out of actual worker pr
     expect(fs.readFileSync(path.join(tmp,'receipts.jsonl'),'utf8')).not.toContain('PRIVATE_STRUCTURED_TASK');
   }finally{fs.rmSync(tmp,{recursive:true,force:true});}
 });
+
+test('substantial planning and review go directly Astra high while substantial coding remains Sol high',async()=>{
+  const updated={...selection,routes:{...selection.routes,codex:{...selection.routes.codex,substantial:{model:'sol',effort:'high'}}}};
+  for(const taskType of ['planning','review']) {
+    expect(await route('assess requested work','codex',{selection:updated,features:extractFeatures('assess requested work','codex',{taskType,scope:'substantial'})})).toMatchObject({taskClass:'hard',model:'astra',effort:'high'});
+  }
+  expect(await route('build requested work','codex',{selection:updated,features:extractFeatures('build requested work','codex',{taskType:'coding',scope:'substantial'})})).toMatchObject({taskClass:'substantial',model:'sol',effort:'high'});
+});
+
+test('nontrivial system planning and architecture design route hard without escalating ordinary plans and inspection',async()=>{
+  for(const prompt of ['plan a new system','design a new architecture','substantive planning of rollout','perform substantive review']) {
+    expect(await route(prompt)).toMatchObject({taskClass:'hard',model:'astra',effort:'high'});
+  }
+  for(const prompt of ['plan ordinary implementation work','inspect architecture documentation']) {
+    expect(await route(prompt)).toMatchObject({taskClass:'medium',model:'sol',effort:'medium'});
+  }
+});
+
+test('partial task facts cannot downgrade high-consequence text or substantial work',async()=>{
+  for(const facts of [{},{taskType:'mechanical'},{taskType:'coding',scope:'routine',uncertainty:'environment'},{uncertainty:'missing-information'}]) {
+    const prompt='security audit of cryptographic consensus';
+    expect(await route(prompt,'codex',{features:extractFeatures(prompt,'codex',facts)})).toMatchObject({taskClass:'hard',model:'astra',effort:'high'});
+  }
+  const updated={...selection,routes:{...selection.routes,codex:{...selection.routes.codex,substantial:{model:'sol',effort:'high'}}}};
+  expect(await route('substantial implementation','codex',{selection:updated,features:extractFeatures('substantial implementation','codex',{})})).toMatchObject({taskClass:'substantial',model:'sol',effort:'high'});
+  expect(await route('inspect configuration','codex',{selection:updated,features:extractFeatures('inspect configuration','codex',{uncertainty:'environment'})})).toMatchObject({taskClass:'medium',model:'sol',effort:'medium'});
+});
+
+test('legacy custom policy cannot bypass the high-consequence classification floor',async()=>{
+  await expect(route('security audit of cryptographic consensus','codex',{policy:{choose:()=>({taskClass:'fast',model:'luna',effort:'low'})}})).rejects.toThrow('explicit qualified hard');
+});
