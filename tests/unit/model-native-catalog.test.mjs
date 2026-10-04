@@ -90,3 +90,16 @@ test('unknown native efforts remain visible without enabling or inventing suppor
   f.models.codex.at(-1).efforts = ['high'];
   expect(await f.run()).toMatchObject({ status: 'current', newNativeModelIds: [], catalogAdded: 1 });
 });
+
+test('real native ultra control does not erase verified supported efforts or enable an unsupported control', async () => {
+  const f = fixture(); await f.run(); const policy = f.bytes('routing-policy.json');
+  f.models.codex.push({ id: 'new-sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }, { id: 'ultra-only', efforts: ['ultra'] });
+  expect(await f.run()).toMatchObject({ status: 'current', catalogAdded: 1, unknownEffortModelIds: ['openai/ultra-only'] });
+  const recognized = ['high', 'low', 'max', 'medium', 'xhigh'];
+  const snapshot = JSON.parse(f.bytes('native-availability.json'));
+  expect(snapshot.hosts.find(h => h.host === 'codex').models.find(m => m.id === 'new-sol')).toEqual({ id: 'new-sol', efforts: recognized, effortSupport: 'verified', unrecognizedEfforts: ['ultra'] });
+  const catalog = JSON.parse(f.bytes('catalog.json'));
+  expect(catalog.candidates.find(c => c.id === 'new-sol').supportedEfforts).toEqual(recognized);
+  expect(catalog.candidates.find(c => c.id === 'ultra-only')).toBeUndefined();
+  expect(catalog.candidates[0]).toEqual(f.catalog.candidates[0]); expect(f.bytes('routing-policy.json')).toEqual(policy);
+});

@@ -48,9 +48,12 @@ export async function refreshNativeCatalog({ routerDir = path.join(os.homedir(),
       for (const model of result.models) {
         if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(model.id ?? '')) return failed(`Exact native model identity unavailable for ${host}`);
         const id = `${HOSTS[host]}/${model.id}`; nativeIds.push(id);
-        const knownEfforts = Array.isArray(model.efforts) && model.efforts.length && model.efforts.every(e => EFFORTS.has(e));
-        const efforts = knownEfforts ? [...new Set(model.efforts)].sort() : [];
-        models.push({ id: model.id, efforts, effortSupport: knownEfforts ? 'verified' : 'unknown' });
+        const nativeEfforts = Array.isArray(model.efforts) ? model.efforts.filter(e => typeof e === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(e)) : [];
+        const efforts = [...new Set(nativeEfforts.filter(e => EFFORTS.has(e)))].sort();
+        const unrecognizedEfforts = [...new Set(nativeEfforts.filter(e => !EFFORTS.has(e)))].sort();
+        const knownEfforts = efforts.length > 0;
+        models.push({ id: model.id, efforts, effortSupport: knownEfforts ? 'verified' : 'unknown',
+          ...(unrecognizedEfforts.length ? { unrecognizedEfforts } : {}) });
         if (!knownEfforts) { unknownEffortIds.push(id); continue; }
         const existing = candidates.find(c => c.id === model.id);
         if (existing) {
