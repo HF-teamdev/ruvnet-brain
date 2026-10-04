@@ -3934,6 +3934,7 @@ async function runUpdate() {
     } catch (error) {
       warn(`managed model additions were not merged (${error.message}); your catalog was left unchanged`);
     }
+    refreshManagedRouterDefault();
     process.exitCode = 0;
     return;
   }
@@ -4207,6 +4208,8 @@ async function runUpdate() {
   // updated. Additive and non-interactive; their overrides win, metered rows are never auto-enabled,
   // and a failure here is reported but never fails an otherwise-good update.
   if (updateStatus === 0) {
+    const defaultReceipt = refreshManagedRouterDefault();
+    recordRefreshAdvisory(refreshReceipt, 'managed-router-default', defaultReceipt.action === 'failed' ? 'SKIP' : 'PASS', defaultReceipt);
     try {
       const managed = applyManagedCatalogUpdate({
         routerDir: path.join(os.homedir(), '.claude', 'model-router'),
@@ -4849,14 +4852,50 @@ export function parseNightlyAnswer(answer) {
 // suppression flags) is testable in-process under RUVNET_BRAIN_IMPORT_ONLY=1 without a real install.
 // Returns a status string; never throws (the caller also guards — a finished install must never
 // be broken by an optional offer).
+// The default classifier is managed executable source; overrides belong in policy.mjs.
+// Preserve every prior default by its content digest before replacing it atomically.
+export function syncManagedRouterDefault({ routerDir = path.join(os.homedir(), '.claude', 'model-router'), packageRoot = REPO_ROOT } = {}) {
+  const source = fs.readFileSync(path.join(packageRoot, 'config', 'model-router', 'policy.default.mjs'));
+  const destination = path.join(routerDir, 'policy.default.mjs');
+  fs.mkdirSync(routerDir, { recursive: true });
+  const prior = fs.existsSync(destination) ? fs.readFileSync(destination) : null;
+  if (prior?.equals(source)) return { action: 'unchanged' };
+  let backup = null;
+  if (prior) {
+    backup = `${destination}.pre-managed-upgrade-${crypto.createHash('sha256').update(prior).digest('hex').slice(0, 16)}`;
+    try { fs.writeFileSync(backup, prior, { flag: 'wx', mode: 0o600 }); }
+    catch (error) {
+      if (error.code !== 'EEXIST' || !fs.readFileSync(backup).equals(prior)) throw error;
+    }
+  }
+  const temporary = `${destination}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(temporary, source, { flag: 'wx', mode: prior ? fs.statSync(destination).mode & 0o777 : 0o600 });
+    fs.renameSync(temporary, destination);
+  } finally { fs.rmSync(temporary, { force: true }); }
+  return { action: prior ? 'upgraded' : 'created', backup };
+}
+
+function refreshManagedRouterDefault() {
+  try {
+    const receipt = syncManagedRouterDefault();
+    if (receipt.action === 'created') ok('installed managed model-router default (custom overrides belong in policy.mjs)');
+    if (receipt.action === 'upgraded') ok(`upgraded managed model-router default; prior source preserved at ${receipt.backup}`);
+    return receipt;
+  } catch (error) {
+    warn(`managed model-router default was not refreshed (${error.message}); native dispatch remains fail-closed`);
+    return { action: 'failed' };
+  }
+}
+
 // ── MetaHarness router: config materialization + THIS user's subscription profile (2026-07-12) ──
 // Stuart's mandate: subscription-awareness must be per-user. Detect what the machine can PROVE
 // (Codex auth mode from ~/.codex/auth.json's SHAPE — never its secrets), ASK what it can't (Claude
 // plan tiers aren't probeable from disk), and RECORD both with their basis, so the router's
 // $0-floor never assumes a plan this user doesn't have (billing them) or misses one they do
 // (wasting it). Config templates ship in the npm package's config/; router tools are copied to
-// ~/.claude/model-router/bin/ because the npx run dir vanishes after install. Never overwrites
-// user-edited files. Non-fatal like every offer.
+// ~/.claude/model-router/bin/ because the npx run dir vanishes after install. Managed defaults
+// upgrade with a backup; custom policy.mjs, profiles and reviewed allocation overrides remain user-owned. Non-fatal like every offer.
 export async function offerRouterProfile() {
   if (TEST_MODE) return 'suppressed';
   const routerDir = path.join(os.homedir(), '.claude', 'model-router');
@@ -4867,12 +4906,7 @@ export async function offerRouterProfile() {
   );
 
   fs.mkdirSync(path.join(routerDir, 'bin'), { recursive: true });
-  const policySrc = path.join(pkgRoot, 'config', 'model-router', 'policy.default.mjs');
-  const policyDst = path.join(routerDir, 'policy.default.mjs');
-  if (fs.existsSync(policySrc) && !fs.existsSync(policyDst)) {
-    fs.copyFileSync(policySrc, policyDst);
-    ok('installed policy.default.mjs (edit freely — goldie keeps prices fresh where scheduled)');
-  }
+  refreshManagedRouterDefault();
   // ONE implementation of the managed-catalog step, shared with runUpdate() (issue #87). It used to
   // live here only, which is exactly why existing users never received managed additions.
   try {
