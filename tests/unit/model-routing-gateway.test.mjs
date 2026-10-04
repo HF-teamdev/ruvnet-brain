@@ -3,18 +3,18 @@ import path from 'node:path';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { validateDispatchDecision } from '../../scripts/model-router-dispatch.mjs';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { connectNativeGateway, routeCodexTurn, nativeGatewayLaunch, parseGatewayInvocation,
-  decideNativeTurn, appendGatewayReceipt } from '../../scripts/model-routing-gateway.mjs';
+  decideNativeTurn, appendGatewayReceipt, verifyNativeVision } from '../../scripts/model-routing-gateway.mjs';
 
 const roots = [], gateways = [];
 afterEach(() => {
   for (const gateway of gateways.splice(0)) gateway.close();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
-const decision = (harness = 'codex', model = 'native-fixture', effort = 'low') => ({
-  harness, model, effort, taskClass: 'fast', subscriptionCovered: true,
+const decision = (harness = 'codex', model = 'native-fixture', effort = 'high') => ({
+  harness, model, effort, taskClass: 'hard', subscriptionCovered: true,
 });
 const turn = (id = 9) => ({ id, method: 'turn/start', params: { threadId: 'existing-thread',
   input: [{ type: 'text', text: 'PRIVATE PROMPT', text_elements: [{ byteRange: { start: 0, end: 2 } }] },
@@ -92,7 +92,79 @@ describe('native turn routing transport', () => {
     for (const msg of messages) f.send(msg);
     expect(f.sent).toEqual(messages);
     resolve(decision()); await f.idle();
-    expect(f.sent.at(-1).method).toBe('turn/start');
+    expect(f.sent.some((msg) => msg.method === 'turn/start')).toBe(false);
+    expect(f.received.at(-1)).toMatchObject({ id: 9, error: { message: 'Native turn cancelled before dispatch.' } });
+  });
+
+  it('preserves UTF-8 split across every byte in both protocol directions', async () => {
+    const f = fixture('codex'); autoCodex(f);
+    const original = turn(); original.params.input[0].text = 'Brain 🧠 日本語';
+    for (const byte of Buffer.from(JSON.stringify(original) + '\n')) f.input.write(Buffer.from([byte]));
+    await f.idle(); expect(f.sent.at(-1).params.input).toEqual(original.params.input);
+    const response = { id: original.id, result: { text: '🧠 日本語' } };
+    for (const byte of Buffer.from(JSON.stringify(response) + '\n')) f.child.stdout.write(Buffer.from([byte]));
+    expect(f.received.at(-1)).toEqual(response);
+  });
+
+  it('honors bidirectional backpressure and ordered drain without dropping messages', async () => {
+    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    const input = new PassThrough(), observedHost = [], observedClient = [], callbacks = [], clientCallbacks = [];
+    child.stdin = new Writable({ highWaterMark: 1, write(data, _encoding, done) { observedHost.push(data.toString()); callbacks.push(done); } });
+    const output = new Writable({ highWaterMark: 1, write(data, _encoding, done) { observedClient.push(data.toString()); clientCallbacks.push(done); } });
+    const gateway = connectNativeGateway({ harness: 'codex', child, input, output }); gateways.push(gateway);
+    input.write('{"id":1,"method":"ping"}\n{"id":2,"method":"ping"}\n');
+    expect(input.isPaused()).toBe(true); expect(observedHost).toHaveLength(1);
+    callbacks.shift()(); await tick(); expect(observedHost).toHaveLength(2);
+    callbacks.shift()(); await tick(); expect(input.isPaused()).toBe(false);
+    child.stdout.write('{"id":1,"result":"🧠"}\n{"id":2,"result":true}\n');
+    expect(child.stdout.isPaused()).toBe(true); expect(observedClient).toHaveLength(1);
+    clientCallbacks.shift()(); await tick(); expect(observedClient).toHaveLength(2);
+    clientCallbacks.shift()(); await tick(); expect(child.stdout.isPaused()).toBe(false);
+    expect(observedHost.map(JSON.parse).map((m) => m.id)).toEqual([1, 2]);
+    expect(observedClient.map(JSON.parse).map((m) => m.id)).toEqual([1, 2]);
+  });
+
+  it('cancels held turns during native allowance verification and close suppresses late decisions', async () => {
+    const f = fixture('codex'); f.send(turn()); await until(() => f.sent.length === 1);
+    f.send({ id: 'cancel', method: 'turn/interrupt', params: { threadId: 'existing-thread' } });
+    f.reply(f.sent[0], { ordinaryUsageAllowed: true }); await f.idle();
+    expect(f.sent.some((m) => m.method === 'turn/start')).toBe(false);
+    let resolve; const g = fixture('codex', { decide: () => new Promise((r) => { resolve = r; }) });
+    g.send(turn()); await tick(); g.close(); resolve(decision()); await g.idle(); expect(g.sent).toEqual([]);
+  });
+
+  it('refuses allocation mutations during Claude readback while permissions stay immediate', async () => {
+    const f = fixture('claude-code'); f.initialize(); f.send(user());
+    await until(() => f.sent.length === 2); f.reply(f.sent[1]); await until(() => f.sent.length === 3);
+    f.send({ type: 'control_request', request_id: 'parent-model', request: { subtype: 'set_model', model: 'other' } });
+    f.send({ type: 'control_response', response: { request_id: 'tool', subtype: 'success', response: { behavior: 'allow' } } });
+    expect(f.received.at(-1)).toMatchObject({ type: 'control_response', response: { request_id: 'parent-model', subtype: 'error' } });
+    expect(f.sent.at(-1).response.request_id).toBe('tool');
+    f.reply(f.sent[2], { applied: { model: 'native-fixture', effort: 'high' } }); await f.idle();
+    expect(f.sent.at(-1)).toEqual(user()); expect(f.sent.some((m) => m.request?.subtype === 'set_model')).toBe(false);
+  });
+
+  it('rejects nested provider, configuration, thread-setting and API login bypasses', () => {
+    const f = fixture('codex');
+    for (const message of [
+      { method: 'thread/resume', params: { config: { model_providers: { openai: { base_url: 'foreign' } } } } },
+      { method: 'thread/settings/update', params: { threadId: 'same', model: 'override' } },
+      { method: 'config/value/write', params: { keyPath: 'model_providers.openai.base_url', value: 'foreign', mergeStrategy: 'replace' } },
+      { method: 'config/batchWrite', params: { edits: [{ keyPath: 'features.fast_mode', value: true }] } },
+      { method: 'account/login/start', params: { type: 'apiKey', apiKey: 'PRIVATE' } },
+    ]) f.send({ id: 'blocked', ...message });
+    expect(f.sent).toEqual([]); expect(f.received).toHaveLength(5); expect(JSON.stringify(f.received)).not.toContain('PRIVATE');
+    const allowed = { id: 'safe', method: 'config/value/write', params: { keyPath: 'sandbox_mode', value: 'read-only', mergeStrategy: 'replace' } };
+    f.send(allowed); expect(f.sent).toEqual([allowed]);
+  });
+
+  it('routes mixed and image-only inputs conservatively without changing image payloads', async () => {
+    const f = fixture('codex', { decide: async (prompt, host, facts) => { expect(facts.multimodal).toBe(true); return decision(host); } }); autoCodex(f);
+    const original = turn(); original.params.input = original.params.input.filter((part) => part.type === 'image');
+    f.send(original); await f.idle(); expect(f.sent.at(-1).params.input).toEqual(original.params.input);
+    expect(f.receipts[0]).toMatchObject({ classificationSource: 'multimodal-uncertainty', effort: 'high' });
+    const g = fixture('codex', { decide: async () => ({ ...decision(), effort: 'low', taskClass: 'fast' }) }); autoCodex(g);
+    g.send(turn()); await g.idle(); expect(g.sent.some((m) => m.method === 'turn/start')).toBe(false);
   });
 
   it('preserves native thread resume context but refuses explicit provider or credit-tier overrides', () => {
@@ -109,7 +181,7 @@ describe('native turn routing transport', () => {
   });
 
   it('reclassifies each new turn in the same thread and never treats requested model as observed', async () => {
-    let n = 0; const f = fixture('codex', { decide: async () => decision('codex', `native-${++n}`, n === 1 ? 'low' : 'high') });
+    let n = 0; const f = fixture('codex', { decide: async () => decision('codex', `native-${++n}`, 'high') });
     autoCodex(f);
     f.send(turn(1)); await f.idle(); f.send(turn(2)); await f.idle();
     expect(f.sent.filter((msg) => msg.method === 'turn/start').map((msg) => msg.params.model)).toEqual(['native-1', 'native-2']);
@@ -142,7 +214,7 @@ describe('native turn routing transport', () => {
     expect(f.sent).toEqual([]);
     f.initialize(); await tick();
     expect(f.sent[0].request_id).toBe('external-init');
-    expect(f.sent[1].request).toEqual({ subtype: 'apply_flag_settings', settings: { model: 'native-fixture', effortLevel: 'low' } });
+    expect(f.sent[1].request).toEqual({ subtype: 'apply_flag_settings', settings: { model: 'native-fixture', effortLevel: 'high' } });
     expect(f.sent.some((msg) => msg.type === 'user')).toBe(false);
     await claudeControls(f);
     expect(f.sent.at(-1)).toEqual(user());
@@ -154,7 +226,7 @@ describe('native turn routing transport', () => {
     const f = fixture('claude-code'); f.initialize(); f.send(user());
     await until(() => f.sent.length === 2); f.reply(f.sent[1]);
     await until(() => f.sent.length === 3);
-    f.reply(f.sent[2], { effective: { model: 'native-fixture', effortLevel: 'low' }, applied: { model: 'other', effort: 'low' } });
+    f.reply(f.sent[2], { effective: { model: 'native-fixture', effortLevel: 'high' }, applied: { model: 'other', effort: 'high' } });
     await f.idle();
     expect(f.sent.some((msg) => msg.type === 'user')).toBe(false);
     expect(f.receipts.every((r) => r.modelObserved === false)).toBe(true);
@@ -170,7 +242,7 @@ describe('native turn routing transport', () => {
     f.respond({ type: 'result', subtype: 'success', session_id: 'existing-session' });
     f.send(user('NEXT TURN')); await until(() => f.sent.filter((m) => m.request?.subtype === 'apply_flag_settings').length === 2);
     f.reply(f.sent.at(-1)); await until(() => f.sent.filter((m) => m.request?.subtype === 'get_settings').length === 2);
-    f.reply(f.sent.at(-1), { applied: { model: 'native-fixture', effort: 'low' } }); await f.idle();
+    f.reply(f.sent.at(-1), { applied: { model: 'native-fixture', effort: 'high' } }); await f.idle();
     expect(f.prompts).toEqual(['PRIVATE PROMPT', 'NEXT TURN']);
   });
 
@@ -214,6 +286,18 @@ describe('native gateway launch and privacy', () => {
     expect(nativeGatewayLaunch({ harness: 'claude-code', realBinary: binary, args, env: {} }).args).toEqual(args);
     expect(() => nativeGatewayLaunch({ harness: 'claude-code', realBinary: binary, args: [] })).toThrow(/stream-json/);
   });
+  it('validates provider/auth overlays without removing unrelated native settings', () => {
+    const binary = executable(), codexArgs = ['app-server'];
+    for (const setting of ['model_providers.openai.base_url="foreign"', 'model_providers={openai={base_url="foreign"}}', 'service_tier="priority"']) {
+      expect(() => nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: [...codexArgs, '-c', setting], env: {} })).toThrow();
+    }
+    const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
+    for (const settings of [{ apiKeyHelper: 'secret-helper' }, { env: { ANTHROPIC_BASE_URL: 'foreign' } }]) {
+      expect(() => nativeGatewayLaunch({ harness: 'claude-code', realBinary: binary, args: [...args, '--settings', JSON.stringify(settings)], env: {} })).toThrow();
+    }
+    const safe = [...args, '--settings', JSON.stringify({ hooks: { SessionStart: [] }, permissions: { allow: ['Read'] } })];
+    expect(nativeGatewayLaunch({ harness: 'claude-code', realBinary: binary, args: safe, env: {} }).args).toEqual(safe);
+  });
   it('policy-only engine receives prompt on stdin, never args, and timeout is bounded', async () => {
     let actual;
     const fake = (_bin, args) => { const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
@@ -225,10 +309,12 @@ describe('native gateway launch and privacy', () => {
   it('executes the real strict engine with fresh fixture policy and refuses it when currency expires', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-policy-')); roots.push(root);
     const selection = { schemaVersion: 1, reviewedAt: new Date().toISOString(), routes: {
-      codex: { fast: { model: 'gpt-native-fixture', effort: 'low' } },
+      codex: { fast: { model: 'gpt-native-fixture', effort: 'low' }, hard: { model: 'gpt-native-fixture', effort: 'high' } },
+      'claude-code': { hard: { model: 'claude-native-fixture', effort: 'high' } },
     } };
-    const profile = { harnesses: { codex: { available: true, subscription: true } } };
-    const candidates = [{ id: 'gpt-native-fixture', provider: 'openai', harness: ['codex'], subscription: ['codex'], tier: 'cheap' }];
+    const profile = { harnesses: { codex: { available: true, subscription: true }, 'claude-code': { available: true, subscription: true } } };
+    const candidates = [{ id: 'gpt-native-fixture', provider: 'openai', harness: ['codex'], subscription: ['codex'], tier: 'cheap' },
+      { id: 'claude-native-fixture', provider: 'anthropic', harness: ['claude-code'], subscription: ['claude-code'], tier: 'frontier' }];
     fs.writeFileSync(path.join(root, 'catalog.json'), JSON.stringify({ candidates }));
     fs.writeFileSync(path.join(root, 'profile.json'), JSON.stringify(profile));
     fs.writeFileSync(path.join(root, 'routing-policy.json'), JSON.stringify(selection));
@@ -241,10 +327,20 @@ describe('native gateway launch and privacy', () => {
       nativeModels: [{ slug: d.model, supported_reasoning_levels: [{ effort: 'low' }] }] })).not.toThrow();
     expect(() => validateDispatchDecision(d, { selection, profile, candidates,
       nativeModels: [{ slug: d.model, supported_reasoning_levels: [{ effort: 'high' }] }] })).toThrow(/does not support/);
+    for (const harness of ['codex', 'claude-code']) {
+      const imageRoute = await decideNativeTurn('', harness, { env, multimodal: true });
+      expect(imageRoute).toMatchObject({ taskClass: 'hard', effort: 'high', subscriptionCovered: true });
+    }
     selection.reviewedAt = '2000-01-01T00:00:00.000Z';
     fs.writeFileSync(path.join(root, 'routing-policy.json'), JSON.stringify(selection));
     await expect(decideNativeTurn('translate these fixture words', 'codex', { env })).rejects.toThrow(/allocation unavailable/);
     expect(fs.readFileSync(env.MODEL_ROUTER_DECISIONS, 'utf8')).not.toContain('fixture words');
+  });
+
+  it('requires image capability when the native host declares input modalities', () => {
+    expect(() => verifyNativeVision(decision(), [{ slug: 'native-fixture', input_modalities: ['text'] }])).toThrow();
+    expect(() => verifyNativeVision(decision(), [{ slug: 'native-fixture', input_modalities: ['text', 'image'] }])).not.toThrow();
+    expect(() => verifyNativeVision(decision(), [{ slug: 'native-fixture' }])).not.toThrow();
   });
 
   it('durable receipt contains only supplied routing metadata', () => {
