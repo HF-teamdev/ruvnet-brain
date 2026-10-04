@@ -61,6 +61,9 @@ it('uses the real dispatch boundary, Standard argv, stdin and bounded structured
   expect(result.status).toBe('validated-semantic-report'); expect(result.modelObserved).toBe(false);
   expect(capture.args).toContain('--ignore-user-config'); expect(capture.args).toContain('service_tier="default"');
   expect(capture.args).toContain('features.fast_mode=false'); expect(capture.args).toContain('--output-schema');
+  for (const feature of ['shell_tool', 'unified_exec', 'multi_agent', 'multi_agent_v2', 'plugins', 'skill_search']) expect(capture.args).toContain(`features.${feature}=false`);
+  expect(capture.args).toContain('web_search="disabled"');
+  expect(result.completeToolRegistryVerifiedAbsent).toBe(false);
   expect(capture.args).toContain('read-only'); expect(capture.args).not.toContain(capture.prompt);
   expect(capture.options.env.MODEL_ROUTER_WEEKLY_ANALYST).toBe('1');
   expect(capture.options.env.OPENROUTER_API_KEY).toBeUndefined(); expect(capture.options.env.RUVNET_SIGNING_KEY).toBeUndefined();
@@ -114,7 +117,7 @@ it('a delayed superseded analyst cannot publish or remove the successor owner', 
   expect(fs.existsSync(path.join(f.routerDir, 'semantic-current.json'))).toBe(false);
 });
 it('requires native completion evidence rather than just a final string', () => {
-  expect(() => parseNativeReport('{"type":"item.completed","item":{"type":"command_execution"}}')).toThrow('unauthorized tool');
+  for (const type of ['command_execution', 'mcp_tool_call', 'web_search', 'file_change', 'collab_tool_call']) expect(() => parseNativeReport(JSON.stringify({ type: 'item.completed', item: { type } }))).toThrow('unauthorized tool');
   expect(() => parseNativeReport('{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}')).toThrow('completion envelope');
 });
 
