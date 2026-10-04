@@ -40,6 +40,7 @@
     "test:all": "npm run test:unit && npm run test:mesh && npm run test:mutation && npm run test:regression && npm run test:integration && npm test",
     "metaharness:receipts": "node scripts/metaharness-receipts.mjs",
     "route:cheap": "node scripts/route-cheap.mjs",
+    "routing:eval": "node scripts/model-routing-eval.mjs",
     "route:receipt": "node scripts/dispatch-receipt.mjs",
     "trismart": "node scripts/trismart.mjs",
     "metaharness:fix": "node scripts/fix-metaharness-memretrieve.mjs --apply",
