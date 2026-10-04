@@ -91,7 +91,7 @@ test('security + code escalates above the cheap tier', () => {
 test('$1,600 floor: claude-code prefers the $0 subscription model over a billed one in-tier', () => {
   const d = run(['--harness', 'claude-code', '--prompt', 'summarize notes']); // trivial -> cheap tier
   expect(d.provider).toBe('anthropic');
-  expect(d.est_input_cost_usd).toBeNull();
+  expect(d.est_input_cost_usd).toBe(0);
 });
 
 test('cross-tier $0 floor: codex never pays a billed model while a subscription model can do the job', () => {

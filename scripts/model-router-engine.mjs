@@ -251,7 +251,8 @@ async function main() {
     policy_source: policy ? policy.source.replace(os.homedir(), '~') : 'none',
     profile: profile ? PROFILE_PATH.replace(os.homedir(), '~') : 'none (catalog taken as-is — run model-router-setup.mjs)',
     price_verified: chosen ? chosen.verified : null,
-    est_input_cost_usd: estInputCost(chosen, features.estTokens), // null if price unknown — never invented
+    est_input_cost_usd: decision.subscriptionCovered ? 0 : estInputCost(chosen, features.estTokens),
+    api_list_input_cost_usd: estInputCost(chosen, features.estTokens), // API sticker estimate, not subscription billing
     features: { estTokens: features.estTokens, hasCode: features.hasCode, codeFences: features.codeFences, fileTypes: features.fileTypes, questionCount: features.questionCount },
   };
 
