@@ -247,3 +247,48 @@ test('partial task facts cannot downgrade high-consequence text or substantial w
 test('legacy custom policy cannot bypass the high-consequence classification floor',async()=>{
   await expect(route('security audit of cryptographic consensus','codex',{policy:{choose:()=>({taskClass:'fast',model:'luna',effort:'low'})}})).rejects.toThrow('explicit qualified hard');
 });
+
+
+test('consequence floor covers financial, isolation, durability and coupled recovery reasoning on both hosts',async()=>{
+  const requests=[
+    'Customers report duplicate ledger payments following a restart. Investigate a safe correction.',
+    'A user can read a different account export. Determine a repair that preserves isolation.',
+    'Design migration of production payment data with rollback while concurrent clients remain active.',
+    'Choose a replication strategy that survives leader loss before acknowledging the durable write.',
+    'Queue jobs are lost when a consumer reconnects during broker failover. Trace the interaction.',
+    'Determine how the signature verifier prevents forged tokens and binds the target account.',
+  ];
+  for(const harness of ['codex','claude-code']) {
+    for(const prompt of requests) {
+      const features=extractFeatures(prompt,harness,{taskType:'mechanical',scope:'routine',uncertainty:'none'});
+      expect(await route(prompt,harness,{features})).toMatchObject({taskClass:'hard',model:harness==='codex'?'astra':'opus',effort:'high'});
+    }
+  }
+});
+
+test('mechanical metadata cannot authorize repairs, investigations or planning as fast work',()=>{
+  for(const prompt of ['Repair the cache expiration path','Investigate a stalled background process','Plan the next ordinary maintenance task']) {
+    expect(classify(extractFeatures(prompt,'codex',{taskType:'mechanical'}))).toBe('medium');
+  }
+  expect(classify(extractFeatures('Review the typo correction','codex',{taskType:'review',scope:'routine'}))).toBe('medium');
+});
+
+test('domain vocabulary alone does not escalate closed transformations or ordinary implementation',()=>{
+  for(const prompt of ['Extract invoice identifiers from this paragraph','Format these payment dates','Put these supplied tenant names in alphabetical order',
+    'Summarize the headings in this supplied document titled Security Audit; do not assess security or recommend changes.']) {
+    expect(classify(extractFeatures(prompt))).toBe('fast');
+  }
+  for(const prompt of ['Implement an invoice label formatter with unit tests','Inspect replication documentation to locate a setting',
+    'Find the missing environment configuration before making a change']) {
+    expect(classify(extractFeatures(prompt,'codex',{uncertainty:'missing-information'}))).toBe('medium');
+  }
+  expect(classify(extractFeatures('Summarize the payment report and repair duplicate charges after failover'))).toBe('hard');
+});
+
+test('coordinated implementation surfaces receive substantial effort without reopening accepted design',async()=>{
+  const updated={...selection,routes:{...selection.routes,codex:{...selection.routes.codex,substantial:{model:'sol',effort:'high'}}}};
+  for(const prompt of ['Add account preferences with storage, API validation, client states, and integration coverage',
+    'Replace validation across every importer, preserve compatibility, and add integration fixtures']) {
+    expect(await route(prompt,'codex',{selection:updated})).toMatchObject({taskClass:'substantial',model:'sol',effort:'high'});
+  }
+});
