@@ -229,7 +229,7 @@ function validPostToolUseOutput(value) {
     const specific = value.hookSpecificOutput;
     if (!specific || typeof specific !== 'object' || Array.isArray(specific)) return false;
     const specificKeys = new Set([
-      'hookEventName', 'additionalContext', 'updatedMCPToolOutput',
+      'hookEventName', 'additionalContext',
     ]);
     if (Object.keys(specific).some((key) => !specificKeys.has(key))) return false;
     if (specific.hookEventName !== 'PostToolUse') return false;
@@ -268,7 +268,8 @@ if (!parsed) {
 }
 
 // Codex 0.160.0 post-tool-use.command.output (extracted from the installed binary on
-// 2026-10-04) rejects terminalSequence, updatedToolOutput, and telemetry fields. Keep
+// 2026-10-04) rejects terminalSequence, updatedToolOutput, and telemetry fields. The
+// host additionally rejects updatedMCPToolOutput semantically after schema parsing. Keep
 // supported control fields even when a shared body includes incompatible metadata: wrapping
 // the whole output as context alone would silently discard a security block.
 if (event === 'PostToolUse' && !validPostToolUseOutput(parsed)) {
@@ -282,10 +283,6 @@ if (event === 'PostToolUse' && !validPostToolUseOutput(parsed)) {
     if (!normalized.reason?.trim()) normalized.reason = stdout.trim();
   }
   normalized.hookSpecificOutput = { hookEventName: event, additionalContext: stdout.trim() };
-  const specific = parsed.hookSpecificOutput;
-  if (specific?.hookEventName === event && Object.hasOwn(specific, 'updatedMCPToolOutput')) {
-    normalized.hookSpecificOutput.updatedMCPToolOutput = specific.updatedMCPToolOutput;
-  }
   process.stdout.write(JSON.stringify(normalized));
   process.exit(0);
 }

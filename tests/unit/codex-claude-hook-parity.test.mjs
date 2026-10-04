@@ -334,7 +334,7 @@ describe('the adapter emits output Codex will accept, per event', () => {
       payload: { session_id: 'p', hook_event_name: 'PostToolUse', cwd: os.tmpdir() },
     });
     expect(JSON.parse(r.stdout)).toEqual({ hookSpecificOutput: {
-      hookEventName: 'PostToolUse', additionalContext: raw, updatedMCPToolOutput: { content: [] },
+      hookEventName: 'PostToolUse', additionalContext: raw,
     } });
   });
 
@@ -353,10 +353,20 @@ describe('the adapter emits output Codex will accept, per event', () => {
     }
   });
 
-  it('forwards supported PostToolUse controls and MCP replacement without alteration', () => {
+  it('keeps block when a schema-valid MCP replacement is semantically unsupported', () => {
+    const raw = JSON.stringify({ decision: 'block', reason: 'unsafe replacement',
+      hookSpecificOutput: { hookEventName: 'PostToolUse', updatedMCPToolOutput: { content: [] } } });
+    const r = runAdapter({
+      shim: `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(${JSON.stringify(raw)}));`,
+      payload: { session_id: 'p', hook_event_name: 'PostToolUse', cwd: os.tmpdir() },
+    });
+    expect(JSON.parse(r.stdout)).toEqual({ decision: 'block', reason: 'unsafe replacement',
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: raw } });
+  });
+
+  it('forwards supported PostToolUse controls without alteration', () => {
     const raw = JSON.stringify({ decision: 'block', reason: 'unsafe', continue: false,
-      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'review',
-        updatedMCPToolOutput: null } });
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'review' } });
     const r = runAdapter({
       shim: `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(${JSON.stringify(raw)}));`,
       payload: { session_id: 'p', hook_event_name: 'PostToolUse', cwd: os.tmpdir() },
