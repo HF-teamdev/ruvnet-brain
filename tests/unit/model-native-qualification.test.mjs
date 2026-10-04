@@ -32,8 +32,11 @@ function fixture(host, variation = {}) {
             if (p.method === 'account/rateLimits/read') respond({ ordinaryUsageAllowed: variation.allowance !== false });
             if (p.method === 'model/list') respond({ data: [{ model: options.model, supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }], nextCursor: null });
             if (p.method === 'thread/start') respond({ thread: { id: 'native-thread' } });
+            if (p.method === 'thread/read') respond({ thread: { id: 'native-thread', model: options.model, reasoningEffort: 'medium', modelProvider: 'openai' } });
             if (p.method === 'thread/settings/update') {
-              respond({}); emit({ method: 'thread/settings/updated', params: { threadId: 'native-thread', threadSettings: { model: variation.mismatch ? 'different-model' : options.model, effort: 'medium', modelProvider: 'openai', serviceTier: 'default' } } });
+              respond({});
+              if (!p.params.model || !p.params.effort) return; // Native empty updates emit nothing.
+              emit({ method: 'thread/settings/updated', params: { threadId: 'native-thread', threadSettings: { model: variation.mismatch ? 'different-model' : options.model, effort: 'medium', modelProvider: 'openai', serviceTier: 'default' } } });
             }
             if (p.method === 'turn/start') {
               respond({ turn: { id: 'native-turn' } });
@@ -67,6 +70,12 @@ describe('native qualification identity and safety boundaries', () => {
         expect(r.nativeModel).toBe(f.options.model); expect(r.nativeEffort).toBe('medium'); expect(r.backendIdentityProved).toBe(false);
         expect(r.sourceReceipt.nativeSettings.before.model).toBe(r.nativeModel); expect(r.sourceReceipt.nativeSettings.after.effort).toBe(r.nativeEffort);
         expect(r.sourceReceipt.nativeTurn).toMatchObject({ status: 'completed', toolEvents: [] });
+        if (host === 'codex') {
+          expect(f.packets.filter((p) => p.method === 'thread/settings/update')).toHaveLength(1);
+          expect(f.packets.filter((p) => p.method === 'thread/read')).toHaveLength(1);
+          expect(r.sourceReceipt.nativeSettings.after.serviceTier).toBeUndefined();
+          expect(r.sourceReceipt.nativeSettings.after.serviceTierBasis).toBe('pre-turn-native-settings-and-fixed-host-configuration');
+        }
         expect(r.transcriptSha256).toBe(crypto.createHash('sha256').update(r.transcript).digest('hex'));
         expect(r.transcript).not.toContain('private@example.invalid'); expect(f.child.killed).toEqual(['SIGTERM']);
       } finally { f.cleanup(); }
@@ -99,7 +108,8 @@ describe('native qualification identity and safety boundaries', () => {
       const f = fixture('codex', variation); f.options.deadline = Date.now() + 80;
       try {
         const r = await runNativeQualification(f.options);
-        expect(r.completed).toBe(false); expect(r.failure).toMatch(/tool inference refused|deadline exhausted/);
+        expect(r.completed).toBe(false);
+        expect(r.failure).toMatch(variation.tool ? /tool inference refused/ : /deadline exhausted|Native metadata timeout: initialize/);
         expect(f.child.killed).toContain('SIGTERM'); expect(r.elapsedMs).toBeLessThan(500);
       } finally { f.cleanup(); }
     }

@@ -131,7 +131,11 @@ async function run(options, inspectOnly) {
       : ['--print', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json', '--include-partial-messages', '--tools', '', '--mcp-config', '{"mcpServers":{}}', '--strict-mcp-config', '--no-session-persistence'];
     remaining(); child = spawnHost(binary, args, { env: clean, cwd: cwd || os.tmpdir(), shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     transport = new Transport(child, host, fail, transcript, controller.signal);
-    const request = (...params) => bounded(transport.request(...params));
+    const metadata = (promise) => {
+      const timeout = setTimeout(() => fail(new Error(`Native metadata timeout: ${result.sourceReceipt.stage}`)), Math.min(10000, remaining()));
+      return bounded(promise).finally(() => clearTimeout(timeout));
+    };
+    const request = (...params) => { result.sourceReceipt.stage = params[0]; return metadata(transport.request(...params)); };
     if (host === 'codex') {
       await request('initialize', { clientInfo: { name: 'native_model_qualification', version: '1' }, capabilities: { experimentalApi: true } }); transport.send({ method: 'initialized' });
       const account = await request('account/read', { refreshToken: false });
@@ -158,7 +162,8 @@ async function run(options, inspectOnly) {
         const settings = async (params) => {
           const start = transport.events.length;
           await request('thread/settings/update', { threadId, ...params });
-          const event = await bounded(transport.wait((m) => m.method === 'thread/settings/updated' && m.params?.threadId === threadId, start));
+          result.sourceReceipt.stage = 'thread/settings/updated';
+          const event = await metadata(transport.wait((m) => m.method === 'thread/settings/updated' && m.params?.threadId === threadId, start));
           const s = event.params.threadSettings;
           if (s?.model !== model || s.effort !== effort || s.modelProvider !== 'openai' || s.serviceTier !== 'default') throw new Error('Native configured model/effort/provider mismatch');
           return { model: s.model, effort: s.effort, provider: s.modelProvider, serviceTier: s.serviceTier, threadId };
@@ -166,12 +171,22 @@ async function run(options, inspectOnly) {
         result.sourceReceipt.nativeSettings.before = await settings({ model, effort, serviceTier: 'default' });
         const accepted = await request('turn/start', { threadId, model, effort, serviceTier: 'default', input: [{ type: 'text', text: prompt }] });
         const turnId = accepted?.turn?.id; if (!turnId) throw new Error('Native turn identity missing');
+        result.sourceReceipt.stage = 'turn/completed';
         const end = await bounded(transport.wait((m) => m.method === 'turn/completed' && m.params?.threadId === threadId && m.params?.turn?.id === turnId));
         if (end.params.turn.status !== 'completed') throw new Error('Native turn did not complete');
         const items = transport.events.filter((m) => m.method === 'item/completed' && m.params?.threadId === threadId && m.params?.turnId === turnId);
         result.output = items.filter((m) => m.params.item?.type === 'agentMessage').map((m) => m.params.item.text || '').join('\n');
         result.nativeTurnId = turnId;
-        result.sourceReceipt.nativeSettings.after = await settings({});
+        // Native same-value updates emit no notification. Read actual live thread
+        // metadata after completion; never infer settings from a no-op acknowledgment.
+        const observed = (await request('thread/read', { threadId, includeTurns: false }))?.thread;
+        if (observed?.id !== threadId || observed.model !== model || observed.reasoningEffort !== effort || observed.modelProvider !== 'openai') throw new Error('Native completed thread model/effort/provider mismatch');
+        result.sourceReceipt.nativeSettings.after = { model: observed.model, effort: observed.reasoningEffort, provider: observed.modelProvider, threadId, basis: 'native-thread/read' };
+        if (Object.hasOwn(observed, 'serviceTier')) {
+          if (observed.serviceTier !== 'default') throw new Error('Native completed thread service tier mismatch');
+          result.sourceReceipt.nativeSettings.after.serviceTier = observed.serviceTier;
+          result.sourceReceipt.nativeSettings.after.serviceTierBasis = 'native-thread/read';
+        } else result.sourceReceipt.nativeSettings.after.serviceTierBasis = 'pre-turn-native-settings-and-fixed-host-configuration';
       }
     } else {
       if (!/^2\.1\.289 \(Claude Code\)$/.test(result.harnessVersion)) throw new Error('Experimental Claude allowance contract version unsupported');
@@ -196,6 +211,7 @@ async function run(options, inspectOnly) {
         };
         result.sourceReceipt.nativeSettings.before = await settings(); result.supported = true;
         transport.send({ type: 'user', uuid: crypto.randomUUID(), session_id: '', message: { role: 'user', content: [{ type: 'text', text: prompt }] }, parent_tool_use_id: null });
+        result.sourceReceipt.stage = 'result';
         const completion = await bounded(transport.wait((m) => m.type === 'result'));
         if (completion.is_error || completion.subtype !== 'success' || !completion.uuid || !completion.session_id || !completion.usage || !(completion.duration_api_ms > 0) || !(completion.num_turns > 0)) throw new Error('Native Claude completion identity/usage unavailable');
         result.output = completion.result || ''; result.nativeSessionId = completion.session_id; result.nativeTurnId = completion.uuid;
@@ -207,6 +223,7 @@ async function run(options, inspectOnly) {
       result.completed = true; result.nativeModel = result.sourceReceipt.nativeSettings.after.model; result.nativeEffort = result.sourceReceipt.nativeSettings.after.effort; result.identityBasis = 'native-host-confirmed-configuration';
       result.sourceReceipt.nativeTurn = { threadId: result.nativeSessionId, turnId: result.nativeTurnId, status: 'completed', toolEvents: [],
         turnIdBasis: host === 'codex' ? 'native-turn.id' : 'native-result.uuid' };
+      result.sourceReceipt.stage = 'completed';
     }
   } catch (error) { result.failure = error.message; result.completed = false; result.output = ''; }
   finally {
