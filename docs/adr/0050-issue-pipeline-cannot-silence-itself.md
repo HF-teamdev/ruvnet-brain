@@ -5,6 +5,26 @@ status: Accepted
 date: 2026-07-24
 updated: 2026-09-11
 
+# PINNED: this records the incident cutoff, not the last edit. Asserted by
+# tests/unit/fix-workstream-guidance.test.mjs. Do not let a currency stamp move it.
+updated_pinned: true
+impl: wired
+reviewed_digest: 51940a548841
+version: 1.0.2
+authors: [Stuart Kerr, Claude Code]
+tags: [issues, automation, alerting, sla, security, circuit-breaker]
+supersedes: []
+relates: [ADR-049]
+governs:
+  - scripts/issue-watch.mjs
+  - scripts/issue-fix.mjs
+  - plugin/scripts/session-start-core.mjs
+  - plugin/skills/ruvnet-brain/SKILL.md
+  - plugin/skills/release-proof/SKILL.md
+---
+
+# ADR-050 — The issue pipeline may never manufacture its own acknowledgment
+
 ## Current source review — 2026-10-05
 
 Reviewed candidate source `1ccc1e633772c549e4a23596a1ce3c743e797315`; no GitHub comments,
@@ -35,25 +55,6 @@ entitlement currently fails closed. The source review does not prove installed p
 or privacy changes not yet integrated at this SHA. The `updated_pinned` date continues to identify
 the incident cutoff; this section records the new review date without rewriting that cutoff.
 
-# PINNED: this records the incident cutoff, not the last edit. Asserted by
-# tests/unit/fix-workstream-guidance.test.mjs. Do not let a currency stamp move it.
-updated_pinned: true
-impl: wired
-reviewed_digest: 51940a548841
-version: 1.0.1
-authors: [Stuart Kerr, Claude Code]
-tags: [issues, automation, alerting, sla, security, circuit-breaker]
-supersedes: []
-relates: [ADR-049]
-governs:
-  - scripts/issue-watch.mjs
-  - scripts/issue-fix.mjs
-  - plugin/scripts/session-start-core.mjs
-  - plugin/skills/ruvnet-brain/SKILL.md
-  - plugin/skills/release-proof/SKILL.md
----
-
-# ADR-050 — The issue pipeline may never manufacture its own acknowledgment
 
 **Status**: Accepted (implemented)
 
