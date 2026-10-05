@@ -38,14 +38,14 @@ function learnerSpawnBlock(src, marker) {
 describe('issue #139 — scope is resolved, never hardcoded, and every caller shares one answer', () => {
   it('TEETH: the reporter\'s inversion — user scope moves the learner to HOME', async () => {
     const { learnerCwd, learningScope } = await import('../../plugin/scripts/runtime-preferences.mjs');
-    const at = { cwd: '/proj', home: '/home' };
+    const at = { cwd: path.resolve('/proj'), home: path.resolve('/home') };
     expect(learningScope({ ...at, env: {} }), 'project is the default').toBe('project');
-    expect(learnerCwd({ ...at, env: {} }), 'default scope reads the project store').toBe('/proj');
+    expect(learnerCwd({ ...at, env: {} }), 'default scope reads the project store').toBe(at.cwd);
     // The case that was broken in both directions and is the whole point of the issue.
     expect(learningScope({ ...at, env: { RUVNET_LEARNING_SCOPE: 'user' } })).toBe('user');
     expect(learnerCwd({ ...at, env: { RUVNET_LEARNING_SCOPE: 'user' } }),
       'user scope must read the HOME store, or the console measures one learner and the flush feeds another')
-      .toBe(fs.realpathSync.native('/home'));
+      .toBe(fs.existsSync(at.home) ? fs.realpathSync.native(at.home) : at.home);
   });
 
   it('an unrecognised scope falls back to project rather than inventing one', async () => {
