@@ -42,6 +42,20 @@ function native(report, capture, paused = false) {
     return child;
   };
 }
+// Exclude fixture filesystem speed from the intended worker boundary, without changing production deadlines.
+function workerBoundaryClock() {
+  const realNow = performance.now.bind(performance);
+  const wall = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+  const monotonic = vi.spyOn(performance, 'now').mockReturnValue(0);
+  return {
+    launch() { const started = realNow(); monotonic.mockImplementation(() => realNow() - started); },
+    block() {
+      const until = realNow() + 180; while (realNow() < until) { /* timer cannot run during synchronous work */ }
+      monotonic.mockReturnValue(180);
+    },
+    restore() { monotonic.mockRestore(); wall.mockRestore(); },
+  };
+}
 const auth = vi.fn();
 const allowance = async () => ({ ordinaryUsageAllowed: true, checkedAt: new Date().toISOString(), reservation: false, raceSafe: false });
 afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
@@ -94,12 +108,12 @@ it('blocks exhausted allowance before inference and keeps last-known-good semant
 });
 it('timeout, protocol failure and concurrent input change never advance semantic timestamp', async () => {
   const f = fixture(); fs.writeFileSync(path.join(f.routerDir, 'semantic-current.json'), '{"completedAt":"old-valid"}');
-  // Hold the preparation clock fixed so this case exercises the launched-worker timer,
-  // independently of the runner's filesystem speed. Pre-launch expiry has its own case.
-  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now()); const capture = {}; let timed;
+  // Hold both preparation clocks fixed; start real elapsed time only when the worker launches.
+  // The separate preparation-expiry test still covers the full production preparation budget.
+  const clock = workerBoundaryClock(); const capture = {}; let timed;
   try {
-    timed = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, timeoutMs: 100, nativeModels, spawnNative: native(f.report, capture, true), checkAuth: auth, checkAllowance: allowance });
-  } finally { clock.mockRestore(); }
+    timed = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, timeoutMs: 100, nativeModels, spawnNative: (...args) => { clock.launch(); return native(f.report, capture, true)(...args); }, checkAuth: auth, checkAllowance: allowance });
+  } finally { clock.restore(); }
   expect(capture.child).toBeDefined(); expect(timed.status).toBe('failed');
   expect(timed.reason).toMatch(/timed out/);
   expect(JSON.parse(fs.readFileSync(path.join(f.routerDir, 'semantic-current.json'))).completedAt).toBe('old-valid');
@@ -229,9 +243,12 @@ it('bounds analyst retirement when its owned native child ignores TERM and never
     for (const stream of [child.stdin, child.stdout, child.stderr]) stream.destroy = vi.fn();
     child.unref = vi.fn(); return child;
   };
-  const started = performance.now();
-  const result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, timeoutMs: 200, nativeModels, spawnNative, checkAuth: auth, checkAllowance: allowance });
-  expect(performance.now() - started).toBeLessThan(1000);
+  const clock = workerBoundaryClock(); let result;
+  try {
+    result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, timeoutMs: 200, nativeModels,
+      spawnNative: (...args) => { clock.launch(); return spawnNative(...args); }, checkAuth: auth, checkAllowance: allowance });
+    expect(performance.now()).toBeLessThan(1000);
+  } finally { clock.restore(); }
   expect(result).toMatchObject({ status: 'failed', semanticTimestampAdvanced: false, originalPolicyPreserved: true,
     stageCleanup: { childExitObserved: false, ownedChildRetirement: 'unverified', descendantRetirement: 'unproven' } });
   expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
@@ -258,7 +275,8 @@ it('interns repeated provenance losslessly without dropping models, efforts or m
 it.each(['output', 'exit', 'publication'])('rejects late %s when a blocked event loop delays the deadline timer', async (lateStage) => {
   const f = fixture(); const capture = {}; const old = '{"completedAt":"old-valid"}';
   fs.writeFileSync(path.join(f.routerDir, 'semantic-current.json'), old);
-  const block = () => { const until = performance.now() + 180; while (performance.now() < until) { /* simulate synchronous host work */ } };
+  const clock = workerBoundaryClock(); const block = () => clock.block();
+  const publish = vi.fn(() => { block(); return { status: 'unchanged' }; });
   const spawnNative = (...args) => {
     const child = native(f.report, capture, true)(...args);
     child.stdin.end = () => queueMicrotask(() => {
@@ -268,12 +286,15 @@ it.each(['output', 'exit', 'publication'])('rejects late %s when a blocked event
       child.emit('exit', 0, null);
     }); return child;
   };
-  // Freeze the wall clock: the elapsed monotonic budget must remain authoritative.
-  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now()); let result;
+  // Freeze both clocks through preparation; advance the monotonic clock at the selected late boundary.
+  // A real synchronous block still delays the timer, so timer wakeup cannot be the refusal authority.
+  let result;
   try {
     result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, timeoutMs: 100, nativeModels, spawnNative, checkAuth: auth, checkAllowance: allowance,
-      ...(lateStage === 'publication' ? { qualificationValidator: () => { block(); return { status: 'unchanged' }; } } : {}) });
-  } finally { clock.mockRestore(); }
+      ...(lateStage === 'publication' ? { qualificationValidator: publish } : {}) });
+  } finally { clock.restore(); }
+  expect(capture.child).toBeDefined();
+  if (lateStage === 'publication') expect(publish).toHaveBeenCalledOnce();
   expect(result).toMatchObject({ status: 'failed', semanticTimestampAdvanced: false, originalPolicyPreserved: true });
   expect(result.reason).toMatch(/timed out/);
   expect(fs.readFileSync(path.join(f.routerDir, 'semantic-current.json'), 'utf8')).toBe(old);
