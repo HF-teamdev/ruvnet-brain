@@ -82,7 +82,7 @@ import { shellDiff as pluginShellDiff } from '../plugin/scripts/host-shell-bound
 import { codexTrustChanges, CODEX_TRUST_ACTION } from '../scripts/codex-hook-trust.mjs';
 import { probeFreshCodexDeclarations } from '../scripts/codex-fresh-host-proof.mjs';
 import { repairSecurityGuidance } from '../scripts/security-guidance-codex-compat.mjs';
-import { installNativeLaunchers, installRoutingRuntime } from '../scripts/model-routing-launchers.mjs';
+import { installNativeLaunchers, installRoutingRuntime, runtimeSnapshot } from '../scripts/model-routing-launchers.mjs';
 import { installTerminalLaunchers } from '../scripts/model-terminal-launchers.mjs';
 import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
 import { moveBrain, MoveRefused } from '../scripts/move-brain.mjs';
@@ -4931,7 +4931,7 @@ export function syncManagedRouterTools({ routerDir = path.join(os.homedir(), '.c
   const destination = path.join(routerDir, 'bin');
   fs.mkdirSync(destination, { recursive: true });
   let copied = 0;
-  for (const name of ['model-router-engine.mjs', 'model-router-setup.mjs', 'model-router-status.mjs', 'model-router-outcome.mjs', 'subscription-hosts.mjs', 'review-model-defaults.mjs', 'dual-host-deliberation.mjs', 'dual-host-suggest.mjs', 'route-cheap.mjs', 'dispatch-receipt.mjs', 'metaharness-receipts.mjs', 'metaharness-router.mjs', 'model-router-dispatch.mjs', 'model-currency.mjs', 'model-currency-evidence.mjs', 'user-model-prompt-hook.mjs', 'model-router-agent-hook.mjs', 'model-weekly-assessment.mjs', 'model-weekly-analyst.mjs', 'model-weekly-cycle.mjs', 'model-weekly-qualification.mjs', 'model-native-qualification.mjs', 'model-routing-launchers.mjs', 'model-terminal-gateway.mjs', 'model-terminal-launchers.mjs', 'claude-terminal-mod.mjs', 'claude-controlled-terminal.mjs', 'model-native-catalog.mjs', 'model-analyst-sandbox.mjs', 'model-routing-policy-promotion.mjs', 'model-routing-gateway.mjs', 'native-subscription-usage.mjs', 'codex-routed.sh', 'goldie-weekly.sh']) {
+  for (const name of ['model-router-engine.mjs', 'model-router-setup.mjs', 'model-router-status.mjs', 'model-router-outcome.mjs', 'subscription-hosts.mjs', 'review-model-defaults.mjs', 'dual-host-deliberation.mjs', 'dual-host-suggest.mjs', 'route-cheap.mjs', 'dispatch-receipt.mjs', 'metaharness-receipts.mjs', 'metaharness-router.mjs', 'model-router-dispatch.mjs', 'model-currency.mjs', 'model-currency-evidence.mjs', 'user-model-prompt-hook.mjs', 'model-router-agent-hook.mjs', 'model-weekly-assessment.mjs', 'model-weekly-analyst.mjs', 'model-weekly-cycle.mjs', 'model-weekly-qualification.mjs', 'model-native-qualification.mjs', 'model-routing-launchers.mjs', 'model-terminal-gateway.mjs', 'model-terminal-launchers.mjs', 'claude-terminal-mod.mjs', 'claude-controlled-terminal.mjs', 'model-managed-prompt.mjs', 'model-managed-workflow-service.mjs', 'model-routing-controller.mjs', 'model-routing-execution-adapters.mjs', 'codex-managed-terminal.mjs', 'grok-subscription-host.mjs', 'model-native-catalog.mjs', 'model-analyst-sandbox.mjs', 'model-routing-policy-promotion.mjs', 'model-routing-gateway.mjs', 'native-subscription-usage.mjs', 'codex-routed.sh', 'goldie-weekly.sh']) {
     const source = path.join(packageRoot, 'scripts', name);
     if (!fs.existsSync(source)) throw new Error(`Packaged router tool missing: ${name}`);
     const target = path.join(destination, name);
@@ -4942,19 +4942,17 @@ export function syncManagedRouterTools({ routerDir = path.join(os.homedir(), '.c
     finally { fs.rmSync(temporary, { force: true }); }
     copied++;
   }
-  // Preserve package-relative imports without replacing user policy.mjs overrides.
-  for (const runtimeRelative of [path.join('plugin', 'scripts', 'runtime-preferences.mjs'),
-    path.join('plugin', 'scripts', 'project-identity.mjs'),
-    path.join('config', 'model-router', 'policy.default.mjs')]) {
-  const runtimeTarget = path.join(routerDir, runtimeRelative);
-  const runtimeBytes = fs.readFileSync(path.join(packageRoot, runtimeRelative));
-  if (!fs.existsSync(runtimeTarget) || !fs.readFileSync(runtimeTarget).equals(runtimeBytes)) {
+  // Copy the same transitive dependencies used by immutable terminal runtimes.
+  // Repository scripts live in bin here, preserving their relative sibling imports.
+  for (const [relative, runtimeBytes] of runtimeSnapshot(packageRoot).files) {
+    const mapped = relative.startsWith('scripts/') ? `bin/${relative.slice(8)}` : relative;
+    const runtimeTarget = path.join(routerDir, mapped);
+    if (fs.existsSync(runtimeTarget) && fs.readFileSync(runtimeTarget).equals(runtimeBytes)) continue;
     fs.mkdirSync(path.dirname(runtimeTarget), { recursive: true });
     const temporary = `${runtimeTarget}.${crypto.randomUUID()}.tmp`;
     try { fs.writeFileSync(temporary, runtimeBytes, { mode: 0o600 }); fs.renameSync(temporary, runtimeTarget); }
     finally { fs.rmSync(temporary, { force: true }); }
     copied++;
-  }
   }
   const qualificationSource = path.join(packageRoot, 'config', 'model-router', 'qualification-contract.json');
   const qualificationTarget = path.join(routerDir, 'qualification-contract.json');

@@ -141,6 +141,21 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       }
     },
     {
+      "id": "managed-native-workflow",
+      "reason": "Automatic prompt mediation preserves parent context and canonical memory, enforces observed model and effort, bounded DAG execution, exact ownership, actual acceptance and independent review without unsafe replay",
+      "files": [
+        "tests/unit/model-routing-controller.test.mjs",
+        "tests/unit/model-routing-execution-adapters.test.mjs",
+        "tests/unit/model-managed-workflow-service.test.mjs",
+        "tests/unit/model-managed-prompt.test.mjs",
+        "tests/unit/model-routing-defence.test.mjs"
+      ],
+      "platformFiles": {
+        "linux": ["tests/unit/model-terminal-canonical-entry.test.mjs", "tests/unit/codex-managed-terminal.test.mjs", "tests/unit/grok-subscription-host.test.mjs"],
+        "macos": ["tests/unit/model-terminal-canonical-entry.test.mjs", "tests/unit/codex-managed-terminal.test.mjs", "tests/unit/grok-subscription-host.test.mjs"]
+      }
+    },
+    {
       "id": "weekly-routing-evidence",
       "reason": "Weekly native dispatch requires allowance and trusted tool denial; bounded completions, source fencing and qualified promotion preserve original owner approval and reject requested-only identity",
       "files": [
@@ -251,6 +266,15 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     }
   ],
   "integration": [
+    {
+      "id": "managed-checker-kernel-boundary",
+      "reason": "Native read-only sandbox denies acceptance-script writes outside the authorized project",
+      "files": [],
+      "platformFiles": {
+        "linux": ["tests/integration/model-managed-checker-native.test.mjs"],
+        "macos": ["tests/integration/model-managed-checker-native.test.mjs"]
+      }
+    },
     {
       "id": "canonical-learning-recovery",
       "reason": "Cross-session recovery and Console evidence agree on the same canonical scope without ratifying tool metadata as instructions",

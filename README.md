@@ -273,7 +273,7 @@ The honest limit: this is **3.5, not 4.0**. The advocacy surface is live and the
 
 The 2.4 router was **hand-rolled**: our own heuristic with a placeholder policy, presented as "the MetaHarness router." rUv had already shipped the real thing. 2.5 replaces it with **[`@metaharness/router`](https://www.npmjs.com/package/@metaharness/router)** — his actual learned cost-optimal router (k-NN over labelled embeddings, the productized DRACO Phase-2 finding, ADR-040/043).
 
-Our code now does **one honest job**: a price transform. A model your subscription already covers becomes `costPerMTok = 0`, and rUv's router does the rest natively — a $0 model that clears the quality bar simply *is* the cheapest sufficient candidate. Cost-optimal routing and "already paid for" compose; they never competed.
+Subscription membership is an eligibility constraint, not a measurement of allowance consumption. The managed terminal workflow uses the current per-user model and effort policy, supervised native workers, executable checks, independent review, and execution receipts. MetaHarness supplies routing and evaluation capabilities; registration or a price transform alone does not execute a prompt or prove a handoff. The supported entry paths and remaining boundaries are described in `docs/model-routing-operation.md`.
 
 > **`npm run substitution:check`** — a new CI gate that fails the build if any code implements a capability rUv already ships *and* wears his name without either using the real package or openly disclosing the hand-roll. **Verified to fire on the exact commit where we got this wrong.** You may hand-roll. You may never hand-roll *silently*.
 

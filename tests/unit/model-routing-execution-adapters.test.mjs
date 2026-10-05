@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -116,4 +116,33 @@ test('live child errors, failed kills and overflow cannot settle as clean succes
       env:{CODEX_HOME:home},launch,allowance:async()=>({ordinaryUsageAllowed:true}),observe:()=>({})}),/retirement|interrupted/);
     assert.ok(kills.includes('SIGTERM'));if(mode!=='overflow'){assert.ok(kills.includes('SIGKILL'));assert.equal(unref,1);assert.ok([child.stdin,child.stdout,child.stderr].every(s=>s.destroyed));}
   }}finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('independent native reviewer receives canonical original context plus trusted verdict contract', async () => {
+  let dispatched;
+  const {worker,adapter}=fixture({executeNative:async input=>{dispatched=input.prompt;return {model:'fixture-model',effort:'medium',completed:true,sessionId:'independent-native-session',answer:'{}'};}});
+  const review={...worker,role:'reviewer',reviewContract:'Return strict independent verdict JSON.'};
+  const state=await adapter.prepare({worker:review,timeoutMs:1000});await adapter.launch(state);
+  assert.equal(dispatched,worker.prompt+'\n'+review.reviewContract);
+  const result=adapter.interpret(state,await adapter.observe(state));
+  assert.equal(result.observedEffort,'medium');assert.equal(result.configuredEffort,'medium');assert.equal(result.sessionId,'independent-native-session');
+});
+
+test('native commentary cannot contaminate the final structured answer', async () => {
+  const {EventEmitter}=await import('node:events');const {PassThrough}=await import('node:stream');
+  const {executeCodexWorkflowWorker}=await import('../../scripts/model-routing-execution-adapters.mjs');
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'rnb-worker-final-'));fs.writeFileSync(path.join(home,'auth.json'),JSON.stringify({tokens:{},auth_mode:'chatgpt'}));
+  const id=crypto.randomUUID(),decision={harness:'codex',provider:'openai',taskClass:'medium',model:'fixture-model',effort:'medium',subscriptionCovered:true,selectionReviewedAt:new Date().toISOString()};
+  try{
+    const launch=()=>{
+      const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;
+      child.stdin.end=()=>queueMicrotask(()=>{child.stdout.emit('data',[
+        {type:'thread.started',thread_id:id},{type:'item.completed',item:{type:'agent_message',text:'I will inspect the source.'}},
+        {type:'item.completed',item:{type:'agent_message',text:'{"tasks":[]}'}},{type:'turn.completed',usage:{}}
+      ].map(JSON.stringify).join('\n')+'\n');child.emit('close',0,null);});return child;
+    };
+    const result=await executeCodexWorkflowWorker({binary:'/fixture',decision,prompt:'fixture',cwd:home,readOnly:true,timeoutMs:2000,env:{CODEX_HOME:home},launch,
+      allowance:async()=>({ordinaryUsageAllowed:true}),observe:()=>({sessionId:id,model:decision.model,effort:decision.effort,cwd:home,sandbox:{type:'read-only'}})});
+    assert.equal(result.answer,'{"tasks":[]}');assert.equal(result.modelObserved,true);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
 });

@@ -1,3 +1,4 @@
+const assertModelRoutingText = async text => (await import('./model-routing-defence.mjs')).assertModelRoutingText(text);
 // One automatic prompt boundary; native adapters retain allocation, auth, tools and session controls.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -243,6 +244,7 @@ export async function runManagedPrompt({ originalPrompt, prompt = originalPrompt
   };
   let originalWithRecall = original;
   try {
+    await bounded(() => assertModelRoutingText(original));
     const recalled = await bounded(() => recallFn({ prompt: original, projectDir: projectRoot,
       env: primaryOptions.env ?? process.env, deadlineMs: Math.max(1, Math.min(1900, Math.floor(remaining()))) }));
     const block = typeof recalled?.block === 'string' ? recalled.block : '';

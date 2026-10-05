@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+const assertModelRoutingText = async text => (await import('./model-routing-defence.mjs')).assertModelRoutingText(text);
 // A controlled prompt boundary using native print/SDK controls, not the native terminal UI.
 import path from 'node:path';
 import fs from 'node:fs';
@@ -112,6 +113,10 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
   if (!path.isAbsolute(binary || '') || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 200000 ||
       /^\s*\//.test(prompt) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 900000 ||
       !Number.isSafeInteger(handshakeMs) || handshakeMs <= 0 || handshakeMs > 30000 || signal?.aborted) throw new Error(REFUSED);
+  const limit = performance.now() + timeoutMs;
+  const expired = () => signal?.aborted || performance.now() >= limit;
+  await assertModelRoutingText(prompt);
+  if (expired()) throw new Error(REFUSED);
   // Extra body / effort env overrides can bypass the native CLI's requested allocation.
   if (Object.keys(env).some(key => allocationEnv.test(key))) throw new Error(REFUSED);
   const clean = subscriptionEnvironment(env);
@@ -121,15 +126,17 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
   checkAuth('claude-code', { env: clean, probe: (_name, args, options) => probe(binary, args, options) });
   const decision = await decide(decisionPrompt, 'claude-code', { env: clean });
   verifyDecision(decision);
+  if (expired()) throw new Error(REFUSED);
   const args = controlledClaudeArguments(decision, sessionId, resume);
-  if (signal?.aborted) throw new Error(REFUSED);
+  if (expired()) throw new Error(REFUSED);
   const child = spawnNative(binary, args, { cwd, env: clean, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
   return new Promise((resolve, reject) => {
     let done = false, phase = 'initialize', buffer = '', bytes = 0, result, observed = false, permissions = false;
+    const assistantText = [];
     const decoder = new StringDecoder('utf8');
     const ids = { initialize: crypto.randomUUID(), before: crypto.randomUUID(), after: crypto.randomUUID() };
     let handshake;
-    const timer = setTimeout(() => fail(), timeoutMs);
+    const timer = setTimeout(() => fail(), Math.max(1, limit - performance.now()));
     const abort = () => fail();
     signal?.addEventListener('abort', abort, { once: true });
     const clear = () => { clearTimeout(timer); clearTimeout(handshake); signal?.removeEventListener('abort', abort); };
@@ -138,7 +145,7 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       done = true; clear();
       void retireControlledClaudeChild(child).then(() => reject(new Error(REFUSED)));
     };
-    const send = message => { if (!done) child.stdin.write(JSON.stringify(message) + '\n'); };
+    const send = message => { if (done) return; if (expired()) return fail(); child.stdin.write(JSON.stringify(message) + '\n'); };
     const control = which => {
       phase = which; clearTimeout(handshake); handshake = setTimeout(fail, handshakeMs);
       send({ type: 'control_request', request_id: ids[which], request: { subtype: which === 'initialize' ? 'initialize' : 'get_settings' } });
@@ -147,6 +154,7 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       Array.isArray(value.sources) && !value.sources.some(source => source.source === 'policySettings' && Object.keys(source.settings || {}).length);
     const onMessage = async message => {
       if (done) return;
+      if (expired()) return fail();
       if (message.type === 'control_response') {
         const response = message.response;
         if (response?.request_id !== ids[phase] || response.subtype !== 'success') return fail();
@@ -180,7 +188,7 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       if (message.type === 'assistant' && !message.parent_tool_use_id) {
         if (phase !== 'turn' || message.message?.model !== decision.model) return fail();
         observed = true;
-        for (const block of message.message.content || []) if (block.type === 'text') output(cleanText(block.text));
+        for (const block of message.message.content || []) if (block.type === 'text') assistantText.push(cleanText(block.text));
       }
       if (message.type === 'result') {
         if (phase !== 'turn' || permissions || !observed || message.session_id !== sessionId || message.subtype !== 'success' ||
@@ -200,10 +208,14 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
     });
     child.stderr.on('data', () => {}); // Native diagnostics may contain credentials or prompt text.
     child.stdin.on('error', fail); child.once('error', fail);
-    child.once('close', code => {
+    child.once('close', async code => {
       if (done) return;
       if (code !== 0 || phase !== 'exit' || !result || buffer.trim() || decoder.end()) return fail();
       try {
+        await assertModelRoutingText(assistantText.join('\n'));
+        if (done || expired()) return fail();
+        for (const text of assistantText) { if (expired()) return fail(); output(text); }
+        if (expired()) return fail();
         receipt({ ts: new Date().toISOString(), harness: 'claude-code', status: 'completed', model: decision.model,
           effort: decision.effort, taskClass: decision.taskClass, modelObserved: true,
           evidence: 'assistant model observed; get_settings applied effort matched before and after turn; per-request effort not exposed' }, { env: clean });

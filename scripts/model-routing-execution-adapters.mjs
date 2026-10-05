@@ -1,3 +1,4 @@
+const assertModelRoutingText = async text => (await import('./model-routing-defence.mjs')).assertModelRoutingText(text);
 // Guarded native workers for Agentic Kit's existing execution runner.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -49,23 +50,36 @@ export function readCodexWorkerObservation(sessionId, { home = process.env.CODEX
     turnCount: contexts.length, evidence: { path: matches[0].file, sha256: digest(matches[0].bytes), type: 'native-turn-context' } };
 }
 
+/** Only the installed user-owned Brain search server is projected into isolated native workers. */
+export function codexBrainSearchArguments(env = process.env) {
+  const server = path.join(env.HOME || os.homedir(), '.claude', 'ruvnet-brain', 'mcp', 'server.mjs');
+  if (!fs.existsSync(server)) return [];
+  const stat = fs.lstatSync(server);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.()) throw blocked('Installed Brain search server is not user-owned');
+  const table = `mcp_servers.ruvnet-brain={command=${JSON.stringify(process.execPath)},args=[${JSON.stringify(server)}],enabled_tools=["search_ruvnet"],startup_timeout_sec=30,tool_timeout_sec=90,env={RUVNET_HOOK_HOST="codex"}}`;
+  return ['-c', table];
+}
+
 export async function executeCodexWorkflowWorker({ binary, decision, prompt, cwd, readOnly, signal, timeoutMs,
   env = process.env, sessionId, launch = spawn, observe = readCodexWorkerObservation, allowance = readCodexAllowance }) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || signal?.aborted) throw blocked('Native worker cancelled or deadline unavailable');
   const limit = performance.now() + timeoutMs;
-  const clean = subscriptionOnlyEnv(subscriptionEnvironment(env));
+  await assertModelRoutingText(prompt);
+  const clean = { ...subscriptionOnlyEnv(subscriptionEnvironment(env)), RNB_TERMINAL_LAUNCH_ACTIVE: '1' };
   assertSubscriptionAuth('codex', { env: clean });
   const quota = await allowance({ env: clean });
   if (quota.ordinaryUsageAllowed !== true) throw blocked('Native Codex included allowance not available');
   if (performance.now() >= limit || signal?.aborted) throw blocked('Native worker deadline expired during readiness');
   const spec = buildLaunch(decision, { cwd });
-  const prior = sessionId ? observe(sessionId, { expectedPriorTurns: undefined, allowHistory: true }) : null;
-  const args = sessionId ? ['exec', 'resume', '--ignore-user-config', '--json', '--model', decision.model,
+  const evidenceHome = clean.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const prior = sessionId ? observe(sessionId, { home: evidenceHome, expectedPriorTurns: undefined, allowHistory: true }) : null;
+  const args = sessionId ? ['exec', 'resume', '--ignore-user-config', '--skip-git-repo-check', '--json', '--model', decision.model,
     '-c', `model_reasoning_effort=\"${decision.effort}\"`, '-c', 'model_provider=\"openai\"',
     '-c', 'service_tier=\"default\"', '-c', `sandbox_mode=\"${readOnly ? 'read-only' : 'workspace-write'}\"`,
     '-c', 'features.fast_mode=false', '-c', 'features.multi_agent=false', '-c', 'features.multi_agent_v2=false', sessionId, '-']
-    : [...spec.args.slice(0, -1), '--json', '--sandbox', readOnly ? 'read-only' : 'workspace-write',
+    : [...spec.args.slice(0, -1), '--skip-git-repo-check', '--json', '--sandbox', readOnly ? 'read-only' : 'workspace-write',
       '-c', 'features.multi_agent=false', '-c', 'features.multi_agent_v2=false', '-'];
+  args.splice(args.length - 1, 0, ...codexBrainSearchArguments(clean));
   const result = await new Promise((resolve, reject) => {
     const child = launch(binary, args, { cwd, env: clean, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', finished = false, timer, killTimer, cancelled = false, cancelReason;
@@ -102,11 +116,15 @@ export async function executeCodexWorkflowWorker({ binary, decision, prompt, cwd
     throw blocked('Native Codex turn did not complete successfully');
   }
   if (sessionId && thread?.thread_id !== sessionId) throw blocked('Native parent session changed');
-  const observation = observe(thread?.thread_id, sessionId ? { expectedPriorTurns: prior.turnCount, evidencePath: prior.evidence.path } : {});
+  const observation = observe(thread?.thread_id, sessionId ? { home: evidenceHome, expectedPriorTurns: prior.turnCount, evidencePath: prior.evidence.path } : { home: evidenceHome });
   if (observation.model !== decision.model || observation.effort !== decision.effort || observation.cwd !== cwd
     || (readOnly && observation.sandbox?.type !== 'read-only')) throw blocked('Native worker model, effort, directory or sandbox mismatch');
-  const answer = events.filter(event => event.type === 'item.completed' && event.item?.type === 'agent_message').map(event => event.item.text).join('\n');
-  return { ...observation, answer, completed: true, modelObserved: true, effortSettingsObserved: true, usage: events.find(event => event.type === 'turn.completed')?.usage ?? null };
+  const messages = events.filter(event => event.type === 'item.completed' && event.item?.type === 'agent_message');
+  const answer = messages.at(-1)?.item?.text;
+  if (typeof answer !== 'string') throw blocked('Native final answer unavailable');
+  await assertModelRoutingText(answer);
+  if (performance.now() >= limit || signal?.aborted) throw blocked('Native worker exceeded deadline during output inspection');
+  return { ...observation, answer, completed: true, modelObserved: true, effortSettingsObserved: true, effortEvidence: 'native-turn-context', usage: events.find(event => event.type === 'turn.completed')?.usage ?? null };
 }
 
 /** Native Codex stays read-only. Only exact, preconditioned owner-authorized files are published here. */
@@ -240,6 +258,8 @@ export function createGuardedWorkflowAdapters({ request, budget, env = process.e
           startedAt: state.startedAt, endedAt, durationMs: Math.max(0, Date.parse(endedAt) - Date.parse(state.startedAt)),
           provider: valid ? state.decision.provider : null, providerProvenance: valid ? 'configured' : 'unknown',
           configuredModel: state.decision.model, observedModel: valid ? observation.model : null,
+          configuredEffort: state.decision.effort, observedEffort: valid ? observation.effort : null,
+          effortEvidence: valid ? observation.effortEvidence || 'native-turn-context' : null,
           sessionId: observation?.sessionId || null, transcriptRefs: observation?.evidence?.path ? [observation.evidence.path] : [],
           failure: valid ? null : { reason: state.error?.message || 'Native model/effort/completion unverified' }, usage: observation?.usage || null,
           ...(observation?.type === 'orphaned' || state.retirementUnconfirmed ? { status: 'blocked', exitCategory: 'orphaned' } : {}) };

@@ -330,6 +330,13 @@ export async function runTerminalLauncher({ host, args = [], config, env = proce
     return { code: 0, signal: null };
   }
   if (host !== 'codex') throw new Error('Unsupported terminal host');
+  const classification = classifyTerminalArguments(args);
+  if (classification === 'interactive') {
+    if (env.RNB_TERMINAL_LAUNCH_ACTIVE) throw new Error('Native terminal launcher recursion refused');
+    const { launchManagedCodexTerminal } = await import('./codex-managed-terminal.mjs');
+    await launchManagedCodexTerminal({ binary: nativeExecutable(config.realCodex), args, env, cwd: process.cwd() });
+    return { code: 0, signal: null };
+  }
   const invocation = terminalInvocation({ host, args, config, env });
   const child = spawn(invocation.command, invocation.args, { env: { ...subscriptionEnvironment(env), RNB_TERMINAL_LAUNCH_ACTIVE: '1' }, stdio: 'inherit', shell: false });
   const unforward = forwardSignals(child, signalSource);

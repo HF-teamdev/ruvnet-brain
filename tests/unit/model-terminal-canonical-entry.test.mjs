@@ -49,10 +49,9 @@ describe('canonical native terminal executable entries', () => {
     for (const args of [['exec', 'hello'], ['--', 'login']]) {
       const result = spawnSync('codex', args, { env: { ...f.env, CODEX_HOME: path.join(f.home, 'missing') }, encoding: 'utf8' });
       expect(result.status).toBe(1); expect(result.stderr).toContain('[native-terminal-routing]');
-      if (args[0] === 'exec') expect(fs.existsSync(f.log)).toBe(false);
-      else { // The literal prompt enters the guarded daemon path, never administrative login.
-        expect(JSON.parse(fs.readFileSync(f.log)).args).toEqual(['app-server', 'daemon', 'start']); fs.unlinkSync(f.log);
-      }
+      // Exec is refused; a literal interactive prompt also refuses without a TTY.
+      // Neither may fall back to a raw native process or the retired daemon path.
+      expect(fs.existsSync(f.log)).toBe(false);
     }
   });
   it('refuses unrelated symlinks, unmanaged scripts, and same-path native files before mutation', () => {
