@@ -11,6 +11,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { decideNativeTurn, appendGatewayReceipt } from './model-routing-gateway.mjs';
 import { subscriptionEnvironment, assertSubscriptionAuth, validateDispatchDecision } from './model-router-dispatch.mjs';
 import { validateClaudeTerminalSettings } from './model-terminal-launchers.mjs';
+import { runManagedPrompt } from './model-managed-prompt.mjs';
 
 const REFUSED = 'Controlled Claude turn refused; no fallback.';
 const uuid = value => /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value || '');
@@ -215,7 +216,8 @@ export async function runControlledClaudeTurn({ binary, prompt, sessionId = cryp
 
 /** Native tool approvals are presented by this host; --print supplies no terminal dialogs. */
 export async function launchControlledClaudeTerminal({ binary, args = [], input = process.stdin, output = process.stdout,
-  diagnostics = process.stderr, env = process.env, cwd = process.cwd(), runTurn = runControlledClaudeTurn } = {}) {
+  diagnostics = process.stderr, env = process.env, cwd = process.cwd(), runTurn = runControlledClaudeTurn,
+  managedPrompt = runManagedPrompt } = {}) {
   let sessionId, resume = false, initialPrompt, ownerBypass = false;
   const remaining = [...args];
   const invalid = () => new Error('Controlled Claude accepts only --resume <session UUID>, --permission-mode bypassPermissions, and a literal initial prompt.');
@@ -241,7 +243,9 @@ export async function launchControlledClaudeTerminal({ binary, args = [], input 
       const prompt = initialPrompt ?? await terminal.question('Claude> '); initialPrompt = undefined;
       if (prompt.trim() === '/exit') break;
       if (!prompt.trim()) continue;
-      const turn = await runTurn({ binary, prompt, sessionId, resume, cwd, env, signal: controller.signal,
+      const turn = await managedPrompt({ binary, originalPrompt: prompt, harness: 'claude-code', projectRoot: cwd,
+        nativeContext: { sessionId, resume }, permissions: { apiBilling: false, write: ownerBypass },
+        primaryTurn: runTurn, cwd, env, signal: controller.signal,
         output: text => output.write(text + '\n'), approve: async request => {
           if (['Agent', 'Task'].includes(request.tool_name)) return false;
           const details = cleanText(JSON.stringify({ tool: request.tool_name, input: request.input, reason: request.decision_reason }));
