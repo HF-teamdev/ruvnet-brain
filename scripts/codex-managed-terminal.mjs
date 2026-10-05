@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
-import { createInterface } from 'node:readline/promises';
+import { createManagedTerminal } from './managed-terminal-input.mjs';
 import { runManagedPrompt } from './model-managed-prompt.mjs';
 import { decideNativeTurn, appendGatewayReceipt } from './model-routing-gateway.mjs';
 import { validateDispatchDecision, subscriptionEnvironment } from './model-router-dispatch.mjs';
@@ -83,7 +83,7 @@ export async function launchCodexManagedTerminal({ binary, args = [], input = pr
   if (parsed.administrative) return administrative(binary, args, env, parsed.cwd, signalSource, spawnNative);
   if (!input.isTTY || !output.isTTY) throw new Error('Controlled Codex requires a person at a terminal');
   let sessionId = parsed.sessionId, resume = Boolean(sessionId), initialPrompt = parsed.initialPrompt;
-  const terminal = createInterface({ input, output }), controller = new AbortController();
+  const terminal = createManagedTerminal({ input, output }), controller = new AbortController();
   const cancel = () => controller.abort();
   terminal.on('SIGINT', cancel);
   for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) signalSource.on(name, cancel);

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
-import { createInterface } from 'node:readline/promises';
+import { createManagedTerminal } from './managed-terminal-input.mjs';
 import { pathToFileURL } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { decideNativeTurn, appendGatewayReceipt } from './model-routing-gateway.mjs';
@@ -244,7 +244,7 @@ export async function launchControlledClaudeTerminal({ binary, args = [], input 
   if (remaining.some(arg => typeof arg !== 'string' || arg.startsWith('-'))) throw invalid();
   if (remaining.length) initialPrompt = remaining.join(' ');
   if (!input.isTTY || !output.isTTY) throw new Error('Controlled Claude requires a person at a terminal for prompts and approvals.');
-  const terminal = createInterface({ input, output });
+  const terminal = createManagedTerminal({ input, output });
   const controller = new AbortController();
   const cancel = () => controller.abort();
   terminal.on('SIGINT', cancel);
@@ -265,7 +265,7 @@ export async function launchControlledClaudeTerminal({ binary, args = [], input 
           const details = cleanText(JSON.stringify({ tool: request.tool_name, input: request.input, reason: request.decision_reason }));
           output.write(`Native permission request (untrusted tool text):\n${details}\n`);
           if (ownerBypass) return true;
-          return (await terminal.question('Approve this tool request? Type yes: ', { signal: controller.signal })).trim() === 'yes';
+          return (await terminal.question('Approve this tool request? Type yes: ', { signal: controller.signal, approval: true })).trim() === 'yes';
         } });
       sessionId = turn.sessionId; resume = true;
       const actual = turn.modelObserved === true ? turn.decision : undefined;

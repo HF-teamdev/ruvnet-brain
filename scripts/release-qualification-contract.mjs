@@ -127,8 +127,9 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     },
     {
       "id": "same-session-native-transport",
-      "reason": "Codex and Claude native JSONL preserve context, UTF-8, control progress, cancellation and deferred FIFO while binding each new turn to an approved native route",
+      "reason": "Codex and Claude preserve atomic terminal pastes, fresh manual consent, context, UTF-8, control progress, cancellation and deferred FIFO while binding each new turn to an approved native route",
       "files": [
+        "tests/unit/managed-terminal-input.test.mjs",
         "tests/unit/model-routing-gateway.test.mjs",
         "tests/unit/model-routing-gateway-boundaries.test.mjs",
         "tests/unit/claude-terminal-mod.test.mjs",

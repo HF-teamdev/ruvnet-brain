@@ -72,7 +72,27 @@ describe('native Codex allocation and resume evidence', () => {
     await expect(runCodexManagedPrimaryTurn(g)).rejects.toThrow(/deadline/); expect(g.receipt).not.toHaveBeenCalled();
   });
 });
-describe('actual Codex readline common prompt seam', () => {
+describe('actual Codex terminal common prompt seam', () => {
+  it('delivers a complete multiline paste once and retains followups entered while routing is busy', async () => {
+    const t = terminal(), calls = [], original = 'First paragraph.\r\nSecond paragraph — café.\nThird paragraph.';
+    let submitted = false;
+    t.output.on('data', chunk => {
+      if (!submitted && chunk.toString().includes('Codex> ')) {
+        submitted = true;
+        setImmediate(() => t.input.write(`\x1b[200~${original}\x1b[201~\n`));
+      }
+    });
+    try {
+      await launchCodexManagedTerminal({ binary: '/native', ...t, env: {},
+        managedPrompt: async options => {
+          calls.push(options.originalPrompt);
+          if (calls.length === 1) t.input.write('Queued followup.\n/exit\n');
+          await new Promise(resolve => setImmediate(resolve));
+          return { sessionId: parent, completed: true, modelObserved: true, model: 'fixture', effort: 'medium' };
+        } });
+      expect(calls).toEqual([original, 'Queued followup.']);
+    } finally { t.close(); }
+  });
   it('all ordinary prompts pass through common routing and keep the exact native parent UUID', async () => {
     const t = terminal(), prompts = ['Explain this function.', '/exit'], calls = [], turns = [];
     t.output.on('data', chunk => { if (chunk.toString().includes('Codex> ')) setImmediate(() => t.input.write(prompts.shift() + '\n')); });

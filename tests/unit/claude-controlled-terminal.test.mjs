@@ -203,6 +203,30 @@ describe('controlled Claude native turn boundary', () => {
     expect(() => controlledClaudeArguments({ ...decision, subscriptionCovered: false }, sessionId)).toThrow(/refused/);
   });
 
+  it('keeps queued prompts separate from fresh tool approval input', async () => {
+    const input = new PassThrough(), output = new PassThrough(), diagnostics = new PassThrough();
+    input.isTTY = true; output.isTTY = true;
+    const calls = []; let approved;
+    output.on('data', chunk => {
+      if (chunk.toString().includes('Approve this tool request? Type yes: ')) {
+        setImmediate(() => input.write('yes\n'));
+      }
+    });
+    try {
+      await launchControlledClaudeTerminal({ binary: '/native', args: ['original request'], input, output, diagnostics,
+        managedPrompt: async options => {
+          calls.push(options.originalPrompt);
+          if (calls.length === 1) {
+            input.write('Queued instruction.\n');
+            approved = await options.approve({ tool_name: 'Edit', input: {} });
+          } else input.write('/exit\n');
+          return { sessionId, completed: true, modelObserved: true };
+        } });
+      expect(approved).toBe(true);
+      expect(calls).toEqual(['original request', 'Queued instruction.']);
+    } finally { input.destroy(); output.destroy(); diagnostics.destroy(); }
+  });
+
   it.each([['--permission-mode', 'bypassPermissions'], ['--permission-mode', 'bypassPermissions', '--resume', sessionId],
     ['--resume', sessionId, '--permission-mode', 'bypassPermissions']].map(flags => ({ flags })))(
     'honours the exact owner bypass flag at the host while preserving resume and worker refusal %#', async ({ flags }) => {
