@@ -22,7 +22,7 @@ import { resolveBash } from '../../plugin/scripts/hook-shim-bash.mjs';
  * hook proven any other way is proven on a channel that cannot observe the defect.
  */
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
-const CAPTURE = path.join(ROOT, 'plugin', 'scripts', 'learn-capture.sh');
+const CAPTURE = path.join(ROOT, 'plugin', 'scripts', 'learn-capture.mjs');
 
 const temps = [];
 // realpathSync.native, not the raw mkdtemp result: GitHub Actions Windows runners hand out the 8.3
@@ -50,7 +50,7 @@ function capture({ cwd, projectDir, claudeProjectDir }) {
   // Explicit, not just "absent from the ambient env": a real hook run always carries a definite
   // CLAUDE_PROJECT_DIR value or none, never "whatever this test runner's own process happened to have".
   if (claudeProjectDir) env.CLAUDE_PROJECT_DIR = claudeProjectDir; else delete env.CLAUDE_PROJECT_DIR;
-  try { execFileSync(resolveBash(), [CAPTURE], { cwd, env, input: payload, stdio: 'pipe', timeout: 20_000 }); }
+  try { execFileSync(process.execPath, [CAPTURE], { cwd, env, input: payload, stdio: 'pipe', timeout: 20_000 }); }
   catch { /* the hook fails open by design; the queue on disk is what this asserts */ }
 }
 
@@ -70,7 +70,7 @@ const queued = (root) => {
  * mistake as reading `.claude/settings.json` to decide whether a daemon is running — ask the thing
  * that actually decides.
  */
-const behavioural = resolveBash() ? describe : describe.skip;
+const behavioural = describe;
 
 behavioural('issue #134 — captured events land where the flush looks', () => {
   it('honours RUVNET_BRAIN_PROJECT_DIR even when the shell has drifted below the root', () => {
@@ -133,19 +133,4 @@ behavioural('issue #134 — captured events land where the flush looks', () => {
     cleanup();
   });
 
-});
-
-describe('issue #134 — the invariant is pinned in source, on every platform', () => {
-  it('the writer and the reader resolve the project root by the same rule, in source', () => {
-    // The behavioural cases above cover today. This one fails if a future edit reintroduces the
-    // asymmetry in either file — which is how #104 came back as #134 in the first place.
-    const writer = fs.readFileSync(CAPTURE, 'utf8');
-    const reader = fs.readFileSync(path.join(ROOT, 'plugin', 'scripts', 'learn-flush.mjs'), 'utf8');
-    expect(writer, 'learn-capture.sh must consult the variable the flush honours')
-      .toMatch(/RUVNET_BRAIN_PROJECT_DIR/);
-    expect(reader).toMatch(/RUVNET_BRAIN_PROJECT_DIR/);
-    expect(reader).toMatch(/projectDirectory\(\{ env: process\.env \}\)/);
-    expect(writer, 'and must not fall back to a bare $PWD queue path')
-      .not.toMatch(/DIR="\$PWD\/\.swarm/);
-  });
 });

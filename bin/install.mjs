@@ -5001,6 +5001,7 @@ export function syncManagedRouterTools({ routerDir = path.join(os.homedir(), '.c
   }
   // Preserve package-relative imports without replacing user policy.mjs overrides.
   for (const runtimeRelative of [path.join('plugin', 'scripts', 'runtime-preferences.mjs'),
+    path.join('plugin', 'scripts', 'project-identity.mjs'),
     path.join('config', 'model-router', 'policy.default.mjs')]) {
   const runtimeTarget = path.join(routerDir, runtimeRelative);
   const runtimeBytes = fs.readFileSync(path.join(packageRoot, runtimeRelative));

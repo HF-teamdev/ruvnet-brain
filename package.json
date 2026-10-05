@@ -75,7 +75,8 @@
     "release:qualify": "node scripts/release-qualification.mjs",
     "rehearse:corpus": "node scripts/rehearse-corpus-pipeline.mjs",
     "single-source:check": "node scripts/single-source-check.mjs",
-    "benchmark:continuity": "node scripts/qa/progression-validation-benchmark.mjs"
+    "benchmark:continuity": "node scripts/qa/progression-validation-benchmark.mjs",
+    "host:codex:execution-proof": "node scripts/codex-host-execution-proof.mjs"
   },
   "files": [
     ".claude-plugin/marketplace.json",

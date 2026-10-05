@@ -2,6 +2,23 @@
 export const RELEASE_REQUIREMENTS = Object.freeze({
   "source": [
     {
+      "id": "owned-startup-execution-evidence",
+      "reason": "Opt-in native execution and private stage diagnostics bind released source and preserve unknown convergence and incomplete cleanup boundaries",
+      "files": ["tests/unit/codex-host-execution-proof.test.mjs", "tests/unit/codex-host-proof-runtime.test.mjs", "tests/unit/session-start-proof.test.mjs"]
+    },
+    {
+      "id": "canonical-learning-capture",
+      "reason": "Fixed metadata capture, canonical scope, consent, acknowledgement and bounded owned recovery retain privacy and originals",
+      "files": [
+        "tests/unit/learn-flush-partial-failure.test.mjs",
+        "tests/unit/learn-capture-project-root.test.mjs",
+        "tests/unit/learn-capture-redaction.test.mjs",
+        "tests/unit/learner-scope-agreement.test.mjs",
+        "tests/unit/health-repair-flush-learning.test.mjs",
+        "tests/unit/learning-worker-supervisor.test.mjs"
+      ]
+    },
+    {
       "id": "fresh-owned-host-proof",
       "reason": "Source-bound native registry declarations reject warnings, trust changes and unretired owned processes",
       "files": ["tests/unit/codex-fresh-host-proof.test.mjs"]
@@ -193,6 +210,11 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     }
   ],
   "integration": [
+    {
+      "id": "canonical-learning-recovery",
+      "reason": "Cross-session recovery and Console evidence agree on the same canonical scope without ratifying tool metadata as instructions",
+      "files": ["tests/integration/learning-recovery-377.test.mjs", "tests/integration/learning-console-scope.test.mjs"]
+    },
     {
       "id": "canonical-progression-store",
       "reason": "Actual adopted canonical storage, exact readback, and concurrent session restoration retain consent and complete history",
