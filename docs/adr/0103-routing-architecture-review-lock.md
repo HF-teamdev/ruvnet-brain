@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-05
-version: 0.1.0
+version: 0.1.1
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -81,6 +81,7 @@ governs:
   - scripts/qe/agentic-qe-4.3.mjs
   - tests/unit/agentic-qe-early-public.test.mjs
   - tests/unit/release-evidence-dag.test.mjs
+  - tests/unit/protected-release-workflow.test.mjs
   - tests/unit/prepublication-evidence.test.mjs
   - scripts/source-scope-receipt.mjs
   - scripts/release-transaction.mjs
@@ -125,7 +126,7 @@ substitute for release qualification, exact-candidate receipts or published veri
 | Native subscription and catalog | subscription-hosts, native-subscription-usage, model-native-catalog, model-native-qualification, model-router-catalog | Corresponding native/catalog tests and installer convergence tests |
 | Weekly assessment and promotion | model-weekly-cycle, model-weekly-analyst, model-weekly-assessment, model-weekly-qualification, model-routing-policy-promotion, weekly-analyst-instruction | Corresponding weekly and promotion unit files |
 | Installation seam | bin/install.mjs, model-routing-operation.md, codex-console-alias and SessionStart core/budget | model-router-update-convergence, session-start-core-parity, model-terminal-launchers and npm-tarball-codex; bounded routing and console-alias installation, not an all-installer review |
-| Qualification and release guard | architecture-review-lock, doc-currency, release-qualification-contract, source-scope-receipt, release-transaction, release-transaction-provider; candidate/CI/protected workflows | architecture-review-lock refusal fixtures and doc-currency-review; existing release contract chooses execution evidence |
+| Qualification and release guard | architecture-review-lock, doc-currency, release-qualification-contract, source-scope-receipt, release-transaction, release-transaction-provider; candidate/CI/protected workflows | architecture-review-lock refusal fixtures and doc-currency-review; release-evidence-dag, protected-release-workflow and agentic-qe-early-public bind the outer candidate-preflight dependency and same-run receipts; existing release contract chooses execution evidence |
 
 The exact files are enumerated in frontmatter. This mapping identifies test responsibilities; it
 claims neither that every listed test passed on this candidate nor that any reviewer read all files.
