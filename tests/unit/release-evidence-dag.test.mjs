@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { createCandidateCiReceipt, REQUIRED_CI_JOBS } from '../../scripts/candidate-ci-receipt.mjs';
 import { qualificationPlan } from '../../scripts/release-qualification.mjs';
 import { digest } from '../../scripts/coverage-integrity.mjs';
+import { getVersion } from '../../scripts/version.mjs';
 
 const ROOT = path.resolve(process.env.RUVNET_RELEASE_CONTRACT_ROOT || path.resolve(import.meta.dirname, '../..'));
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -110,14 +111,14 @@ const temporary = [];
 afterEach(() => temporary.splice(0).forEach(dir => fs.rmSync(dir, { recursive: true, force: true })));
 function candidateFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'candidate-ci-')); temporary.push(dir);
-  const sha = 'a'.repeat(40);
+  const sha = 'a'.repeat(40), version = getVersion();
   const write = (name, value) => { const file = path.join(dir, name); fs.writeFileSync(file, JSON.stringify(value)); return file; };
   const packageBytes = Buffer.from('immutable candidate');
   fs.writeFileSync(path.join(dir, 'candidate.tgz'), packageBytes);
   const packageDigest = crypto.createHash('sha256').update(packageBytes).digest('hex');
-  const manifestFile = write('manifest.json', { schemaVersion: 1, candidateSha: sha, version: '4.5.12', tag: 'v4.5.12',
+  const manifestFile = write('manifest.json', { schemaVersion: 1, candidateSha: sha, version, tag: `v${version}`,
     members: [{ role: 'npm', name: 'candidate.tgz', size: packageBytes.length, sha256: packageDigest }] });
-  const candidateFile = write('candidate.json', { sha, version: '4.5.12', artifact: { sha256: packageDigest } });
+  const candidateFile = write('candidate.json', { sha, version, artifact: { sha256: packageDigest } });
   for (const platform of ['linux', 'macos', 'windows']) {
     const plan = qualificationPlan('source', platform), paths = platform === 'windows' ? path.win32 : path.posix;
     const checkoutRoot = platform === 'windows' ? 'D:\\work\\repo' : '/work/repo';
@@ -165,7 +166,7 @@ describe('aggregate-produced candidate CI evidence', () => {
   it.each(['sha', 'version', 'package', 'candidate-package', 'duplicate'])('rejects changed %s candidate identity', field => {
     const args = candidateFixture();
     if (field === 'sha') args.sha = 'c'.repeat(40);
-    if (field === 'version') mutateJson(args.candidateFile, r => r.version = '4.5.13');
+    if (field === 'version') mutateJson(args.candidateFile, r => r.version = getVersion() + '-mismatch');
     if (field === 'package') fs.writeFileSync(path.join(args.acceptanceDir, 'candidate.tgz'), 'different');
     if (field === 'candidate-package') mutateJson(args.candidateFile, r => r.artifact.sha256 = 'c'.repeat(64));
     if (field === 'duplicate') mutateJson(args.manifestFile, r => r.members.push(r.members[0]));

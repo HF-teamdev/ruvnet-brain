@@ -93,11 +93,11 @@ export function retireControlledClaudeChild(child, { graceMs = 200, killMs = 200
   });
 }
 
-export function controlledClaudeArguments(decision, sessionId, resume = false) {
+export function controlledClaudeArguments(decision, sessionId, resume = false, responseSchema) {
   if (decision?.harness !== 'claude-code' || decision.provider !== 'anthropic' || decision.subscriptionCovered !== true ||
       !/^claude-[a-z0-9][a-z0-9.-]*$/.test(decision.model || '') ||
       !['low', 'medium', 'high', 'xhigh', 'max'].includes(decision.effort) || !uuid(sessionId)) throw new Error(REFUSED);
-  return ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+  return [...(responseSchema ? ['--json-schema', JSON.stringify(responseSchema)] : []), '--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
     '--model', decision.model, '--effort', decision.effort, '--permission-mode', 'manual', '--permission-prompts', 'host',
     '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'Agent,Task',
@@ -109,10 +109,12 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
   cwd = process.cwd(), env = process.env, decide = decideNativeTurn, verifyDecision = validateDispatchDecision,
   checkSettings = validateClaudeTerminalSettings, checkAuth = assertSubscriptionAuth, spawnNative = spawn,
   probe = execFileSync, approve = async () => false, output = () => {}, receipt = appendGatewayReceipt,
-  checkModules = assertClaudeModuleBoundary, signal, timeoutMs = 900000, handshakeMs = 10000 } = {}) {
+  checkModules = assertClaudeModuleBoundary, responseSchema, validateStructuredOutput, signal, timeoutMs = 900000, handshakeMs = 10000 } = {}) {
   if (!path.isAbsolute(binary || '') || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 200000 ||
       /^\s*\//.test(prompt) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 900000 ||
       !Number.isSafeInteger(handshakeMs) || handshakeMs <= 0 || handshakeMs > 30000 || signal?.aborted) throw new Error(REFUSED);
+  if (responseSchema && (responseSchema.type !== 'object' || typeof validateStructuredOutput !== 'function'
+    || Buffer.byteLength(JSON.stringify(responseSchema)) > 65536)) throw new Error(REFUSED);
   const limit = performance.now() + timeoutMs;
   const expired = () => signal?.aborted || performance.now() >= limit;
   await assertModelRoutingText(prompt);
@@ -127,12 +129,13 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
   const decision = await decide(decisionPrompt, 'claude-code', { env: clean });
   verifyDecision(decision);
   if (expired()) throw new Error(REFUSED);
-  const args = controlledClaudeArguments(decision, sessionId, resume);
+  const args = controlledClaudeArguments(decision, sessionId, resume, responseSchema);
   if (expired()) throw new Error(REFUSED);
   const child = spawnNative(binary, args, { cwd, env: clean, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
   return new Promise((resolve, reject) => {
     let done = false, phase = 'initialize', buffer = '', bytes = 0, result, observed = false, permissions = false;
     const assistantText = [];
+    let structuredAnswer;
     const decoder = new StringDecoder('utf8');
     const ids = { initialize: crypto.randomUUID(), before: crypto.randomUUID(), after: crypto.randomUUID() };
     let handshake;
@@ -177,7 +180,17 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
         if (['Agent', 'Task'].includes(message.request.tool_name)) return fail();
         permissions = true;
         let allowed = false;
-        try { allowed = await approve(message.request) === true; } catch { allowed = false; }
+        try {
+          if (message.request.tool_name === 'StructuredOutput') {
+            const value = message.request.input;
+            const serialized = JSON.stringify(value);
+            if (responseSchema && value && typeof value === 'object' && !Array.isArray(value)
+              && Buffer.byteLength(serialized) <= 1024 * 1024 && validateStructuredOutput(value) === true) {
+              await assertModelRoutingText(serialized);
+              allowed = !expired();
+            }
+          } else allowed = await approve(message.request) === true;
+        } catch { allowed = false; }
         permissions = false;
         send({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id,
           response: allowed ? { behavior: 'allow', updatedInput: message.request.input } :
@@ -192,8 +205,15 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       }
       if (message.type === 'result') {
         if (phase !== 'turn' || permissions || !observed || message.session_id !== sessionId || message.subtype !== 'success' ||
-            message.is_error !== false || typeof message.result !== 'string' || !message.result.trim() ||
-            message.permission_denials?.length || message.errors?.length) return fail();
+            message.is_error !== false || message.permission_denials?.length || message.errors?.length) return fail();
+        if (responseSchema) {
+          try {
+            const value = message.structured_output;
+            if (!value || typeof value !== 'object' || Array.isArray(value) || validateStructuredOutput(value) !== true) return fail();
+            structuredAnswer = JSON.stringify(value);
+            if (Buffer.byteLength(structuredAnswer) > 1024 * 1024) return fail();
+          } catch { return fail(); }
+        } else if (typeof message.result !== 'string' || !message.result.trim()) return fail();
         result = message; control('after');
       }
     };
@@ -214,14 +234,16 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       if (code !== 0 || phase !== 'exit' || !result || buffer.trim() || decoder.end()) return fail();
       try {
         await assertModelRoutingText(assistantText.join('\n'));
-        await assertModelRoutingText(result.result);
+        await assertModelRoutingText(responseSchema ? structuredAnswer : result.result);
         if (done || expired()) return fail();
         for (const text of assistantText) { if (expired()) return fail(); output(text); }
         if (expired()) return fail();
         receipt({ ts: new Date().toISOString(), harness: 'claude-code', status: 'completed', model: decision.model,
-          effort: decision.effort, taskClass: decision.taskClass, modelObserved: true,
+          effort: decision.effort, taskClass: decision.taskClass, modelObserved: true, outputFormat: responseSchema ? 'json-schema' : 'text',
+          nativeSchemaRetries: responseSchema ? 'not-observed' : undefined,
           evidence: 'assistant model observed; get_settings applied effort matched before and after turn; per-request effort not exposed' }, { env: clean });
-        done = true; clear(); resolve({ sessionId, decision, finalAnswer: result.result, modelObserved: true, effortSettingsObserved: true, perRequestEffortObserved: false });
+        done = true; clear(); resolve({ sessionId, decision, finalAnswer: responseSchema ? structuredAnswer : result.result, structuredOutput: Boolean(responseSchema),
+          nativeSchemaRetries: responseSchema ? 'not-observed' : undefined, modelObserved: true, effortSettingsObserved: true, perRequestEffortObserved: false });
       } catch { fail(); }
     });
     control('initialize');

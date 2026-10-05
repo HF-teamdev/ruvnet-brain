@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { createGuardedWorkflowAdapters, readCodexWorkerObservation } from '../../scripts/model-routing-execution-adapters.mjs';
+import { createGuardedWorkflowAdapters, readCodexWorkerObservation, claudeWorkflowResponse } from '../../scripts/model-routing-execution-adapters.mjs';
 import { validateExecutionAdapter, validateWorkerResult } from '@pacphi/agentic-kit/src/lib/execution/schema.mjs';
 
 function fixture(overrides = {}) {
@@ -30,7 +30,7 @@ test('Claude workflow uses only the bound native final JSON after commentary', a
   const { worker, claude: adapter } = fixture({ executeNative: undefined });
   worker.decision = { ...worker.decision, harness: 'claude-code', provider: 'anthropic' };
   const finalAnswer = '{"outcome":"done","artifacts":[],"decisions":[],"risks":[]}';
-  const turn = { sessionId: crypto.randomUUID(), decision: worker.decision, finalAnswer,
+  const turn = { sessionId: crypto.randomUUID(), decision: worker.decision, finalAnswer, structuredOutput: true,
     modelObserved: true, effortSettingsObserved: true };
   const native = vi.spyOn(controlledClaude, 'runControlledClaudeTurn').mockImplementation(async options => {
     options.output?.('I will inspect the source.');
@@ -46,7 +46,7 @@ test('Claude workflow uses only the bound native final JSON after commentary', a
     assert.equal(observation.sessionId, turn.sessionId);
     assert.equal(adapter.interpret(state, observation).status, 'succeeded');
     assert.equal(adapter.summarize(state).outcome, 'done');
-    for (const override of [{ finalAnswer: undefined }, { finalAnswer: {} },
+    for (const override of [{ structuredOutput: false }, { finalAnswer: undefined }, { finalAnswer: {} },
       { decision: { ...worker.decision, model: 'other' } }, { effortSettingsObserved: false }]) {
       native.mockResolvedValueOnce({ ...turn, ...override });
       const rejected = await adapter.prepare({ worker, timeoutMs: 5000 });
@@ -225,4 +225,21 @@ test('Claude adapter floors fractional remaining time and never extends the abso
     assert.equal(native.mock.calls.length, 2);
     assert.match(exhaustedFraction.error.message, /deadline exhausted/);
   } finally { now.mockRestore(); native.mockRestore(); }
+});
+
+
+test('host-owned Claude schemas preserve existing role envelopes and negative reviews', () => {
+  const planner = claudeWorkflowResponse('planner');
+  assert.equal(planner.validateStructuredOutput({ tasks: [{ id: 'work', instructions: 'Read context', mode: 'read', checkIds: [] }] }), true);
+  assert.equal(planner.validateStructuredOutput({ tasks: [{ id: 'work', instructions: 'Read context', mode: 'execute', checkIds: [] }] }), false);
+  assert.equal(planner.validateStructuredOutput({ tasks: [{ id: 'work', instructions: 'Read context', mode: 'read', checkIds: [], command: 'unsafe' }] }), false);
+  for (const role of ['worker', 'developer']) {
+    const output = claudeWorkflowResponse(role);
+    assert.equal(output.validateStructuredOutput({ outcome: 'done', artifacts: [{ path: 'proof' }], decisions: [1], risks: [null] }), true);
+    assert.equal(output.validateStructuredOutput({ outcome: 'done', artifacts: [], decisions: [] }), false);
+  }
+  const review = claudeWorkflowResponse('reviewer');
+  assert.equal(review.validateStructuredOutput({ passed: false, artifactDigest: 'a'.repeat(64), findings: [{ defect: true }], evidence: [{ inspected: true }] }), true);
+  assert.equal(review.validateStructuredOutput({ passed: true, artifactDigest: 'a'.repeat(64), findings: [], evidence: [] }), false);
+  for (const role of ['unknown', 'constructor', undefined]) assert.throws(() => claudeWorkflowResponse(role), /Unknown/);
 });

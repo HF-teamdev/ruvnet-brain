@@ -60,6 +60,29 @@ export function codexBrainSearchArguments(env = process.env) {
   return ['-c', table];
 }
 
+const CLAUDE_WORKFLOW_SCHEMAS = {"planner":{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]{0,79}$"},"instructions":{"type":"string","minLength":1},"dependsOn":{"type":"array","items":{"type":"string"}},"mode":{"type":"string","enum":["read","write"]},"worktree":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}},"checkIds":{"type":"array","items":{"type":"string"}}},"required":["id","instructions","mode","checkIds"]}}},"required":["tasks"]},"worker":{"type":"object","properties":{"outcome":{"type":"string","minLength":1},"artifacts":{"type":"array","items":{}},"decisions":{"type":"array","items":{}},"risks":{"type":"array","items":{}}},"required":["outcome","artifacts","decisions","risks"]},"reviewer":{"type":"object","properties":{"passed":{"type":"boolean"},"artifactDigest":{"type":"string","pattern":"^[a-f0-9]{64}$"},"findings":{"type":"array","items":{}},"evidence":{"type":"array","items":{},"minItems":1}},"required":["passed","artifactDigest","findings","evidence"]}};
+const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+export function claudeWorkflowResponse(role) {
+  const kind = role === 'developer' ? 'worker' : role;
+  if (!Object.hasOwn(CLAUDE_WORKFLOW_SCHEMAS, kind)) throw blocked('Unknown native Claude workflow role');
+  const schema = CLAUDE_WORKFLOW_SCHEMAS[kind];
+  if (!schema) throw blocked('Unknown native Claude workflow role');
+  const nonblank = value => typeof value === 'string' && value.trim().length > 0;
+  const strings = value => Array.isArray(value) && value.every(item => typeof item === 'string');
+  const validate = value => {
+    if (!plainObject(value)) return false;
+    if (kind === 'planner') return Array.isArray(value.tasks) && value.tasks.length > 0 && value.tasks.every(task =>
+      plainObject(task) && Object.keys(task).every(key => ['id', 'instructions', 'dependsOn', 'mode', 'worktree', 'paths', 'checkIds'].includes(key))
+      && /^[a-z][a-z0-9-]{0,79}$/.test(task.id || '') && nonblank(task.instructions) && ['read', 'write'].includes(task.mode)
+      && strings(task.checkIds) && (task.dependsOn === undefined || strings(task.dependsOn))
+      && (task.paths === undefined || strings(task.paths)) && (task.worktree === undefined || typeof task.worktree === 'string'));
+    if (kind === 'worker') return nonblank(value.outcome) && ['artifacts', 'decisions', 'risks'].every(key => Array.isArray(value[key]));
+    return typeof value.passed === 'boolean' && /^[a-f0-9]{64}$/.test(value.artifactDigest || '')
+      && Array.isArray(value.findings) && Array.isArray(value.evidence) && value.evidence.length > 0;
+  };
+  return { responseSchema: structuredClone(schema), validateStructuredOutput: validate };
+}
+
 export async function executeCodexWorkflowWorker({ binary, decision, prompt, cwd, readOnly, signal, timeoutMs,
   env = process.env, sessionId, launch = spawn, observe = readCodexWorkerObservation, allowance = readCodexAllowance }) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || signal?.aborted) throw blocked('Native worker cancelled or deadline unavailable');
@@ -235,13 +258,13 @@ export function createGuardedWorkflowAdapters({ request, budget, env = process.e
           }
           else {
             const receipts = [];
-            const turn = await runControlledClaudeTurn({ ...state, prompt: state.worker.prompt + (state.worker.reviewContract ? '\n' + state.worker.reviewContract : ''), env,
+            const turn = await runControlledClaudeTurn({ ...state, ...claudeWorkflowResponse(state.worker.role), prompt: state.worker.prompt + (state.worker.reviewContract ? '\n' + state.worker.reviewContract : ''), env,
               decide: async () => state.decision, approve: async permission => ownedPermission(request, state.worker, permission),
               receipt: value => receipts.push(value) });
-            if (typeof turn.finalAnswer !== 'string' || !turn.finalAnswer.trim()) throw blocked('Native final answer unavailable');
+            if (turn.structuredOutput !== true || typeof turn.finalAnswer !== 'string' || !turn.finalAnswer.trim()) throw blocked('Native final answer unavailable');
             state.observation = { model: turn.decision?.model, effort: turn.decision?.effort,
               sessionId: turn.sessionId, completed: turn.modelObserved === true && turn.effortSettingsObserved === true, answer: turn.finalAnswer,
-              evidence: receipts, effortEvidence: 'Native settings observed before and after; per-request effort not exposed' };
+              evidence: receipts, responseFormat: 'json-schema', nativeSchemaRetries: 'not-observed', effortEvidence: 'Native settings observed before and after; per-request effort not exposed' };
           }
           if (state.observation?.completed && state.observation.model === state.decision.model && state.observation.effort === state.decision.effort) {
             captureObservation(state.worker, state.observation);
