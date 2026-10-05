@@ -110,11 +110,21 @@ describe('bounded failure reasons and first-use disclosure', () => {
       }
     }
   });
-  it('preserves physical symlink-before-dotdot resolution for absolute and relative missing resources', () => {
+  it('matches native filesystem symlink-and-dotdot semantics for absolute and relative resources', () => {
     const h = fixture(); const privateDir = path.join(h.projectDir, 'private'); fs.mkdirSync(path.join(privateDir, 'deep'), { recursive: true });
     const alias = path.join(h.projectDir, 'public-alias'); fs.symlinkSync(path.join(privateDir, 'deep'), alias, 'dir');
-    expect(pathIsExcluded(`${alias}/../new.md`, [privateDir], h.projectDir)).toBe(true);
-    expect(pathIsExcluded('public-alias/../new.md', [privateDir], h.projectDir)).toBe(true);
+    // Normal Win32 paths normalize .. before resolving a directory link; POSIX resolves the link first.
+    // Prove the native destination through actual file I/O, not a simulated Windows path helper.
+    const expectedPrivate = process.platform !== 'win32'; const rawPath = `${alias}/../new.md`;
+    const publicTarget = path.join(h.projectDir, 'new.md'); const privateTarget = path.join(privateDir, 'new.md');
+    expect(pathIsExcluded(rawPath, [privateDir], h.projectDir)).toBe(expectedPrivate);
+    expect(pathIsExcluded('public-alias/../new.md', [privateDir], h.projectDir)).toBe(expectedPrivate);
+    fs.writeFileSync(rawPath, 'Synthetic native path-resolution witness');
+    expect(fs.readFileSync(expectedPrivate ? privateTarget : publicTarget, 'utf8')).toBe('Synthetic native path-resolution witness');
+    expect(fs.existsSync(expectedPrivate ? publicTarget : privateTarget)).toBe(false);
+    expect(pathIsExcluded(rawPath, [privateDir], h.projectDir)).toBe(expectedPrivate);
+    expect(pathIsExcluded('private/deep/../new.md', [privateDir], h.projectDir)).toBe(true);
+    expect(pathIsExcluded(`${privateDir}/deep/../new.md`, [privateDir], h.projectDir)).toBe(true);
   });
   it('refuses ambiguous physical resource resolution instead of treating it as public', () => {
     const h = fixture(); const a = path.join(h.projectDir, 'cycle-a'); const b = path.join(h.projectDir, 'cycle-b'); fs.symlinkSync(b, a); fs.symlinkSync(a, b);
