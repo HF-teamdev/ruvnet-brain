@@ -19,7 +19,8 @@ const digest = (v) => crypto.createHash('sha256').update(v).digest('hex');
 function regular(file, { privateFile = false } = {}) {
   if (!path.isAbsolute(file || '')) throw new Error('Absolute file path required');
   const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() ||
+  const ownerAllowed = stat.uid === process.getuid?.() || (!privateFile && stat.uid === 0);
+  if (!stat.isFile() || stat.isSymbolicLink() || !ownerAllowed ||
       (privateFile && (stat.mode & 0o077))) throw new Error(`Owned regular file required: ${file}`);
   return fs.realpathSync(file);
 }

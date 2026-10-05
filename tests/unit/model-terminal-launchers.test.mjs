@@ -11,6 +11,7 @@ import { installTerminalLaunchers, terminalShellPlan, terminalInvocation, resolv
   verifyNativeWorkerAncestry } from '../../scripts/model-terminal-launchers.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
+const shortTemp = process.platform === 'darwin' ? '/private/tmp' : os.tmpdir();
 const cleanups = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 function directory(tempRoot = os.tmpdir(), prefix = 'rnbtl-') {
@@ -51,6 +52,7 @@ describe('per-user native terminal installation', () => {
     const installed = installTerminalLaunchers({ ...options(home), realCodex: native, apply: true });
     const result = spawnSync(installed.launchers.codex, ['login', 'status', 'space quote\' $literal'], { cwd: directory(), encoding: 'utf8', env: { ...process.env, OPENAI_API_KEY: 'must disappear' } });
     expect(result.status).toBe(7); expect(JSON.parse(fs.readFileSync(log))).toEqual({ argv: ['login', 'status', 'space quote\' $literal'] });
+    if (!fs.existsSync('/bin/zsh')) return; // Native zsh integration runs on hosts with zsh installed.
     const shell = spawnSync('/bin/zsh', ['-c', 'source "$1"; codex --version', 'test', installed.shellSource], { encoding: 'utf8', cwd: directory() });
     expect(shell.status).toBe(7); expect(JSON.parse(fs.readFileSync(log)).argv).toEqual(['--version']);
   });
@@ -58,7 +60,7 @@ describe('per-user native terminal installation', () => {
 
 describe('known native daemon locator', () => {
   async function fixture() {
-    const base = directory('/private/tmp', 't'); const codexHome = path.join(base, 'home');
+    const base = directory(shortTemp, 't'); const codexHome = path.join(base, 'home');
     const control = path.join(codexHome, 'app-server-control'); fs.mkdirSync(control, { recursive: true, mode: 0o700 });
     const daemon = path.join(base, `codex-daemon-${process.getuid()}`); fs.mkdirSync(daemon, { mode: 0o700 });
     const actual = path.join(daemon, 'a'.repeat(64)); const server = net.createServer();
@@ -82,7 +84,7 @@ describe('known native daemon locator', () => {
     expect(() => terminalInvocation({ host: 'codex', args: ['--version'], config, env: { RNB_TERMINAL_LAUNCH_ACTIVE: '1' } })).toThrow(/recursive/);
   });
   it('passes an actual private endpoint and every native argument verbatim into the gateway CLI', async () => {
-    const home = directory('/private/tmp'); const control = path.join(home, 'app-server-control'); fs.mkdirSync(control, { mode: 0o700 });
+    const home = directory(shortTemp); const control = path.join(home, 'app-server-control'); fs.mkdirSync(control, { mode: 0o700 });
     const actual = path.join(control, 'app-server-control.sock'); const server = net.createServer();
     await new Promise((resolve) => server.listen(actual, resolve)); fs.chmodSync(actual, 0o600);
     cleanups.push(() => new Promise((resolve) => server.close(resolve)));
