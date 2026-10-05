@@ -77,6 +77,14 @@ jobs:
       - name: Reviewed release integration acceptance
         if: env.QUALIFICATION_CONSUMER != 'true'
         run: node scripts/release-qualification.mjs --suite integration --platform linux --report /tmp/integration.json
+      - name: Preserve integration acceptance diagnostics
+        if: always() && env.QUALIFICATION_CONSUMER != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-acceptance-${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
+          path: /tmp/integration.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Run experience-level integration scenarios explicitly
         if: env.QUALIFICATION_CONSUMER != 'true'
         run: |
