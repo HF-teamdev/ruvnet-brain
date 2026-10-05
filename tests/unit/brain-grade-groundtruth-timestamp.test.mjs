@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { readPanel, staleness } from '../../scripts/brain-score.mjs';
 
 describe('ground-truth grading completion timestamp', () => {
@@ -25,7 +26,7 @@ globalThis.fetch = async () => {
 };
 `);
       const before = Date.now();
-      const result = spawnSync(process.execPath, ['--import', path.join(root, 'preload.mjs'),
+      const result = spawnSync(process.execPath, ['--import', pathToFileURL(path.join(root, 'preload.mjs')).href,
         path.join(root, 'scripts/brain-grade-groundtruth.mjs'), '--name', 'fixture', '--models', 'fixture/model',
         '--questions', path.join(root, 'questions.json'), '--repo', path.join(root, 'repo')],
       { encoding: 'utf8', env: { ...process.env, OPENROUTER_API_KEY: 'fixture-no-network' } });
