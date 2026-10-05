@@ -108,7 +108,7 @@ describe('native terminal policy bridge',()=>{
     expect(result.scope).toContain('worker crash');
     // The standalone helper remains portable; private terminal launch is POSIX-only.
     if(process.platform !== 'win32') expect(fs.statSync(receiptPath).mode&0o777).toBe(0o600);
-    expect(fs.readdirSync(dir).filter(name=>name.startsWith('ready.json.'))).toEqual([]);
+    expect(fs.readdirSync(dir).filter(name=>name.startsWith('.rnb-ready-'))).toEqual([]);
     expect(()=>writeReadinessReceipt({nonce:'wrong',receiptPath,pluginRoot,version:'2.1.289',sessionId:'fixture'})).toThrow();
   });
 });

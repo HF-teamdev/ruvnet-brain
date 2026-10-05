@@ -3,6 +3,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { installTerminalLaunchers, validateClaudeTerminalArguments } from '../../scripts/model-terminal-launchers.mjs';
+import { createTerminalTransport } from '../../scripts/model-terminal-gateway.mjs';
+
+it('refuses Windows transport before creating a socket or changing an explicit temporary root', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-win-transport-'));
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  try {
+    Object.defineProperty(process, 'platform', { ...descriptor, value: 'win32' });
+    await expect(createTerminalTransport({ tempRoot: root })).rejects.toThrow('requires macOS or Linux');
+    expect(fs.readdirSync(root)).toEqual([]);
+  } finally {
+    Object.defineProperty(process, 'platform', descriptor); fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it('refuses unsupported Windows terminal installation before reading or changing user state', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-win-boundary-'));
