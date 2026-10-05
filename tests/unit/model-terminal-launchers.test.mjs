@@ -78,9 +78,13 @@ describe('known native daemon locator', () => {
   });
   it('admin bypass needs no socket while inference and unsupported transports fail before launch', () => {
     const config = { schemaVersion: 1, realCodex: process.execPath, nodeBinary: process.execPath, gatewayPath: path.join(root, 'scripts/model-terminal-gateway.mjs') };
-    expect(terminalInvocation({ host: 'codex', args: ['login', 'status'], config, env: {} }).routed).toBe(false);
-    expect(() => terminalInvocation({ host: 'codex', args: ['exec', 'hello'], config, env: {} })).toThrow(/no proved/);
-    expect(() => terminalInvocation({ host: 'codex', args: [], config, env: { CODEX_HOME: path.join(directory(), 'missing') } })).toThrow();
+    const calls = []; const daemonExec = (...args) => calls.push(args);
+    expect(terminalInvocation({ host: 'codex', args: ['login', 'status'], config, env: {}, daemonExec }).routed).toBe(false);
+    expect(() => terminalInvocation({ host: 'codex', args: ['exec', 'hello'], config, env: {}, daemonExec })).toThrow(/no proved/);
+    expect(() => terminalInvocation({ host: 'codex', args: ['--profile', 'custom'], config, env: {}, daemonExec })).toThrow();
+    expect(() => terminalInvocation({ host: 'codex', args: ['-c', 'model_provider="custom"'], config, env: {}, daemonExec })).toThrow();
+    expect(calls).toEqual([]);
+    expect(() => terminalInvocation({ host: 'codex', args: [], config, env: { CODEX_HOME: path.join(directory(), 'missing') }, daemonExec })).toThrow();
     expect(() => terminalInvocation({ host: 'codex', args: ['--version'], config, env: { RNB_TERMINAL_LAUNCH_ACTIVE: '1' } })).toThrow(/recursive/);
   });
   it('passes an actual private endpoint and every native argument verbatim into the gateway CLI', async () => {
@@ -90,9 +94,25 @@ describe('known native daemon locator', () => {
     cleanups.push(() => new Promise((resolve) => server.close(resolve)));
     const gatewayPath = path.join(root, 'scripts/model-terminal-gateway.mjs');
     const args = ['resume', '--last', '--no-alt-screen', '-C', 'spaces \' literal'];
-    const invocation = terminalInvocation({ host: 'codex', args, env: { CODEX_HOME: home },
+    const starts = [];
+    const invocation = terminalInvocation({ host: 'codex', args, env: { CODEX_HOME: home, OPENAI_API_KEY: 'must disappear' }, daemonExec: (...values) => starts.push(values),
       config: { schemaVersion: 1, realCodex: process.execPath, nodeBinary: process.execPath, gatewayPath } });
+    expect(starts).toEqual([[fs.realpathSync(process.execPath), ['app-server', 'daemon', 'start'], { env: { CODEX_HOME: home }, timeout: 10000, stdio: 'ignore', shell: false, maxBuffer: 65536 }]]);
     expect(invocation).toEqual({ command: fs.realpathSync(process.execPath), args: [gatewayPath, '--real-binary', fs.realpathSync(process.execPath), '--upstream-socket', actual, '--', ...args], routed: true });
+  });
+  it('starts before resolving a missing cold locator, preserves warm endpoint and refuses failed or unmaterialized startup', async () => {
+    const f = await fixture(); fs.unlinkSync(f.locator);
+    const config = { schemaVersion: 1, realCodex: process.execPath, nodeBinary: process.execPath, gatewayPath: path.join(root, 'scripts/model-terminal-gateway.mjs') };
+    const request = { host: 'codex', args: [], config, env: { CODEX_HOME: f.codexHome } };
+    let starts = 0;
+    const cold = terminalInvocation({ ...request, daemonExec: () => { expect(fs.existsSync(f.locator)).toBe(false); starts++; fs.renameSync(f.actual, f.locator); } });
+    expect(starts).toBe(1); expect(cold.args).toContain(f.locator);
+    const inode = fs.lstatSync(f.locator).ino;
+    const warm = terminalInvocation({ ...request, daemonExec: () => { starts++; } });
+    expect(starts).toBe(2); expect(fs.lstatSync(f.locator).ino).toBe(inode); expect(warm.args).toEqual(cold.args);
+    expect(() => terminalInvocation({ ...request, daemonExec: () => { throw new Error('private provider details'); } })).toThrow('Native Codex daemon start unavailable; terminal launch blocked');
+    fs.chmodSync(f.locator, 0o660); expect(() => terminalInvocation({ ...request, daemonExec: () => {} })).toThrow(/private Unix socket/);
+    fs.unlinkSync(f.locator); expect(() => terminalInvocation({ ...request, daemonExec: () => {} })).toThrow();
   });
 });
 

@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classifyTerminalArguments, validateUpstreamSocket } from './model-terminal-gateway.mjs';
+import { nativeGatewayLaunch } from './model-routing-gateway.mjs';
 import { subscriptionEnvironment, assertSubscriptionAuth } from './model-router-dispatch.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -121,12 +122,22 @@ export function installTerminalLaunchers({ home = os.homedir(), nodeBinary = pro
   return receipt;
 }
 
-export function terminalInvocation({ host, args = [], config, env = process.env }) {
+/** Supported native start is idempotent; never stop, restart, update or own the shared daemon. */
+export function ensureTerminalDaemon(binary, env = process.env, { exec = execFileSync } = {}) {
+  try {
+    exec(binary, ['app-server', 'daemon', 'start'], { env: subscriptionEnvironment(env), timeout: 10000,
+      stdio: 'ignore', shell: false, maxBuffer: 65536 });
+  } catch { throw new Error('Native Codex daemon start unavailable; terminal launch blocked'); }
+}
+export function terminalInvocation({ host, args = [], config, env = process.env, daemonExec = execFileSync }) {
   if (config.schemaVersion !== 1 || env.RNB_TERMINAL_LAUNCH_ACTIVE) throw new Error('Invalid or recursive terminal launch');
   const binary = executable(host === 'codex' ? config.realCodex : config.realClaude);
   if (host !== 'codex') throw new Error('Use guarded native Claude launch');
   const mode = classifyTerminalArguments(args);
   if (mode === 'admin') return { command: binary, args: [...args], routed: false };
+  // Validate provider/transport overrides before native daemon startup has any side effect.
+  nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: ['app-server', ...args], env: subscriptionEnvironment(env) });
+  ensureTerminalDaemon(binary, env, { exec: daemonExec });
   const upstream = resolveTerminalUpstream({ codexHome: env.CODEX_HOME || path.join(os.homedir(), '.codex') });
   return { command: executable(config.nodeBinary), args: [regular(config.gatewayPath), '--real-binary', binary, '--upstream-socket', upstream, '--', ...args], routed: true };
 }
