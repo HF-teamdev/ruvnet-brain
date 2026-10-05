@@ -33,9 +33,9 @@ import readline from 'node:readline';
  * stop ("not airtight"). The reader prints, before each body, `chars: <exact body length>`; the parser
  * consumes the body BY THAT COUNT and requires the 67-'=' terminator right after it, so nothing inside a
  * body is ever scanned for headers. A declared length that does not land on the terminator fails closed:
- * that hit keeps no body and nothing after it is trusted; so does a body without `chars:` once an earlier
- * hit carried one. Output with no `chars:` line at all (a reader older than this field) keeps the previous
- * bounded-span parsing; a header with no body keeps none. `path`/`title`/scores come only from the header lines between
+ * that hit keeps no body and nothing after it is trusted. Legacy bodies without `chars:` also stop
+ * parsing: their header metadata is retained, but their body and everything after it are untrusted.
+ * Metadata-only headers remain supported. `path`/`title`/scores come only from the header lines between
  * a hit's header and its body, never from a body, and hits are numbered #1, #2, … strictly in order.
  */
 const SEPARATOR = '='.repeat(67);
@@ -47,7 +47,6 @@ export function parseCitations(stdout) {
   const markerRe = /^----- full document -----\r?\n/gm;
   let m;
   let expectedRank = 1;
-  let structured = false;
   while ((m = headerRe.exec(text)) !== null) {
     const rank = Number(m[1]);
     if (rank !== expectedRank) continue; // out-of-sequence header: a look-alike, not a real hit
@@ -74,15 +73,10 @@ export function parseCitations(stdout) {
         : text.startsWith(`\r\n${SEPARATOR}`, bodyEnd) ? 2 + SEPARATOR.length : 0;
       if (terminator) {
         returnedText = text.slice(bodyStart, bodyEnd);
-        structured = true;
         headerRe.lastIndex = bodyEnd + terminator; // resume AFTER the body: its contents are never parsed
       } else stop = true; // the declared body does not end where it says: its boundary, and all after it, is unknown
-    } else if (markerAt >= 0 && structured) {
-      stop = true; // a body with no declared length after length-bound hits: its boundary is unknown
     } else if (markerAt >= 0) {
-      // A reader older than `chars:`: the body is the bounded span up to the next header.
-      const body = /^----- full document -----\r?\n([\s\S]*?)\r?\n={67}(?:\r?\n|$)/m.exec(text.slice(headStart, nextAt));
-      returnedText = body ? body[1] : null;
+      stop = true; // no declared length: do not scan unknown body boundaries for later headers
     }
     expectedRank = rank + 1;
     const repo = m[2];
