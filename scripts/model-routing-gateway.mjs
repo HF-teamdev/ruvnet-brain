@@ -21,8 +21,9 @@ const UNQUALIFIED = new Set(['review/start', 'thread/queue/add', 'thread/queue/u
   'thread/goal/set', 'thread/goal/create', 'thread/goal/resume', 'thread/compact/start', 'turn/addUserMessage', 'thread/startAeon']);
 
 function canonicalCodexConfig(config) {
-  if (!config || (config.model_provider ?? 'openai') !== 'openai' || unsafeSettings({ serviceTier: config.service_tier ?? 'default',
-    fastMode: config.features?.fast_mode ?? false })) return false;
+  if (!config || (config.model_provider ?? 'openai') !== 'openai') return false;
+  // Native 0.160 gives serviceTierForTurn precedence over daemon/thread Fast defaults.
+  // routeCodexTurn supplies both standard overrides; provider/auth checks remain mandatory.
   // A provider with the built-in name can still be replaced by a custom endpoint.
   if (config.model_providers && Object.hasOwn(config.model_providers, 'openai') && config.model_providers.openai != null) return false;
   if (config.chatgpt_base_url != null && config.chatgpt_base_url !== 'https://chatgpt.com/backend-api/') return false;
@@ -123,7 +124,7 @@ function unsafeSettings(value, prefix = '', routing = false) {
     const name = prefix ? `${prefix}.${key}` : key;
     if (/^(model_providers|apiKeyHelper|api_key|apiKey|base_url|baseUrl|openai_base_url|chatgpt_base_url|auth_token|authToken|customHeaders|env|modelSettings|alwaysThinkingEnabled|maxEffortLevel)(\.|$)/.test(name)) return true;
     if (/^(model_provider|modelProvider)$/.test(name) && entry !== 'openai') return true;
-    if (/^(service_tier|serviceTier)$/.test(name) && entry != null && entry !== 'default') return true;
+    if (/^(service_tier|serviceTier|service_tier_for_turn|serviceTierForTurn)$/.test(name) && entry != null && entry !== 'default') return true;
     if (/^(features\.fast_mode|fastMode)$/.test(name) && entry !== false) return true;
     if (routing && /^(model|effort|effortLevel|reasoning_effort|collaborationMode)(\.|$)/.test(name)) return true;
     return unsafeSettings(entry, name, routing);
@@ -137,7 +138,7 @@ export function verifyNativeVision(decision, models = loadNativeCodexModels()) {
 
 /** Pure native override: preserve every context, tool, approval and collaboration instruction. */
 export function routeCodexTurn(message, decision) {
-  const params = { ...message.params, model: decision.model, effort: decision.effort, serviceTier: 'default' };
+  const params = { ...message.params, model: decision.model, effort: decision.effort, serviceTier: 'default', serviceTierForTurn: 'default' };
   if (params.collaborationMode) params.collaborationMode = { ...params.collaborationMode,
     settings: { ...params.collaborationMode.settings, model: decision.model, reasoning_effort: decision.effort } };
   return { ...message, params };
@@ -361,7 +362,9 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
     let unsafe = false;
     if (harness === 'codex') {
       const params = message.params || {};
-      unsafe = unsafeSettings(params.config) || unsafeSettings({ modelProvider: params.modelProvider ?? 'openai', serviceTier: params.serviceTier ?? 'default' });
+      unsafe = unsafeSettings(params.config) || unsafeSettings({ modelProvider: params.modelProvider ?? 'openai',
+        serviceTier: params.serviceTier, service_tier: params.service_tier,
+        serviceTierForTurn: params.serviceTierForTurn, service_tier_for_turn: params.service_tier_for_turn });
       if (message.method === 'account/login/start' && !['chatgpt', 'chatgptDeviceCode', 'chatgptAuthTokens'].includes(params.type)) unsafe = true;
       if (['thread/settings/update', 'turn/settings/update'].includes(message.method)) unsafe ||= unsafeSettings(params, '', true);
       const edits = message.method === 'config/value/write' ? [params] : message.method === 'config/batchWrite' ? params.edits || [] : [];

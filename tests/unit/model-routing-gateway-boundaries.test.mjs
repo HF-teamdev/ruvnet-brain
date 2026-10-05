@@ -33,6 +33,29 @@ function autoCodex(f) {
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 describe('native gateway shared-backend and disconnect boundaries', () => {
+  it.each(['serviceTier', 'service_tier', 'serviceTierForTurn', 'service_tier_for_turn'])('rejects explicit priority %s before any turn or settings mutation reaches the backend', async (key) => {
+    const f = fixture('codex'); autoCodex(f);
+    for (const message of [
+      { ...turn(), params: { ...turn().params, [key]: 'priority' } },
+      { id: 'thread', method: 'thread/start', params: { [key]: 'priority' } },
+      { id: 'config', method: 'thread/resume', params: { config: { [key]: 'priority' } } },
+      { id: 'settings', method: 'turn/settings/update', params: { [key]: 'priority' } },
+      { id: 'write', method: 'config/value/write', params: { keyPath: key, value: 'priority' } },
+      { id: 'batch', method: 'config/batchWrite', params: { edits: [{ keyPath: key, value: 'priority' }] } },
+    ]) f.send(message);
+    await f.idle();
+    expect(f.sent).toEqual([]); expect(f.received).toHaveLength(6);
+    expect(f.received.every((m) => m.error?.code === -32001)).toBe(true);
+    expect(f.receipts.some((r) => r.status === 'turn-forwarded')).toBe(false);
+  });
+
+  it.each([null, 'default'])('normalizes an accepted native serviceTierForTurn %s to standard', async (serviceTierForTurn) => {
+    const f = fixture('codex'); autoCodex(f);
+    const request = turn(); request.params.serviceTierForTurn = serviceTierForTurn;
+    f.send(request); await f.idle();
+    expect(f.sent.at(-1)).toMatchObject({ method: 'turn/start', params: { serviceTier: 'default', serviceTierForTurn: 'default' } });
+  });
+
   it('checks project-layer configuration at the actual thread cwd and preserves an explicit turn cwd', async () => {
     for (const override of [undefined, '/tmp/override-project']) {
       const f = fixture('codex');
@@ -51,7 +74,7 @@ describe('native gateway shared-backend and disconnect boundaries', () => {
     }
   });
   it('requires actual backend canonical provider and thread provider before every new turn', async () => {
-    for (const variant of ['custom-provider', 'custom-openai-endpoint', 'flattened-endpoint', 'base-url-override', 'chatgpt-endpoint', 'foreign-thread', 'unknown-provider', 'priority']) {
+    for (const variant of ['custom-provider', 'custom-openai-endpoint', 'flattened-endpoint', 'base-url-override', 'chatgpt-endpoint', 'foreign-thread', 'unknown-provider']) {
       const f = fixture('codex');
       f.child.stdin.on('data', (chunk) => {
         const m = JSON.parse(chunk.toString());
@@ -62,7 +85,6 @@ describe('native gateway shared-backend and disconnect boundaries', () => {
           ...(variant === 'flattened-endpoint' ? { 'model_providers.openai.base_url': 'https://untrusted.invalid' } : {}),
           ...(variant === 'base-url-override' ? { openai_base_url: 'https://untrusted.invalid' } : {}),
           ...(variant === 'chatgpt-endpoint' ? { chatgpt_base_url: 'https://untrusted.invalid' } : {}),
-          ...(variant === 'priority' ? { service_tier: 'priority' } : {}),
         } });
         if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: variant === 'foreign-thread' ? 'foreign' : 'openai', cwd: '/tmp' } });
         if (m.method === 'account/rateLimits/read') f.reply(m, { ordinaryUsageAllowed: true });
@@ -72,6 +94,21 @@ describe('native gateway shared-backend and disconnect boundaries', () => {
       expect(f.received.at(-1)).toMatchObject({ id: 9, error: { code: -32001 } });
       expect(JSON.stringify(f.receipts) + JSON.stringify(f.received)).not.toContain('PRIVATE');
     }
+  });
+
+  it('overrides inherited daemon priority and Fast with both native standard turn fields', async () => {
+    const f = fixture('codex');
+    f.child.stdin.on('data', (chunk) => {
+      const m = JSON.parse(chunk.toString());
+      if (m.method === 'account/read') f.reply(m, { account: { type: 'chatgpt' } });
+      if (m.method === 'config/read') f.reply(m, { config: { model_provider: null, service_tier: 'priority',
+        features: { fast_mode: true }, chatgpt_base_url: 'https://chatgpt.com/backend-api/' } });
+      if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: 'openai', cwd: '/tmp' } });
+      if (m.method === 'account/rateLimits/read') f.reply(m, { ordinaryUsageAllowed: true });
+    });
+    f.send(turn()); await f.idle();
+    expect(f.sent.at(-1)).toMatchObject({ method: 'turn/start', params: { serviceTier: 'default', serviceTierForTurn: 'default' } });
+    expect(f.receipts).toContainEqual(expect.objectContaining({ status: 'turn-forwarded', serviceMode: 'standard', allowanceVerified: true }));
   });
 
   it('binds steering to exact accepted native turn ID and ignores unrelated completions', async () => {

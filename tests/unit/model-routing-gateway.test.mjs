@@ -77,12 +77,19 @@ describe('native turn routing transport', () => {
     const f = fixture('codex'); autoCodex(f);
     const original = turn(); f.send(original); await f.idle();
     expect(f.sent.at(-1)).toEqual(routeCodexTurn(original, decision()));
+    expect(f.sent.at(-1).params).toMatchObject({ serviceTier: 'default', serviceTierForTurn: 'default' });
     expect(f.sent.at(-1).params.collaborationMode.settings.developer_instructions).toBe('CONTEXT TO RETAIN');
     expect(f.prompts).toEqual(['PRIVATE PROMPT']);
     expect(f.receipts).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'turn-forwarded', modelObserved: false, serviceMode: 'standard', allowanceVerified: true })]));
     expect(JSON.stringify(f.receipts)).not.toContain('PRIVATE');
     const result = { id: 9, result: { turn: { id: 'native-turn', items: [] } } }; f.respond(result);
     expect(f.received).toEqual([result]);
+  });
+
+  it('pure normalization replaces both native service precedence fields without mutating the original', () => {
+    const original = turn(); original.params.serviceTier = 'priority'; original.params.serviceTierForTurn = 'priority';
+    expect(routeCodexTurn(original, decision()).params).toMatchObject({ serviceTier: 'default', serviceTierForTurn: 'default' });
+    expect(original.params).toMatchObject({ serviceTier: 'priority', serviceTierForTurn: 'priority' });
   });
 
   it('keeps cancellation and tool traffic immediate while refusing unqualified queue inference', async () => {
