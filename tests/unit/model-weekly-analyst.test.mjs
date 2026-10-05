@@ -66,6 +66,13 @@ it('uses the real dispatch boundary, Standard argv, stdin and bounded structured
   expect(capture.args).toContain('web_search="disabled"');
   expect(result.completeToolRegistryVerifiedAbsent).toBe(false);
   expect(capture.args).toContain('read-only'); expect(capture.args).not.toContain(capture.prompt);
+  const schema = JSON.parse(fs.readFileSync(path.join(result.runDir, 'schema.json')));
+  expect(schema.properties.findings.maxItems).toBe(6);
+  expect(schema.properties.findings.items.properties.evidence.maxItems).toBe(1);
+  expect(schema.properties.summary.maxLength).toBe(320);
+  expect(schema.properties.proposedRoutes.maxItems).toBe(2);
+  expect(schema.properties.providerAnalyses.maxItems).toBe(2);
+  expect(schema.properties.gaps.maxItems).toBe(4);
   expect(capture.options.env.MODEL_ROUTER_WEEKLY_ANALYST).toBe('1');
   expect(capture.options.env.OPENROUTER_API_KEY).toBeUndefined(); expect(capture.options.env.RUVNET_SIGNING_KEY).toBeUndefined();
   expect(capture.prompt).toContain('UNTRUSTED DATA'); expect(capture.prompt).toContain('Owner instruction');
@@ -196,7 +203,7 @@ it('projects every relevant effort with suite provenance and explicit missing co
   const inputs = loadAnalystInputs(f.routerDir, NOW); const projected = JSON.parse(inputs.documents.at(-1).body);
   expect(JSON.stringify(inputs.packet).length).toBeLessThanOrEqual(60000);
   expect(projected.modelEvidence.map((r) => r.effort)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
-  expect(projected.modelEvidence[0].benchmark).toEqual({ suite: 'fixture-suite', version: '4' });
+  expect(projected.benchmarkTable[projected.modelEvidence[0].benchmark]).toEqual({ suite: 'fixture-suite', version: '4' });
   expect(projected.modelEvidence[0].benchmarks).toEqual([['terminal-fixture', 0.8, null, 42]]);
   expect(projected.codingAgents[0].components).toEqual([['coding-fixture', 'exact-v1', 0.7]]);
   expect(projected.sourceTable).toHaveLength(1); expect(projected.modelEvidence.some((r) => r.model === 'outside-paid-model')).toBe(false);
@@ -212,4 +219,63 @@ it('private native config identity normalizes Windows separators and case withou
   expect(sameNativeConfigPath('C:/Private/OTHER/config.toml', 'c:\\private\\home\\config.toml', 'win32')).toBe(false);
   expect(sameNativeConfigPath('/Private/Home/config.toml', '/private/home/config.toml', 'linux')).toBe(false);
   expect(sameNativeConfigPath(undefined, '/private/home/config.toml', 'linux')).toBe(false);
+});
+
+it('bounds analyst retirement when its owned native child ignores TERM and never exits', async () => {
+  const f = fixture(); const capture = {}; const signals = [];
+  const spawnNative = (command, args, options) => {
+    const child = native(f.report, capture, true)(command, args, options);
+    child.kill = (signal) => { signals.push(signal); return true; };
+    for (const stream of [child.stdin, child.stdout, child.stderr]) stream.destroy = vi.fn();
+    child.unref = vi.fn(); return child;
+  };
+  const started = performance.now();
+  const result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, timeoutMs: 200, nativeModels, spawnNative, checkAuth: auth, checkAllowance: allowance });
+  expect(performance.now() - started).toBeLessThan(1000);
+  expect(result).toMatchObject({ status: 'failed', semanticTimestampAdvanced: false, originalPolicyPreserved: true,
+    stageCleanup: { childExitObserved: false, ownedChildRetirement: 'unverified', descendantRetirement: 'unproven' } });
+  expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+  expect(capture.child.unref).toHaveBeenCalled();
+  for (const stream of [capture.child.stdin, capture.child.stdout, capture.child.stderr]) expect(stream.destroy).toHaveBeenCalled();
+  expect(fs.readFileSync(path.join(f.routerDir, 'routing-policy.json'), 'utf8')).toBe(JSON.stringify(f.policy));
+});
+
+it('interns repeated provenance losslessly without dropping models, efforts or measured values', () => {
+  const f = fixture(); const file = path.join(f.routerDir, 'currency.json'); const currency = JSON.parse(fs.readFileSync(file));
+  const source = currency.inventory.source;
+  const benchmark = { suite: 'fixture-suite', version: '4' };
+  const versions = { fixture: { min: { version: 'native-1', dateReleased: null }, max: { version: 'native-1', dateReleased: null } } };
+  currency.evaluations.records = ['low', 'medium', 'high'].map(effort => ({ model: 'gpt-6.1-sol', effort, source, benchmark, quality: { intelligenceIndex: 63.23456789012345 } }));
+  currency.agentSources = { sources: [source], records: ['low', 'medium', 'high'].map(effort => ({ model: 'gpt-6.1-sol', provider: 'openai', nativeHost: 'codex', effort, source, benchmark, versions, components: [] })) };
+  fs.writeFileSync(file, JSON.stringify(currency));
+  const projected = JSON.parse(loadAnalystInputs(f.routerDir, NOW).documents.at(-1).body);
+  expect(projected.benchmarkTable).toEqual([benchmark]); expect(projected.agentVersionTable).toEqual([versions]);
+  expect(projected.modelEvidence).toHaveLength(3); expect(projected.codingAgents).toHaveLength(3);
+  for (const row of projected.modelEvidence) { expect(projected.benchmarkTable[row.benchmark]).toEqual(benchmark); expect(row.quality.intelligenceIndex).toBe(63.23456789012345); }
+  for (const row of projected.codingAgents) expect(projected.agentVersionTable[row.versions]).toEqual(versions);
+});
+
+it.each(['output', 'exit', 'publication'])('rejects late %s when a blocked event loop delays the deadline timer', async (lateStage) => {
+  const f = fixture(); const capture = {}; const old = '{"completedAt":"old-valid"}';
+  fs.writeFileSync(path.join(f.routerDir, 'semantic-current.json'), old);
+  const block = () => { const until = performance.now() + 180; while (performance.now() < until) { /* simulate synchronous host work */ } };
+  const spawnNative = (...args) => {
+    const child = native(f.report, capture, true)(...args);
+    child.stdin.end = () => queueMicrotask(() => {
+      if (lateStage === 'output') block();
+      child.stdout.emit('data', events(f.report));
+      if (lateStage === 'exit') block();
+      child.emit('exit', 0, null);
+    }); return child;
+  };
+  // Freeze the wall clock: the elapsed monotonic budget must remain authoritative.
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now()); let result;
+  try {
+    result = await runWeeklyAnalyst({ routerDir: f.routerDir, now: NOW, timeoutMs: 100, nativeModels, spawnNative, checkAuth: auth, checkAllowance: allowance,
+      ...(lateStage === 'publication' ? { qualificationValidator: () => { block(); return { status: 'unchanged' }; } } : {}) });
+  } finally { clock.mockRestore(); }
+  expect(result).toMatchObject({ status: 'failed', semanticTimestampAdvanced: false, originalPolicyPreserved: true });
+  expect(result.reason).toMatch(/timed out/);
+  expect(fs.readFileSync(path.join(f.routerDir, 'semantic-current.json'), 'utf8')).toBe(old);
+  expect(fs.readFileSync(path.join(f.routerDir, 'routing-policy.json'), 'utf8')).toBe(JSON.stringify(f.policy));
 });
