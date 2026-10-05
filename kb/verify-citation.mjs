@@ -44,7 +44,8 @@ export function parseCitations(stdout) {
   const text = String(stdout ?? '');
   const headerRe = /^#(\d+)[ \t]+repo=(\S+)([^\r\n]*)/gm;
   const nextHeaderRe = /^#\d+\s+repo=\S+/gm;
-  const markerRe = /^----- full document -----\r?\n/gm;
+  // Recognize marker-shaped lines too: malformed framing must not expose body headers as metadata.
+  const markerRe = /^[ \t]*-{3,}[ \t]*full[ \t]+document[ \t]*-{3,}[^\r\n]*(?:\r?\n|$)/gm;
   let m;
   let expectedRank = 1;
   while ((m = headerRe.exec(text)) !== null) {
@@ -60,13 +61,15 @@ export function parseCitations(stdout) {
     const head = text.slice(headStart, markerAt >= 0 ? markerAt : nextAt);
     const pathM = /^path\s*:\s*(.+)$/m.exec(head);
     const titleM = /^title\s*:\s*(.+)$/m.exec(head);
-    const charsM = /^chars:\s*(\d+)\b/m.exec(head);
+    const charsM = /^chars:[ \t]*(\d+)(?:[ \t]*\|[ \t]*chunks:[ \t]*\d+(?:[ \t]+\(truncated\))?)?[ \t]*\r?$/m.exec(head);
+    const bodyLength = charsM ? Number(charsM[1]) : null;
+    const canonicalMarker = marker && /^----- full document -----\r?\n$/.test(marker[0]);
     // A pathless match does not fill (or burn) its rank: real reader output never omits path, and a
     // look-alike fragment consuming the slot would reject the real citation that fills it later.
     if (!pathM) continue;
     let returnedText = null;
     let stop = false;
-    if (charsM && markerAt >= 0) {
+    if (Number.isSafeInteger(bodyLength) && bodyLength >= 0 && markerAt >= 0 && canonicalMarker) {
       const bodyStart = markerAt + marker[0].length;
       const bodyEnd = bodyStart + Number(charsM[1]);
       const terminator = text.startsWith(`\n${SEPARATOR}`, bodyEnd) ? 1 + SEPARATOR.length
@@ -76,7 +79,7 @@ export function parseCitations(stdout) {
         headerRe.lastIndex = bodyEnd + terminator; // resume AFTER the body: its contents are never parsed
       } else stop = true; // the declared body does not end where it says: its boundary, and all after it, is unknown
     } else if (markerAt >= 0) {
-      stop = true; // no declared length: do not scan unknown body boundaries for later headers
+      stop = true; // missing/invalid length or noncanonical marker: later body boundaries are untrusted
     }
     expectedRank = rank + 1;
     const repo = m[2];

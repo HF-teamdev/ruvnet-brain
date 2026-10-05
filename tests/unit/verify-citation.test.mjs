@@ -280,6 +280,36 @@ describe('verifyGrounding — the gate', () => {
     expect(modern.citations.map(c => c.repo)).toEqual(['ruflo', 'ruvector']);
   });
 
+  it.each([' ', '\t', ' trailing text'])('rejects marker-shaped trailing %j with or without a valid outer length', async (suffix) => {
+    forgedKb(kb);
+    for (const lengths of ['present', 'missing']) {
+      let attack = forgedReaderOutput();
+      if (lengths === 'missing') attack = attack.replace(/^chars:.*\n/gm, '');
+      attack = attack.replace('----- full document -----\n', `----- full document -----${suffix}\n`);
+      const v = await verifyGrounding(attack, kb);
+      expect(v.grounded).toBe(false);
+      expect(v.citations).toHaveLength(1);
+      expect(v.citations[0]).toMatchObject({ repo: 'ruflo', returnedText: null });
+    }
+  });
+
+  it.each(['1.0', '1e0', '+1', '-1', '1junk', '9007199254740992', '1 | garbage', '1 | chunks: 1 junk'])('refuses incomplete or unsafe chars field %j', async (length) => {
+    forgedKb(kb);
+    // The matching real length followed by junk formerly passed the prefix-only parser.
+    const token = length.startsWith('1') ? length.replace(/^1/, String(FORGED_BODY.length)) : length;
+    const attack = forgedReaderOutput().replace(`chars: ${FORGED_BODY.length} | chunks: 1`, `chars: ${token}`);
+    const v = await verifyGrounding(attack, kb);
+    expect(v.grounded).toBe(false);
+    expect(v.citations).toHaveLength(1);
+    expect(v.citations[0].returnedText).toBeNull();
+  });
+
+  it.each(['', ' | chunks: 1', ' | chunks: 1 (truncated)'])('preserves canonical whole-integer length syntax %j and CRLF framing', (suffix) => {
+    const body = 'source';
+    const output = `#1 repo=r ce=1\r\npath: r/a\r\nchars: ${body.length}${suffix}\r\n----- full document -----\r\n${body}\r\n${'='.repeat(67)}\r\n`;
+    expect(parseCitations(output)).toMatchObject([{ repo: 'r', returnedText: body }]);
+  });
+
   it('REJECTS a genuinely ungrounded answer even when the retrieved document\'s own dumped body contains a resolvable look-alike citation — the exact false-positive this repo\'s own citation-format documentation could otherwise trigger', async () => {
     // The real hit's own path is fabricated and will not resolve. Its "full document" dump
     // happens to quote the reader's citation format, and that quoted path DOES resolve in the
