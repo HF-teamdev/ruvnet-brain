@@ -188,6 +188,9 @@ export function namedReleaseFromArgs(args) {
   };
   const pin = valueAfter('--pin');
   const version = valueAfter('--version');
+  if (version === null) {
+    return { error: '--version needs the release to install, e.g.  --version vX.Y.Z', hint: 'Use --help for installer options; read the package manifest to inspect the installed version.' };
+  }
   if (pin === null) {
     return { error: '--pin needs the release to install, e.g.  --pin vX.Y.Z', hint: `It no longer falls back to a built-in release (that bundle could not pass validation). Pick one from https://github.com/${REPO}/releases, or omit --pin to install the latest.` };
   }
@@ -6171,6 +6174,12 @@ the installer reports that boot-level declarations changed.
     && canonical(process.argv[1]) === canonical(fileURLToPath(import.meta.url));
   if (!invokedDirectly) return;
   if (FLAG_HELP) return showHelp();
+  if (NAMED_RELEASE?.error) {
+    console.error(NAMED_RELEASE.error);
+    console.error(NAMED_RELEASE.hint);
+    process.exitCode = 1;
+    return;
+  }
   if (argv.includes('--update-source')) {
     try { saveUpdateSource(optionArg(argv, '--update-source')); }
     catch (error) { console.error(error.message); process.exitCode = 1; return; }
