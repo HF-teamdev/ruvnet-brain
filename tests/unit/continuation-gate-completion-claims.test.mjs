@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readSettledTranscript } from '../../plugin/scripts/turn-outcome-capture.mjs';
 import {
   extractCompletionClaims, extractCommitments, auditCompletionClaims, claudeTurnEvents,
 } from '../../plugin/scripts/completion-claim-evidence.mjs';
@@ -117,6 +118,25 @@ describe('completion claims (Piece A)', () => {
     const dirAsTranscript = path.join(dir, 'broken.jsonl');
     fs.mkdirSync(dirAsTranscript);
     expect(fire(repo, GOOD, { transcriptPath: dirAsTranscript })).toBe('');
+  });
+
+  it('rejects a non-regular transcript even when its stat size is zero on Windows', () => {
+    const file = transcript();
+    const stat = vi.spyOn(fs, 'statSync').mockReturnValue({ size: 0, isFile: () => false });
+    try {
+      expect(() => readSettledTranscript(file, { maxMs: 0 })).toThrow(/regular file/);
+      const directory = path.join(dir, 'changed.jsonl'); fs.mkdirSync(directory);
+      stat.mockReturnValue({ size: 0, isFile: () => true });
+      expect(() => readSettledTranscript(directory, { maxMs: 0 })).toThrow(/regular file/);
+    } finally { stat.mockRestore(); }
+  });
+
+  it('keeps missing transcripts unknown and accepts a real empty regular transcript', () => {
+    const repo = gitRepo('a');
+    expect(fire(repo, GOOD, { transcriptPath: path.join(dir, 'missing.jsonl') })).toBe('');
+    const file = path.join(dir, 'empty.jsonl'); fs.writeFileSync(file, '');
+    expect(readSettledTranscript(file, { maxMs: 0 })).toEqual(['']);
+    expect(fire(repo, GOOD, { transcriptPath: file })).toContain('no end-to-end check');
   });
 
   it('on Codex enforces the answer-side half and discloses that the transcript half is UNKNOWN', () => {

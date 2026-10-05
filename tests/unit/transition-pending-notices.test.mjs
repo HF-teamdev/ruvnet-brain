@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../helpers/continuity-fixture.mjs';
 import { stopNotice } from '../../plugin/scripts/continuity-journal.mjs';
+import { resolveProjectStore } from '../../plugin/scripts/project-store-resolver.mjs';
 const scripts = fileURLToPath(new URL('../../plugin/scripts/', import.meta.url));
 const dirs = [];
 afterEach(() => dirs.splice(0).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
@@ -55,7 +56,8 @@ describe('#380 pending notices retain capture and independent warning conditions
     const dir = project();
     for (const script of [direct, compatibility]) expect(run(dir, script, 'one', 'UserPromptSubmit', { RUVNET_BRAIN_PROGRESSION_SUSPENDED: '1' })).toBe('');
     fs.mkdirSync(path.join(dir, 'turn-capture'));
-    fs.writeFileSync(path.join(dir, 'turn-capture', 'policy.json'), JSON.stringify({ schemaVersion: 1, projects: { [dir]: 'off' } }));
+    const { projectRoot } = resolveProjectStore({ projectDir: dir });
+    fs.writeFileSync(path.join(dir, 'turn-capture', 'policy.json'), JSON.stringify({ schemaVersion: 1, projects: { [projectRoot]: 'off' } }));
     for (const script of [direct, compatibility]) expect(run(dir, script)).toBe('');
     expect(fs.existsSync(ledger(dir))).toBe(false);
   });
@@ -65,6 +67,15 @@ describe('#380 pending notices retain capture and independent warning conditions
     fs.rmSync(path.join(dir, '.swarm'), { recursive: true });
     for (const script of [direct, compatibility]) expect(run(dir, script)).toBe('');
     expect(fs.existsSync(path.join(dir, '.swarm'))).toBe(false);
+  });
+  it.each(['unknown', null, []])('keeps malformed persisted consent fail closed: %j', (setting) => {
+    const dir = project();
+    const { projectRoot } = resolveProjectStore({ projectDir: dir });
+    fs.mkdirSync(path.join(dir, 'turn-capture'));
+    fs.writeFileSync(path.join(dir, 'turn-capture', 'policy.json'), JSON.stringify({ schemaVersion: 1, projects: { [projectRoot]: setting } }));
+    for (const script of [direct, compatibility]) expect(run(dir, script)).toBe('');
+    expect(fs.existsSync(ledger(dir))).toBe(false);
+    expect(fs.readdirSync(path.join(dir, '.swarm')).filter((name) => name.startsWith('.progression-capture-queue-'))).toEqual([]);
   });
   it('keeps the existing ledger bounded to twenty sessions', () => {
     const dir = project();

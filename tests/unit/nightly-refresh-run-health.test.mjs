@@ -199,15 +199,27 @@ describe('refreshRunHealth — an aborted run reports WHERE it failed and WHY', 
 describe('schedulerStatus — a non-zero launchd last exit is reported as a number, not folded into "degraded"', () => {
   const launchctl = (exitCode) => () => ({ status: 0, stdout: `com.ruvnet.brain-update = {\n\tlast exit code = ${exitCode}\n}\n` });
 
-  it.skipIf(process.platform !== 'darwin')('degraded-with-exit carries lastExitCode so a projector can tell "fired and failed" from "cannot fire"', () => {
+  it('degraded-with-exit carries lastExitCode so a projector can tell "fired and failed" from "cannot fire"', () => {
     const f = fixture();
     expect(installScheduler(f.record, { platform: 'darwin', env: f.env, kbDir: f.kbDir, testMode: true, pathValue: '/bin' }).ok).toBe(true);
-    const status = schedulerStatus({ platform: 'darwin', env: f.env, brainHome: f.brainHome, kbDir: f.kbDir, run: launchctl(1) });
-    expect(status.state).toBe('degraded');
-    expect(status.lastExitCode).toBe(1);
-    expect(status.evidence).toMatch(/last exited 1/);
-    const clean = schedulerStatus({ platform: 'darwin', env: f.env, brainHome: f.brainHome, kbDir: f.kbDir, run: launchctl(0) });
-    expect(clean.state).toBe('on');
-    expect(clean.lastExitCode).toBe(0);
+    const uid = Object.getOwnPropertyDescriptor(process, 'getuid');
+    Object.defineProperty(process, 'getuid', { configurable: true, value: () => 501 });
+    const probe = (exitCode) => (command, args) => {
+      expect(command).toBe('launchctl');
+      expect(args).toEqual(['print', `gui/501/${NIGHTLY_LABEL}`]);
+      return launchctl(exitCode)();
+    };
+    try {
+      const status = schedulerStatus({ platform: 'darwin', env: f.env, brainHome: f.brainHome, kbDir: f.kbDir, run: probe(1) });
+      expect(status.state).toBe('degraded');
+      expect(status.lastExitCode).toBe(1);
+      expect(status.evidence).toMatch(/last exited 1/);
+      const clean = schedulerStatus({ platform: 'darwin', env: f.env, brainHome: f.brainHome, kbDir: f.kbDir, run: probe(0) });
+      expect(clean.state).toBe('on');
+      expect(clean.lastExitCode).toBe(0);
+    } finally {
+      if (uid) Object.defineProperty(process, 'getuid', uid);
+      else delete process.getuid;
+    }
   });
 });
