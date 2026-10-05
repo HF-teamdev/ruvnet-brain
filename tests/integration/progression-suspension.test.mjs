@@ -19,7 +19,18 @@ function fixture() {
   const f = adoptedProject(); const cli = fakeRuflo();
   const env = { ...f.env, RUVNET_BRAIN_STATE_DIR: path.join(f.home, 'state'), RUVNET_BRAIN_HOME: path.join(f.home, 'brain'),
     RUVNET_HOOK_HOST: 'codex', RUVNET_BRAIN_PROJECT_DIR: f.dir };
-  const store = new ProjectProgressionStore({ projectDir: f.dir, env, rufloBinary: cli.bin });
+  let rufloBinary = cli.bin;
+  if (process.platform === 'win32') {
+    // Exercise the production npm-shim resolver, which launches the declared entry with Node.
+    // This shim deliberately fails if a shell executes it instead of that entry.
+    const packageRoot = path.join(f.home, 'node_modules', 'ruflo');
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'ruflo', bin: { ruflo: 'fixture.cjs' } }));
+    fs.copyFileSync(cli.bin, path.join(packageRoot, 'fixture.cjs'));
+    rufloBinary = path.join(f.home, 'ruflo.cmd');
+    fs.writeFileSync(rufloBinary, '@exit /b 99\r\n');
+  }
+  const store = new ProjectProgressionStore({ projectDir: f.dir, env, rufloBinary });
   return { ...f, env, cli, store };
 }
 function snapshot(f, id = 'one') {
@@ -102,23 +113,28 @@ describe('independent operator progression suspension (#390 B, containment only)
     expect(restoreProgressionForSession({ env: f.env, cwd: f.dir }).status).toBe('unknown');
   });
 
-  it.skipIf(process.platform === 'win32')('keeps CLI outcomes/policy intact, reports suspension, and refuses look-alike capture failures', async () => {
-    const f = fixture(); const bin = path.join(f.home, '.npm-global/bin'); fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, 'ruflo'), '#!/bin/sh\nif [ "$1" = "fail" ] && [ "$2" != "--help" ]; then exit 7; fi\nprintf "ok\\n"\n', { mode: 0o755 });
+  it('keeps CLI outcomes/policy intact, reports suspension, and refuses look-alike capture failures', async () => {
+    const f = fixture(); const bin = path.join(f.home, 'bin'); fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(bin, process.platform === 'win32' ? 'ruvector.exe' : 'ruvector'), 'file');
+    f.env.PATH = `${bin}${path.delimiter}${process.env.PATH || ''}`;
+    const script = path.join(f.home, 'outcome.cjs'); const literal = 'literal & %PATH% $(echo shell)';
+    fs.writeFileSync(script, 'process.stdout.write(process.argv[3]); process.exit(Number(process.argv[2]));\n');
+    const runArgs = (code = 0) => ({ executable: 'ruvector', argv: [script, String(code), literal] });
     setOperatorProgressionSuspension(true, { env: f.env });
-    for (const command of ['status', 'fail']) {
-      expect((await callManagedCli('ruvnet_cli_help', { executable: 'ruflo', argv: [command] }, f.env)).isError).toBe(false);
-      const result = await callManagedCli('ruvnet_cli_run', { executable: 'ruflo', argv: [command] }, f.env);
-      expect(result.isError).toBe(command === 'fail'); expect(result.structuredContent.continuity).toBe('operator-suspended');
+    expect((await callManagedCli('ruvnet_cli_help', { executable: 'ruvector', argv: [] }, f.env)).isError).toBe(false);
+    for (const code of [0, 7]) {
+      const result = await callManagedCli('ruvnet_cli_run', runArgs(code), f.env);
+      expect(result.isError).toBe(code !== 0);
+      expect(result.structuredContent).toMatchObject({ code, stdout: literal, continuity: 'operator-suspended' });
       expect(result.content.at(-1).text).toContain('suspended captures produced no progression receipt');
     }
-    const branded = await callManagedCli('ruvnet_cli_run', { executable: 'ruflo', argv: ['status'] }, f.env, undefined,
+    const branded = await callManagedCli('ruvnet_cli_run', runArgs(), f.env, undefined,
       { capture: () => automaticProgressionSuspensionResult(f.env, { adopted: true }) });
     expect(branded.isError).toBe(false); expect(branded.structuredContent.continuity).toBe('operator-suspended');
-    const unexpected = await callManagedCli('ruvnet_cli_run', { executable: 'ruflo', argv: ['status'] }, f.env, undefined,
+    const unexpected = await callManagedCli('ruvnet_cli_run', runArgs(), f.env, undefined,
       { capture: () => automaticProgressionSuspensionResult(f.env, { adopted: true, error: 'unexpected capture error' }) });
     expect(unexpected.isError).toBe(true); expect(unexpected.content[0].text).toContain('unexpected capture error');
-    const forged = await callManagedCli('ruvnet_cli_run', { executable: 'ruflo', argv: ['status'] }, f.env, undefined,
+    const forged = await callManagedCli('ruvnet_cli_run', runArgs(), f.env, undefined,
       { capture: () => ({ adopted: true, progressionCaptured: false, progressionSuspended: true, skipped: 'unexpected failure' }) });
     expect(forged.isError).toBe(true); expect(forged.content[0].text).toContain('unexpected failure');
     expect(rows(f.store.resolution.canonicalAgentDbPath, 'project-progression')).toEqual([]);

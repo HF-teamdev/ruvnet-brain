@@ -26,12 +26,16 @@ function stage(fx, version) {
 function activate(fx, version, generation = 1, codeRoot = `versions/${version}`) {
   fs.writeFileSync(path.join(fx.brain, 'active.json'), JSON.stringify({ version, generation, codeRoot }));
 }
-const args = { executable: 'ruflo', argv: ['status'] };
+const args = { executable: 'ruvector', argv: [] };
 function binary(fx) {
-  const bin = path.join(fx.home, '.npm-global/bin'); fs.mkdirSync(bin, { recursive: true });
-  const executable = path.join(bin, process.platform === 'win32' ? 'ruflo.cmd' : 'ruflo');
-  fs.writeFileSync(executable, process.platform === 'win32' ? '@echo ok\r\n' : '#!/bin/sh\nprintf "ok\\n"\n', { mode: 0o755 });
+  const bin = path.join(fx.home, 'bin'); fs.mkdirSync(bin, { recursive: true });
+  // Match the qualified continuity fixture: a native executable, without shell shims.
+  fs.symlinkSync(process.execPath, path.join(bin, process.platform === 'win32' ? 'ruvector.exe' : 'ruvector'), 'file');
+  fx.env.PATH = `${bin}${path.delimiter}${process.env.PATH || ''}`;
+  fx.script = path.join(fx.home, 'fixture.cjs');
+  fs.writeFileSync(fx.script, 'process.stdout.write("generation fixture executed\\n");\n');
 }
+const runArgs = (fx) => ({ ...args, argv: [fx.script] });
 
 describe('active managed generation boundary (#384)', () => {
   it('uses active code for help, registry and run and refuses stamps from the previous generation', async () => {
@@ -39,19 +43,20 @@ describe('active managed generation boundary (#384)', () => {
     const call = createManagedCliDispatcher({ fallbackRoot: fx.shell });
     const lifecycle = { capture: () => ({ adopted: false }) };
     const helped = await call('ruvnet_cli_help', args, fx.env); expect(helped).toMatchObject({ isError: false, fixtureGeneration: '0.0.101' });
-    const stamp = path.join(fx.brain, 'help-read/ruflo.status'); const previous = fs.readFileSync(stamp, 'utf8');
-    const ran = await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle); expect(ran).toMatchObject({ isError: false, fixtureGeneration: '0.0.101' });
+    const stamp = path.join(fx.brain, 'help-read/ruvector'); const previous = fs.readFileSync(stamp, 'utf8');
+    const ran = await call('ruvnet_cli_run', runArgs(fx), fx.env, undefined, lifecycle);
+    expect(ran).toMatchObject({ isError: false, fixtureGeneration: '0.0.101', structuredContent: { code: 0, stdout: 'generation fixture executed\n' } });
     activate(fx, '0.0.102', 2);
-    const refused = await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle);
+    const refused = await call('ruvnet_cli_run', runArgs(fx), fx.env, undefined, lifecycle);
     expect(refused).toMatchObject({ isError: true, fixtureGeneration: '0.0.102' }); expect(refused.content[0].text).toMatch(/read the interface first/i);
     expect((await call('ruvnet_cli_help', args, fx.env)).fixtureGeneration).toBe('0.0.102');
     expect(fs.readFileSync(stamp, 'utf8')).not.toBe(previous);
-    expect(await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle)).toMatchObject({ isError: false, fixtureGeneration: '0.0.102' });
+    expect(await call('ruvnet_cli_run', runArgs(fx), fx.env, undefined, lifecycle)).toMatchObject({ isError: false, fixtureGeneration: '0.0.102', structuredContent: { code: 0, stdout: 'generation fixture executed\n' } });
     const fetch = async () => ({ ok: true, text: async () => '{"version":"3.0.0"}' });
     expect(await call('ruvnet_registry_latest', args, fx.env, fetch)).toMatchObject({ isError: false, fixtureGeneration: '0.0.102' });
     // A descriptor promotion changes authorization even if its code root/version remains the same.
     activate(fx, '0.0.102', 3);
-    expect((await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle)).isError).toBe(true);
+    expect((await call('ruvnet_cli_run', runArgs(fx), fx.env, undefined, lifecycle)).isError).toBe(true);
   });
 
   it('fails closed for missing or malformed active state, escaping roots and manifest mismatch', async () => {
@@ -93,8 +98,8 @@ describe('active managed generation boundary (#384)', () => {
     const fx = fixture(); binary(fx); stage(fx, '0.0.101'); activate(fx, '0.0.101');
     const call = createManagedCliDispatcher({ fallbackRoot: fx.shell });
     fs.mkdirSync(path.join(fx.brain, 'help-read'), { recursive: true });
-    fs.writeFileSync(path.join(fx.brain, 'help-read/ruflo.status'), '');
-    expect((await call('ruvnet_cli_run', { ...args, generationBinding: 'forged', codeRoot: '/arbitrary' }, fx.env)).isError).toBe(true);
-    expect((await call('ruvnet_cli_help', { executable: 'ruflo', argv: ['--unsupported'] }, fx.env)).isError).toBe(true);
+    fs.writeFileSync(path.join(fx.brain, 'help-read/ruvector'), '');
+    expect((await call('ruvnet_cli_run', { ...runArgs(fx), generationBinding: 'forged', codeRoot: '/arbitrary' }, fx.env)).isError).toBe(true);
+    expect((await call('ruvnet_cli_help', { executable: 'ruvector', argv: ['--unsupported'] }, fx.env)).isError).toBe(true);
   });
 });
