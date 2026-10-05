@@ -164,6 +164,14 @@ describe('bounded failure reasons and first-use disclosure', () => {
     expect(reason).toContain('SQLITE_BUSY'); expect(reason).not.toContain('sk-syntheticprivacy0123456789'); expect(reason.length).toBeLessThanOrEqual(300);
     expect(captureFailureReason({ error: new Error('spawn timeout'), stderr: '[INFO] storing' }, 1)).toBe('spawn timeout');
   });
+  it.each([
+    { stderr: '[INFO] starting\n[WARN] retrying', stdout: '[ERROR] SQLITE_BUSY token=sk-syntheticprivacy0123456789 database is locked' },
+    { stdout: '[INFO] starting\n[WARN] retrying', stderr: '[ERROR] SQLITE_BUSY token=sk-syntheticprivacy0123456789 database is locked' },
+  ])('selects a terminal error across mixed output streams', (result) => {
+    const reason = captureFailureReason(result, 1);
+    expect(reason).toContain('[ERROR] SQLITE_BUSY'); expect(reason).toContain('database is locked');
+    expect(reason).not.toContain('sk-syntheticprivacy0123456789'); expect(reason.length).toBeLessThanOrEqual(300);
+  });
   it('normal status does not consume first-use notice; one eligible project notice includes live opt-out', () => {
     const h = fixture(); h.write({}); expect(turnRecordingStatus(h).notice).toBeUndefined();
     const first = turnRecordingStatus({ ...h, noticeOnFirstUse: true });

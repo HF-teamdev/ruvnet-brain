@@ -162,7 +162,7 @@ export function privateProgressionState(state, patterns = [], projectDir) {
 
 export function captureFailureReason(result, status) {
   if (result.error?.message) return redactText(result.error.message).slice(0, 300);
-  const lines = String(result.stderr || result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = [result.stderr, result.stdout].filter((stream) => stream != null).join('\n').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const terminal = lines.findLast((line) => /(?:\[ERROR\]|\bfatal\b|\bError:|\bSQLITE_[A-Z_]+\b|refus(?:ing|ed))/i.test(line));
   return redactText(terminal || lines.at(-1) || `ruflo exited ${status}`).slice(0, 300);
 }
