@@ -193,10 +193,35 @@ describe('controlled Claude native turn boundary', () => {
   });
 
   it('terminal entry accepts only explicit resume and requires human input; no implicit permission bypass', async () => {
-    for (const args of [['--dangerously-skip-permissions'], ['--model', 'opus'], ['--continue'], ['--resume', 'invalid']]) {
+    for (const args of [['--dangerously-skip-permissions'], ['--model', 'opus'], ['--continue'], ['--resume', 'invalid'],
+      ['--permission-mode'], ['--permission-mode', 'manual'], ['--permission-mode=bypassPermissions'],
+      ['--permission-mode', 'bypassPermissions', '--permission-mode', 'bypassPermissions']]) {
       await expect(launchControlledClaudeTerminal({ args })).rejects.toThrow(/only --resume/);
     }
     await expect(launchControlledClaudeTerminal({ args: ['--resume', sessionId], input: { isTTY: false }, output: { isTTY: true } })).rejects.toThrow(/person/);
     expect(() => controlledClaudeArguments({ ...decision, subscriptionCovered: false }, sessionId)).toThrow(/refused/);
   });
+
+  it.each([['--permission-mode', 'bypassPermissions'], ['--permission-mode', 'bypassPermissions', '--resume', sessionId],
+    ['--resume', sessionId, '--permission-mode', 'bypassPermissions']].map(flags => ({ flags })))(
+    'honours the exact owner bypass flag at the host while preserving resume and worker refusal %#', async ({ flags }) => {
+      const input = new PassThrough(), output = new PassThrough(), diagnostics = new PassThrough();
+      input.isTTY = true; output.isTTY = true;
+      let messages = '', observed;
+      diagnostics.on('data', chunk => { messages += chunk; });
+      await expect(launchControlledClaudeTerminal({ args: [...flags, 'literal initial prompt'], input, output, diagnostics,
+        runTurn: async options => {
+          observed = options;
+          expect(await options.approve({ tool_name: 'Write', input: {} })).toBe(true);
+          expect(await options.approve({ tool_name: 'Agent', input: {} })).toBe(false);
+          expect(await options.approve({ tool_name: 'Task', input: {} })).toBe(false);
+          throw Error('fixture-stop');
+        } })).rejects.toThrow('fixture-stop');
+      expect(observed.prompt).toBe('literal initial prompt');
+      expect(observed.resume).toBe(flags.includes('--resume'));
+      expect(observed.sessionId).toBe(flags.includes('--resume') ? sessionId : undefined);
+      expect(messages).toContain('Owner permission bypass is active');
+      expect(controlledClaudeArguments(decision, sessionId).join(' ')).toContain('--permission-mode manual');
+      input.destroy(); output.destroy(); diagnostics.destroy();
+    });
 });

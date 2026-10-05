@@ -216,13 +216,18 @@ export async function runControlledClaudeTurn({ binary, prompt, sessionId = cryp
 /** Native tool approvals are presented by this host; --print supplies no terminal dialogs. */
 export async function launchControlledClaudeTerminal({ binary, args = [], input = process.stdin, output = process.stdout,
   diagnostics = process.stderr, env = process.env, cwd = process.cwd(), runTurn = runControlledClaudeTurn } = {}) {
-  let sessionId, resume = false, initialPrompt;
+  let sessionId, resume = false, initialPrompt, ownerBypass = false;
   const remaining = [...args];
-  if (remaining[0] === '--resume') {
-    if (!uuid(remaining[1])) throw new Error('Controlled Claude accepts only --resume <session UUID> and a literal initial prompt.');
-    sessionId = remaining[1]; resume = true; remaining.splice(0, 2);
+  const invalid = () => new Error('Controlled Claude accepts only --resume <session UUID>, --permission-mode bypassPermissions, and a literal initial prompt.');
+  while (remaining[0]?.startsWith('-')) {
+    if (remaining[0] === '--resume' && !resume && uuid(remaining[1])) {
+      sessionId = remaining[1]; resume = true;
+    } else if (remaining[0] === '--permission-mode' && !ownerBypass && remaining[1] === 'bypassPermissions') {
+      ownerBypass = true;
+    } else throw invalid();
+    remaining.splice(0, 2);
   }
-  if (remaining.some(arg => typeof arg !== 'string' || arg.startsWith('-'))) throw new Error('Controlled Claude accepts only --resume <session UUID> and a literal initial prompt.');
+  if (remaining.some(arg => typeof arg !== 'string' || arg.startsWith('-'))) throw invalid();
   if (remaining.length) initialPrompt = remaining.join(' ');
   if (!input.isTTY || !output.isTTY) throw new Error('Controlled Claude requires a person at a terminal for prompts and approvals.');
   const terminal = createInterface({ input, output });
@@ -230,6 +235,7 @@ export async function launchControlledClaudeTerminal({ binary, args = [], input 
   const cancel = () => controller.abort();
   terminal.on('SIGINT', cancel);
   diagnostics.write('Controlled Claude: one reviewed native allocation per prompt; tool approvals are answered here. Native Agent/Task workers are disabled; use the managed dispatcher for independent child work. /exit closes.\n');
+  if (ownerBypass) diagnostics.write('Owner permission bypass is active: native tool requests are approved by this host automatically. Agent/Task remain refused; routing and subscription guards remain active.\n');
   try {
     while (!controller.signal.aborted) {
       const prompt = initialPrompt ?? await terminal.question('Claude> '); initialPrompt = undefined;
@@ -237,8 +243,10 @@ export async function launchControlledClaudeTerminal({ binary, args = [], input 
       if (!prompt.trim()) continue;
       const turn = await runTurn({ binary, prompt, sessionId, resume, cwd, env, signal: controller.signal,
         output: text => output.write(text + '\n'), approve: async request => {
+          if (['Agent', 'Task'].includes(request.tool_name)) return false;
           const details = cleanText(JSON.stringify({ tool: request.tool_name, input: request.input, reason: request.decision_reason }));
           output.write(`Native permission request (untrusted tool text):\n${details}\n`);
+          if (ownerBypass) return true;
           return (await terminal.question('Approve this tool request? Type yes: ')).trim() === 'yes';
         } });
       sessionId = turn.sessionId; resume = true;
