@@ -6,7 +6,7 @@ import { ProjectProgressionStore } from './project-progression-store.mjs';
 import { redactText } from './continuity-events.mjs';
 import os from 'node:os';
 import { resolveTurnDb } from './turn-outcome-capture.mjs';
-import { privateProgressionState } from './turn-capture-privacy.mjs';
+import { privateProgressionState, payloadReferencesExcludedResource } from './turn-capture-privacy.mjs';
 
 const HOSTS = new Set(['claude', 'codex']);
 const CAPTURE_TRIGGERS = new Set([
@@ -89,10 +89,12 @@ function boundedText(value) {
     : `${value.slice(0, OBSERVATION_TEXT_LIMIT)}...[truncated]`;
 }
 
-function toolAction(payload) {
+function toolAction(payload, { contentPathExcludes = [], projectDir } = {}) {
   const input = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
+  // Classify original input before bounding it; the excluded reference can occur after 4096 chars.
+  const privateSource = payloadReferencesExcludedResource(payload, contentPathExcludes, projectDir);
   const command = boundedText(input.command ?? input.cmd);
-  const filePath = boundedText(input.file_path ?? input.path);
+  const filePath = boundedText(input.file_path ?? input.notebook_path ?? input.path);
   const action = command || filePath;
   if (!action && !payload.tool_name) return null;
 
@@ -142,12 +144,16 @@ function toolAction(payload) {
     const text = boundedText(response);
     if (text) observation.result = text;
   }
+  if (privateSource) {
+    if (command) observation.command = '[REDACTED:excluded-resource-command]'; if (filePath) observation.filePath = '[REDACTED:excluded-path]';
+    for (const field of ['stdout', 'stderr', 'result', 'error', 'signal']) if (Object.hasOwn(observation, field)) observation[field] = '[REDACTED:excluded-resource-output]';
+  }
   return observation;
 }
 
-export function enrichStateWithObservation(state, payload) {
+export function enrichStateWithObservation(state, payload, privacy) {
   requireRecord(state, 'completeProjectState');
-  const observation = toolAction(payload);
+  const observation = toolAction(payload, privacy);
   if (!observation) return state;
   const commands = Array.isArray(state.commands) ? state.commands : [];
   const failures = Array.isArray(state.failures) ? state.failures : [];
@@ -204,7 +210,7 @@ export function captureProjectTransition({
   );
   const privacy = resolveTurnDb({ projectDir, brainHome: env.RUVNET_BRAIN_HOME || path.join(env.HOME || os.homedir(), '.cache', 'ruvnet-brain') });
   if (privacy.skipped) throw new Error(`progression capture suspended: ${privacy.skipped}`);
-  const observed = enrichStateWithObservation(aliased(progression, 'completeProjectState', 'complete_project_state'), payload);
+  const observed = enrichStateWithObservation(aliased(progression, 'completeProjectState', 'complete_project_state'), payload, { contentPathExcludes: privacy.contentPathExcludes, projectDir });
   const protectedState = privateProgressionState(observed, privacy.contentPathExcludes, projectDir);
   if (recoverFrozen && digestCanonical(protectedState) !== digestCanonical(observed)) throw new Error('progression capture suspended: content exclusions changed; frozen snapshot retained');
   let snapshot = createProgressionSnapshot({

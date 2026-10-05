@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { redactText } from './continuity-events.mjs';
+import { normalizeHostEvent } from './hook-input.mjs';
 
 const normalized = (value) => String(value).replace(/\\/g, '/').replace(/\/{2,}/g, '/')
   .replace(/\/$/, (match, offset, source) => source === '/' || /^[A-Za-z]:\/$/.test(source) ? match : '');
@@ -122,15 +123,19 @@ export function privateContinuityEvent(event, patterns = [], projectDir) {
   return { ...event, summary: privateCommand || turn.excludedResource ? '[REDACTED:excluded-resource-summary]' : turn.finalText, ...(detail ? { detail } : {}) };
 }
 
+export function payloadReferencesExcludedResource(payload, patterns = [], projectDir) {
+  const normalized = normalizeHostEvent(payload) || {}; const input = normalized.tool_input || {};
+  return [input.file_path, input.notebook_path, input.path].some((file) => pathIsExcluded(file, patterns, projectDir))
+    || [input.command, input.cmd, input.description, normalized.prompt, normalized.user_prompt].some((value) => typeof value === 'string' && maskExcludedPaths(value, patterns, projectDir) !== value);
+}
+
 export function privateTransitionObservation(observation, patterns = [], projectDir, payload = {}) {
   if (!patterns.length) return observation;
-  const filtered = { ...observation }; const input = payload.tool_input || {};
-  const privateInput = pathIsExcluded(input.file_path || input.path, patterns, projectDir)
-    || [input.command, input.cmd, payload.prompt, payload.user_prompt].some((value) => typeof value === 'string' && maskExcludedPaths(value, patterns, projectDir) !== value);
+  const filtered = { ...observation }; const privateInput = payloadReferencesExcludedResource(payload, patterns, projectDir);
   if (typeof observation.selectedIntent?.text === 'string'
     && (privateInput || maskExcludedPaths(observation.selectedIntent.text, patterns, projectDir) !== observation.selectedIntent.text)) delete filtered.selectedIntent;
-  if (typeof observation.error === 'string') filtered.error = privateInput || maskExcludedPaths(observation.error, patterns, projectDir) !== observation.error
-    ? '[REDACTED:excluded-resource-error]' : observation.error;
+  for (const field of ['error', 'signal']) if (typeof observation[field] === 'string') filtered[field] = privateInput || maskExcludedPaths(observation[field], patterns, projectDir) !== observation[field]
+    ? `[REDACTED:excluded-resource-${field}]` : observation[field];
   return filtered;
 }
 
@@ -150,7 +155,7 @@ export function privateProgressionState(state, patterns = [], projectDir) {
     if (pathIsExcluded(observation.filePath, patterns, projectDir) || String(observation.filePath || '').includes('[REDACTED:excluded-path]')
       || typeof observation.command === 'string' && maskExcludedPaths(observation.command, patterns, projectDir) !== observation.command) {
       if (observation.filePath) filtered.filePath = '[REDACTED:excluded-path]'; if (observation.command) filtered.command = '[REDACTED:excluded-resource-command]';
-      for (const output of ['stdout', 'stderr', 'result', 'error']) if (Object.hasOwn(observation, output)) filtered[output] = '[REDACTED:excluded-resource-output]';
+      for (const output of ['stdout', 'stderr', 'result', 'error', 'signal']) if (Object.hasOwn(observation, output)) filtered[output] = '[REDACTED:excluded-resource-output]';
     }
     return filtered;
   });

@@ -4,12 +4,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { contentPathExcludes, pathIsExcluded, maskExcludedPaths, privateTurn, privateContinuityEvent, privateProgressionState, captureFailureReason } from '../../plugin/scripts/turn-capture-privacy.mjs';
+import { contentPathExcludes, pathIsExcluded, maskExcludedPaths, privateTurn, privateContinuityEvent, privateProgressionState, captureFailureReason, payloadReferencesExcludedResource, privateTransitionObservation } from '../../plugin/scripts/turn-capture-privacy.mjs';
 import { captureTurnOutcome, resolveTurnDb, runSteps, turnRecordingStatus } from '../../plugin/scripts/turn-outcome-capture.mjs';
 import { ProjectProgressionStore } from '../../plugin/scripts/project-progression-store.mjs';
 import { ContinuityJournal, drain } from '../../plugin/scripts/continuity-journal.mjs';
 import { createStore } from '../helpers/continuity-fixture.mjs';
 import { enrichStateWithObservation } from '../../plugin/scripts/project-progression-hook.mjs';
+import { buildProjectProgression } from '../../plugin/scripts/project-progression-producer.mjs';
+import { resolveProjectStore } from '../../plugin/scripts/project-store-resolver.mjs';
 
 const roots = [];
 afterEach(() => roots.splice(0).forEach((root) => fs.rmSync(root, { recursive: true, force: true })));
@@ -110,6 +112,35 @@ describe('bounded failure reasons and first-use disclosure', () => {
     expect(JSON.stringify(privateProgressionState(mixed, ['/project/private'], '/project'))).not.toContain('Confidential client');
     const older = { commands: [{ filePath: '[REDACTED:excluded-path]', stdout: '# Confidential client title', outcome: 'success' }] };
     expect(JSON.stringify(privateProgressionState(older, ['/project/private'], '/project'))).not.toContain('Confidential client');
+  });
+  it.each(['file_path', 'notebook_path', 'path'])('classifies original %s resource and withholds private outputs while retaining public outputs', (field) => {
+    const observe = (file) => ({ hook_event_name: 'PostToolUse', session_id: 's', tool_name: 'NotebookEdit', tool_input: { [field]: file }, tool_response: { error: 'PRIVATE_BODY_TOKEN', exit_code: 1 } });
+    const privacy = { contentPathExcludes: ['/project/private'], projectDir: '/project' };
+    const privateState = enrichStateWithObservation({ commands: [], failures: [] }, observe('/project/private/client.ipynb'), privacy);
+    expect(JSON.stringify(privateState)).not.toContain('PRIVATE_BODY_TOKEN'); expect(privateState.commands[0].outcome).toBe('failure');
+    expect(privateTransitionObservation({ id: 'original', error: 'PRIVATE_BODY_TOKEN', signal: 'PRIVATE_SIGNAL_TOKEN' }, privacy.contentPathExcludes, privacy.projectDir, observe('/project/private/client.ipynb'))).toEqual({ id: 'original', error: '[REDACTED:excluded-resource-error]', signal: '[REDACTED:excluded-resource-signal]' });
+    const publicPayload = observe('/project/public/client.ipynb'); expect(enrichStateWithObservation({ commands: [] }, publicPayload, privacy).commands[0].error).toBe('PRIVATE_BODY_TOKEN');
+    expect(privateTransitionObservation({ error: 'public error' }, privacy.contentPathExcludes, privacy.projectDir, publicPayload).error).toBe('public error');
+  });
+  it.each(['command', 'cmd'])('classifies untruncated %s before bounding away an excluded reference', (field) => {
+    const privacy = { contentPathExcludes: ['/project/private'], projectDir: '/project' };
+    const observe = (dir) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { [field]: `echo ${'x'.repeat(4100)}; cat /project/${dir}/client-title.md` }, tool_response: { stdout: 'PRIVATE_BODY_TOKEN', exit_code: 0 } });
+    const privateState = enrichStateWithObservation({ commands: [] }, observe('private'), privacy);
+    expect(privateState.commands[0].stdout).toBe('[REDACTED:excluded-resource-output]'); expect(privateState.commands[0].command).toBe('[REDACTED:excluded-resource-command]'); expect(privateState.commands[0].outcome).toBe('success');
+    const publicState = enrichStateWithObservation({ commands: [] }, observe('public'), privacy);
+    expect(publicState.commands[0].stdout).toBe('PRIVATE_BODY_TOKEN'); expect(publicState.commands[0].command).toContain('[truncated]');
+  });
+  it('classifies every supported resource alias on the normalized host envelope', () => {
+    const payload = { hookEventName: 'post_tool_use', toolName: 'NotebookEdit', toolInput: { file_path: '/project/public/a', notebook_path: '/project/private/b' } };
+    expect(payloadReferencesExcludedResource(payload, ['/project/private'], '/project')).toBe(true);
+    expect(privateTransitionObservation({ id: 'same', error: 'PRIVATE_BODY_TOKEN' }, ['/project/private'], '/project', payload).error).toBe('[REDACTED:excluded-resource-error]');
+  });
+  it('uses the same raw-resource privacy classification in producer observation digests', () => {
+    const h = fixture(); fs.rmSync(path.join(h.projectDir, '.swarm', 'memory.db')); createStore(path.join(h.projectDir, '.swarm', 'memory.db')); h.write({ contentPathExcludes: ['/project/private'] });
+    const resolution = resolveProjectStore({ projectDir: h.projectDir });
+    const produce = (privateResource, body) => buildProjectProgression({ resolution, projectDir: h.projectDir, host: 'claude', trigger: 'PostToolUse', env: { ...h.env, RUVNET_WORK_LEDGER: path.join(h.home, 'absent.json') }, now: () => '2026-10-05T00:00:00.000Z', payload: { session_id: 's', tool_name: 'Bash', tool_input: { command: `echo ${'x'.repeat(4100)}; cat /project/${privateResource ? 'private' : 'public'}/client-title.md` }, tool_response: { stdout: body, exit_code: 0 } } });
+    expect(produce(true, 'PRIVATE_BODY_A').meaningDigest).toBe(produce(true, 'PRIVATE_BODY_B').meaningDigest);
+    expect(produce(false, 'PUBLIC_BODY_A').meaningDigest).not.toBe(produce(false, 'PUBLIC_BODY_B').meaningDigest);
   });
   it('rereads exclusions before continuity delivery and refuses an older unfiltered same-ID row', () => {
     const h = fixture(); fs.rmSync(path.join(h.projectDir, '.swarm', 'memory.db')); createStore(path.join(h.projectDir, '.swarm', 'memory.db')); h.write({});

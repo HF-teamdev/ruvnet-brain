@@ -264,6 +264,7 @@ export function buildProjectProgression({
   // twice. Tool input and terminal evidence must participate before the no-op decision.
   const observedState = redactProgression(enrichStateWithObservation(
     projectProgression.completeProjectState, { ...payload, hook_event_name: trigger },
+    { contentPathExcludes: privacy.contentPathExcludes, projectDir },
   )).value;
   // A committed sequence is not an event identity: several boundaries may freeze before replay.
   // Bind all immutable captured fields (including the native observation and occurrence time).

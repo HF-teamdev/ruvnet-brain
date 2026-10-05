@@ -118,6 +118,14 @@ afterEach(() => {
 });
 
 describe('ADR-073 host-neutral progression capture', () => {
+  it.each(['NotebookEdit', 'Bash'])('classifies original %s resource before output persistence and preserves public counterparts', (tool) => {
+    const project = temporaryProject(); const store = recordingStore(project); const brainHome = path.join(project, 'brain');
+    fs.mkdirSync(path.join(brainHome, 'turn-capture'), { recursive: true }); fs.writeFileSync(path.join(brainHome, 'turn-capture', 'policy.json'), JSON.stringify({ schemaVersion: 1, projects: {}, contentPathExcludes: ['/project/private'] }));
+    const capture = (directory) => captureProjectTransition({ host: 'claude', projectDir: project, env: { RUVNET_BRAIN_HOME: brainHome }, storeFactory: store.factory,
+      payload: envelope(project, 'claude', {}, { tool_name: tool, tool_input: tool === 'NotebookEdit' ? { notebook_path: `/project/${directory}/client.ipynb` } : { command: `echo ${'x'.repeat(4100)}; cat /project/${directory}/client-title.md` }, tool_response: { stdout: 'PRIVATE_BODY_TOKEN', error: 'PRIVATE_ERROR_TOKEN', exit_code: 1 } }) });
+    const privateResult = capture('private'); expect(JSON.stringify(privateResult.snapshot)).not.toMatch(/PRIVATE_BODY_TOKEN|PRIVATE_ERROR_TOKEN|client-title|client.ipynb/); expect(privateResult.snapshot.completeProjectState.commands[0].outcome).toBe('failure');
+    const publicResult = capture('public'); expect(publicResult.snapshot.completeProjectState.commands[0].stdout).toBe('PRIVATE_BODY_TOKEN'); expect(publicResult.snapshot.completeProjectState.commands[0].error).toBe('PRIVATE_ERROR_TOKEN');
+  });
   it('filters new content but refuses to rewrite a queued frozen progression under changed exclusions', () => {
     const project = temporaryProject(); const store = recordingStore(project);
     const brainHome = path.join(project, 'brain'); fs.mkdirSync(path.join(brainHome, 'turn-capture'), { recursive: true });

@@ -194,6 +194,7 @@ export function runProjectTransitionHook(projectDir, event, { payload = {}, host
   if (developmentHooksSuspended(projectDir)) return { state: 'skipped', reason: 'development hooks suspended' };
   const suspended = automaticProgressionSuspensionResult(env, { state: 'suspended', reason: 'automatic project progression is operator-suspended' });
   if (suspended) return suspended;
+  payload = normalizeHostEvent(payload);
   let observation = normalizeTransition(payload, event, { host });
   if (observation.skipped) return { state: 'skipped', reason: observation.skipped };
   const brainHome = env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain');
