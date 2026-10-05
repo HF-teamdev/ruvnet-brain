@@ -11,19 +11,49 @@ function scratch() { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-aut
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('owner automatic update authority', () => {
-  it('loads only canonical user settings; project and inherited settings overrides cannot choose code', () => {
-    const home = scratch(); const load = vi.fn(() => ({ healthy: true, exists: true, values: { updateSource: 'installed' } }));
-    expect(updateSource({ home, load })).toBe('installed');
-    expect(load).toHaveBeenCalledExactlyOnceWith(ownerSettingsPath(home));
+  const policy = input => ({ ok: ['latest', 'installed'].includes(input.updateSource), values: input });
+  const writePolicy = (home, settings = { updateSource: 'installed' }, version = 1) => {
+    fs.mkdirSync(path.dirname(ownerSettingsPath(home)), { recursive: true });
+    fs.writeFileSync(ownerSettingsPath(home), JSON.stringify({ version, settings }), { mode: 0o600 });
+  };
+  it('captures the canonical policy once; a hypothetical second-read EIO cannot become latest', () => {
+    const home = scratch(); writePolicy(home);
+    const original = fs.readFileSync;
+    const read = vi.fn((...args) => {
+      if (read.mock.calls.length > 1) throw Object.assign(new Error('second read failed'), { code: 'EIO' });
+      return original(...args);
+    });
+    expect(updateSource({ home, read, validatePolicy: policy })).toBe('installed');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(typeof read.mock.calls[0][0]).toBe('number'); // captured descriptor, not a re-opened path
   });
-  it.each(['corrupt', 'future', 'invalid enum'])('refuses %s owner settings rather than silently running latest', label => {
-    const home = scratch();
-    const load = () => ({ healthy: label === 'invalid enum', exists: true, values: { updateSource: label === 'invalid enum' ? 'other' : 'latest' } });
-    expect(() => updateSource({ home, load })).toThrow(/unproven|not supported/);
+  it('refuses a failed captured read and never treats EIO as absence', () => {
+    const home = scratch(); writePolicy(home);
+    const read = vi.fn(() => { throw Object.assign(new Error('disk read failed'), { code: 'EIO' }); });
+    expect(() => updateSource({ home, read, validatePolicy: policy })).toThrow(/unreadable/);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+  it.each([null, [], {}, { version: 2, settings: { updateSource: 'installed' } }, { version: 1, settings: [] },
+    { version: 1, settings: { updateSource: 'other' } }])('refuses malformed/foreign/future owner envelope %j', captured => {
+    const home = scratch(); writePolicy(home);
+    fs.writeFileSync(ownerSettingsPath(home), JSON.stringify(captured));
+    expect(() => updateSource({ home, validatePolicy: policy })).toThrow(/unproven/);
+  });
+  it('refuses corrupt JSON, settings symlinks and writable foreign policy boundaries', () => {
+    const home = scratch(); writePolicy(home);
+    fs.writeFileSync(ownerSettingsPath(home), '{');
+    expect(() => updateSource({ home, validatePolicy: policy })).toThrow(/invalid/);
+    const target = path.join(home, 'project-settings.json'); fs.writeFileSync(target, '{"version":1,"settings":{"updateSource":"latest"}}');
+    fs.unlinkSync(ownerSettingsPath(home)); fs.symlinkSync(target, ownerSettingsPath(home), 'file');
+    expect(() => updateSource({ home, validatePolicy: policy })).toThrow(/symlink/);
+    fs.unlinkSync(ownerSettingsPath(home)); writePolicy(home);
+    fs.chmodSync(ownerSettingsPath(home), 0o666);
+    if (typeof process.getuid === 'function') expect(() => updateSource({ home, validatePolicy: policy })).toThrow(/permissions/);
+    else expect(updateSource({ home, validatePolicy: policy })).toBe('installed'); // Windows does not expose POSIX write bits as an ACL authority
   });
   it('an unreadable settings path is a refusal, not absence', () => {
     const home = scratch(); fs.mkdirSync(ownerSettingsPath(home), { recursive: true });
-    expect(() => updateSource({ home })).toThrow(/unreadable/);
+    expect(() => updateSource({ home })).toThrow(/regular file/);
   });
   it('missing owner settings retains the latest default', () => { expect(updateSource({ home: scratch() })).toBe('latest'); });
   it('installed mode resolves the owner global package declared bin and contains its entry', () => {

@@ -5,15 +5,33 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { loadSettings, saveSettings } from './user-settings.mjs';
+import { SETTINGS_VERSION, validate, saveSettings } from './user-settings.mjs';
 
 export const ownerSettingsPath = (home = os.homedir()) => path.join(home, '.config', 'ruvnet-brain', 'settings.json');
-export function updateSource({ home = os.homedir(), load = loadSettings } = {}) {
-  try { fs.readFileSync(ownerSettingsPath(home)); }
-  catch (error) { if (error.code !== 'ENOENT') throw new Error(`owner update settings are unreadable: ${error.message}`); }
-  const state = load(ownerSettingsPath(home));
-  if (!state.healthy) throw new Error('automatic update source is unproven: owner settings are invalid or unreadable');
-  const source = state.values.updateSource ?? (state.exists ? undefined : 'latest');
+export function updateSource({ home = os.homedir(), read = fs.readFileSync, validatePolicy = validate } = {}) {
+  const file = ownerSettingsPath(home);
+  let descriptor; let captured;
+  try {
+    let before;
+    try { before = fs.lstatSync(file); }
+    catch (error) { if (error.code === 'ENOENT') return 'latest'; throw error; }
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error('owner settings must be a regular file, not a symlink');
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino
+      || (typeof process.getuid === 'function' && (stat.uid !== process.getuid() || (stat.mode & 0o022)))) {
+      throw new Error('owner settings identity or permissions are unsafe');
+    }
+    captured = JSON.parse(read(descriptor, 'utf8'));
+  } catch (error) { throw new Error(`owner update settings are unreadable or invalid: ${error.message}`); }
+  finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+  if (!captured || Array.isArray(captured) || captured.version !== SETTINGS_VERSION
+    || !captured.settings || Array.isArray(captured.settings) || typeof captured.settings !== 'object') {
+    throw new Error('automatic update source is unproven: owner settings envelope is invalid or from another version');
+  }
+  const state = validatePolicy(captured.settings);
+  if (!state.ok) throw new Error('automatic update source is unproven: owner settings are invalid');
+  const source = state.values.updateSource;
   if (!['latest', 'installed'].includes(source)) throw new Error('automatic update source is not supported by this runtime');
   return source;
 }
