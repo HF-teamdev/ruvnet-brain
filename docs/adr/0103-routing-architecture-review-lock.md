@@ -4,7 +4,8 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-05
-version: 0.1.1
+version: 0.1.2
+reviewed_digest: 6f995f7a7215
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -155,3 +156,4 @@ finite release refusal. No paid provider call, model generation or system config
 | Date | What | Why |
 |---|---|---|
 | 2026-10-05 | Initial accepted decision; implementation and final-source review incomplete | scripts/architecture-review-lock.mjs reuses scripts/doc-currency.mjs; tests/unit/architecture-review-lock.test.mjs supplies bounded refusal fixtures. |
+| 2026-10-05 | Reviewed final source mapping and bounded deltas; reviewed_digest 6f995f7a7215; source a596375bbf2d7b68054b0f2d8fe36187fb7fa415 | scripts/architecture-review-lock.mjs binds the current 80-file scope. Independent source review receipt rnb-astra-source-review-a596375 records actual read coverage and limits. Isolated native Claude positive business evidence and prior Codex controlled repair evidence remain scoped; public installation, owner activation and default launcher context are not established by this source review. |
