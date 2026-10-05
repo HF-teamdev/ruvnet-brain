@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "ruvnet-brain-convergence-manifest",
   "version": "4.5.8",
-  "sourceIdentity": "611e388ac55b7a7bd5d1f4437d452ce99eb5ffb246b8a454e76582ab052c51aa",
+  "sourceIdentity": "61f98bde6b9cf9999a242cb2fab800f2b46e30dcbe266df41b893d5af0293892",
   "versionSurfaces": {
     "package.json": "4.5.8",
     "plugin/.claude-plugin/plugin.json": "4.5.8",
@@ -111,8 +111,8 @@
     "0102-completion-and-closure-ledger.md",
     "README.md"
   ],
-  "trackedFileCount": 1885,
-  "trackedFilesSha256": "c346cadb82b0d96a98473a707f9a2fb11f181427378b77334c1daa73b00c51d2",
+  "trackedFileCount": 1887,
+  "trackedFilesSha256": "9a14d144d1e21e317667f0e1538b7ee5ee011b1bdbe5323ad250740a18de60ef",
   "ownershipChecks": [
     "version:check",
     "doc:currency",
