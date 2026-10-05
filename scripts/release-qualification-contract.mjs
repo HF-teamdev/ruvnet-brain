@@ -4,7 +4,7 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     {
       "id": "honest-currency-lesson-and-metrics-evidence",
       "reason": "Foreign KB roots remain isolated; panel currency derives from measured completion rather than checkout time; exact lesson readback binds this shell-free write; public metrics never fabricate performance or a competing product score",
-      "files": ["tests/unit/forge-currency-selected-root.test.mjs", "tests/unit/brain-score-producer.test.mjs", "tests/unit/brain-grade-groundtruth-timestamp.test.mjs", "tests/unit/record-lesson.test.mjs", "tests/unit/lesson-presentation-budget.test.mjs", "tests/unit/metrics-truth.test.mjs"]
+      "files": ["tests/unit/forge-currency-selected-root.test.mjs", "tests/unit/brain-score-producer.test.mjs", "tests/unit/brain-grade-groundtruth-timestamp.test.mjs", "tests/unit/record-lesson.test.mjs", "tests/unit/lesson-presentation-budget.test.mjs", "tests/unit/metrics-truth.test.mjs", "tests/unit/issue-watch-retry.test.mjs"]
     },
     {
       "id": "automatic-update-source-and-transport",
@@ -168,9 +168,11 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     },
     {
       "id": "canonical-memory-privacy",
-      "reason": "Canonical project isolation, persisted consent and truthful capture status",
+      "reason": "Canonical project isolation, persisted consent, excluded-resource privacy before recording, immutable delivery refusal and truthful terminal failure status",
       "files": [
         "tests/unit/turn-outcome-capture.test.mjs",
+        "tests/unit/turn-capture-content-privacy.test.mjs",
+        "tests/integration/project-progression-hook.test.mjs",
         "tests/unit/turn-journal-platform.test.mjs",
         "tests/unit/project-store-resolver.test.mjs"
       ]
