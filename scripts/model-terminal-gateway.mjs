@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import { PassThrough, Writable } from 'node:stream';
+import { Duplex, PassThrough, Writable } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -29,7 +30,7 @@ export function classifyTerminalArguments(args = []) {
   let first;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (arg === '--') { first = args[index + 1]; break; }
+    if (arg === '--') return 'interactive'; // Native '--' ends subcommand parsing: following words are prompts.
     if (VALUES.has(arg)) { index++; continue; }
     if (arg.startsWith('-')) continue;
     first = arg; break;
@@ -68,6 +69,71 @@ function jsonPacket(text) {
       && (Object.hasOwn(packet, 'result') || Object.hasOwn(packet, 'error'))))) throw new Error(REFUSED);
   if (Object.hasOwn(packet, 'id') && !(typeof packet.id === 'string' || Number.isSafeInteger(packet.id))) throw new Error(REFUSED);
   return packet;
+}
+
+/** Official proxy is a byte tunnel: perform the daemon's /rpc WebSocket handshake over its stdio. */
+export async function connectProxyWebSocket(proxy, { startupMs = 10000, maxBytes = MAX_TERMINAL_BYTES } = {}) {
+  const tunnel = Duplex.from({ readable: proxy.stdout, writable: proxy.stdin });
+  // createConnection always returns the owned tunnel; even the placeholder endpoint is Unix-only.
+  const ws = new WebSocket('ws+unix:///native-proxy:/rpc', { createConnection: () => tunnel,
+    perMessageDeflate: false, maxPayload: maxBytes, handshakeTimeout: startupMs, followRedirects: false });
+  const child = new EventEmitter(); child.on('error', () => {});
+  child.stdout = new PassThrough({ highWaterMark: 65536 }); child.stderr = proxy.stderr;
+  child.exitCode = null; child.signalCode = null;
+  let closed = false, ready = false, buffer = '';
+  const decoder = new StringDecoder('utf8');
+  const fail = () => { if (!closed) { child.emit('error', new Error(REFUSED)); child.kill('SIGTERM'); } };
+  child.kill = (signal) => {
+    if (closed && signal !== 'SIGKILL') return;
+    if (!closed) { closed = true; ws.terminate(); tunnel.destroy(); }
+    const sent = proxy.kill(signal);
+    if (signal !== 'SIGKILL') {
+      const killer = setTimeout(() => { if (proxy.exitCode == null && proxy.signalCode == null) proxy.kill('SIGKILL'); }, 1000);
+      killer.unref(); proxy.once('exit', () => clearTimeout(killer));
+    } child.exitCode = proxy.exitCode; child.signalCode = proxy.signalCode;
+    return sent;
+  };
+  child.stdin = new Writable({ highWaterMark: 65536, write(chunk, _encoding, callback) {
+    try {
+      buffer += decoder.write(chunk); if (Buffer.byteLength(buffer) > maxBytes) throw new Error(REFUSED);
+      const lines = buffer.split('\n'); buffer = lines.pop(); let index = 0;
+      const send = () => {
+        if (index === lines.length) { callback(); return; }
+        const line = lines[index++]; jsonPacket(line);
+        if (closed || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + Buffer.byteLength(line) > maxBytes) throw new Error(REFUSED);
+        ws.send(line, { binary: false }, (error) => {
+          if (error) { callback(error); fail(); return; }
+          try { send(); } catch (error) { callback(error); fail(); }
+        });
+      }; send();
+    } catch (error) { callback(error); fail(); }
+  } });
+  child.stdin.on('error', fail); child.stdout.on('error', fail);
+  ws.on('message', (bytes, binary) => {
+    try {
+      if (binary || bytes.length > maxBytes || child.stdout.writableLength + bytes.length + 1 > maxBytes) throw new Error(REFUSED);
+      const line = new TextDecoder('utf-8', { fatal: true }).decode(bytes); jsonPacket(line);
+      if (!child.stdout.write(line + '\n')) ws.pause();
+    } catch { fail(); }
+  });
+  child.stdout.on('drain', () => { if (!closed) ws.resume(); });
+  proxy.once('error', (error) => child.emit('error', error));
+  proxy.once('exit', (code, signal) => {
+    child.exitCode = code; child.signalCode = signal; child.emit('exit', code, signal);
+    if (!closed) { closed = true; ws.terminate(); tunnel.destroy(); }
+  });
+  ws.on('error', () => { if (ready) fail(); });
+  ws.once('close', () => { if (ready && !closed) fail(); });
+  try {
+    await new Promise((resolve, reject) => {
+      const rejectProxy = () => reject(new Error(REFUSED));
+      proxy.once('exit', rejectProxy); proxy.once('error', rejectProxy);
+      ws.once('error', rejectProxy); ws.once('close', rejectProxy);
+      ws.once('open', () => { proxy.removeListener('exit', rejectProxy); proxy.removeListener('error', rejectProxy);
+        ws.removeListener('error', rejectProxy); ws.removeListener('close', rejectProxy); ready = true; resolve(); });
+    });
+  } catch (error) { child.kill('SIGTERM'); throw error; }
+  return child;
 }
 
 /** Real HTTP/WebSocket framing over one private Unix socket, converted to native JSONL streams. */
@@ -128,7 +194,7 @@ export async function createTerminalTransport({ child, diagnostics = process.std
   server.on('error', fail); wss.on('error', fail);
   server.on('upgrade', (request, socket, head) => {
     // Refuse a second client for this launch, including reconnect after disconnect.
-    if (closed || claimed || request.url !== '/' || request.headers.origin) {
+    if (closed || claimed || request.url !== '/rpc' || request.headers.origin) {
       socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
     }
     claimed = true;
@@ -180,7 +246,7 @@ export function parseTerminalInvocation(argv, env = process.env) {
 }
 
 export async function runTerminalGateway({ realBinary, upstreamSocket, args = [], env = process.env,
-  spawnNative = spawn, gatewayOptions = {}, startupMs = 10000, tempRoot = '/private/tmp',
+  spawnNative = spawn, adaptProxy = connectProxyWebSocket, gatewayOptions = {}, startupMs = 10000, tempRoot = '/private/tmp',
   signalSource = process, diagnostics = process.stderr } = {}) {
   if (!path.isAbsolute(realBinary || '')) throw new Error('Explicit absolute native executable required');
   const binary = fs.realpathSync(realBinary), clean = subscriptionEnvironment(env);
@@ -199,7 +265,8 @@ export async function runTerminalGateway({ realBinary, upstreamSocket, args = []
   let tui, transport, forcedFailure = false;
   const handlers = new Map();
   try {
-    transport = await createTerminalTransport({ child: proxy, diagnostics, startupMs, tempRoot,
+    const backend = await adaptProxy(proxy, { startupMs });
+    transport = await createTerminalTransport({ child: backend, diagnostics, startupMs, tempRoot,
       onFailure: () => { forcedFailure = true; tui?.kill('SIGTERM'); },
       gatewayOptions: { ...gatewayOptions, checkAuth: auth,
         decide: gatewayOptions.decide || ((prompt, harness, metadata) => decideNativeTurn(prompt, harness, { env: clean, ...metadata })) } });

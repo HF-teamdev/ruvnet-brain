@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import http from 'node:http';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { describe, it, expect, afterEach } from 'vitest';
-import { createTerminalTransport, classifyTerminalArguments, validateUpstreamSocket,
+import { createTerminalTransport, classifyTerminalArguments, validateUpstreamSocket, connectProxyWebSocket,
   parseTerminalInvocation, runTerminalGateway, MAX_TERMINAL_BYTES } from '../../scripts/model-terminal-gateway.mjs';
 
 const cleanups = [];
@@ -25,6 +26,8 @@ function backend() {
       const packet = JSON.parse(buffer.slice(0, at)); buffer = buffer.slice(at + 1); sent.push(packet);
       if (packet.method === 'initialize') child.stdout.write(JSON.stringify({ id: packet.id, result: { userAgent: 'fixture' } }) + '\n');
       if (packet.method === 'account/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { account: { type: 'chatgpt' } } }) + '\n');
+      if (packet.method === 'config/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { config: { model_provider: 'openai', service_tier: 'default', features: { fast_mode: false } } } }) + '\n');
+      if (packet.method === 'thread/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { thread: { id: packet.params.threadId, modelProvider: 'openai', cwd: '/private/tmp' } } }) + '\n');
       if (packet.method === 'account/rateLimits/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { ordinaryUsageAllowed: true } }) + '\n');
       if (packet.method === 'turn/start') child.stdout.write(JSON.stringify({ id: packet.id, result: { turn: { id: 'turn' } } }) + '\n');
     }
@@ -37,7 +40,7 @@ async function fixture(options = {}) {
   const transport = await createTerminalTransport({ child: native.child, diagnostics, startupMs: 1000,
     gatewayOptions: { decide: async () => decision, verifyDecision: () => {}, receipt: () => {}, ...options.gatewayOptions }, ...options });
   cleanups.push(() => transport.close());
-  const ws = new WebSocket(`ws+unix://${transport.socketPath}:/`);
+  const ws = new WebSocket(`ws+unix://${transport.socketPath}:/rpc`);
   ws.on('error', () => {});
   const received = []; ws.on('message', (bytes) => received.push(JSON.parse(bytes)));
   await once(ws, 'open');
@@ -51,6 +54,49 @@ async function socketFixture() {
   cleanups.push(() => new Promise((resolve) => server.close(() => { fs.rmSync(directory, { recursive: true, force: true }); resolve(); })));
   return { file, directory };
 }
+
+async function proxyFixture({ rejectUpgrade = false } = {}) {
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'cpw-')); fs.chmodSync(directory, 0o700);
+  const file = path.join(directory, 'socket'), server = http.createServer();
+  const wss = new WebSocketServer({ noServer: true }); const requests = []; let peer;
+  server.on('upgrade', (request, socket, head) => {
+    requests.push({ url: request.url, origin: request.headers.origin });
+    if (rejectUpgrade) { socket.end('HTTP/1.1 302 Found\r\nLocation: ws://invalid.example/\r\nConnection: close\r\n\r\n'); return; }
+    wss.handleUpgrade(request, socket, head, (ws) => { peer = ws; wss.emit('connection', ws); });
+  });
+  await new Promise((resolve) => server.listen(file, resolve)); fs.chmodSync(file, 0o600);
+  const socket = net.createConnection(file), proxy = new EventEmitter();
+  Object.assign(proxy, { stdin: socket, stdout: socket, stderr: new PassThrough(), exitCode: null, signalCode: null, kills: [] });
+  proxy.kill = (signal) => { proxy.kills.push(signal); proxy.signalCode = signal; socket.destroy(); proxy.emit('exit', null, signal); };
+  cleanups.push(() => { socket.destroy(); peer?.terminate(); wss.close(); server.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  return { proxy, requests, peer: () => peer };
+}
+
+describe('official proxy WebSocket framing', () => {
+  it('handshakes /rpc over the owned byte tunnel and preserves native approval IDs', async () => {
+    const f = await proxyFixture(), child = await connectProxyWebSocket(f.proxy, { startupMs: 1000 });
+    expect(f.requests).toEqual([{ url: '/rpc', origin: undefined }]);
+    const sent = []; f.peer().on('message', (bytes) => sent.push(JSON.parse(bytes)));
+    const response = { id: 'approval', result: { decision: 'accept' } }; child.stdin.write(JSON.stringify(response) + '\n');
+    await until(() => sent.length); expect(sent).toEqual([response]);
+    let returned = ''; child.stdout.on('data', (chunk) => { returned += chunk; });
+    const approval = { id: 'approval', method: 'item/commandExecution/requestApproval', params: { command: 'test' } };
+    f.peer().send(JSON.stringify(approval)); await until(() => returned); expect(JSON.parse(returned)).toEqual(approval);
+    child.kill('SIGTERM'); expect(f.proxy.kills).toEqual(['SIGTERM']);
+  });
+  it('fails closed on malformed or binary daemon frames', async () => {
+    for (const payload of ['not json', Buffer.from('{"method":"thread/list"}')]) {
+      const f = await proxyFixture(), child = await connectProxyWebSocket(f.proxy, { startupMs: 1000 });
+      let error = false; child.on('error', () => { error = true; }); f.peer().send(payload);
+      await until(() => error); expect(f.proxy.kills).toEqual(['SIGTERM']);
+    }
+  });
+  it('refuses redirect handshakes without replay or another connection', async () => {
+    const f = await proxyFixture({ rejectUpgrade: true });
+    await expect(connectProxyWebSocket(f.proxy, { startupMs: 1000 })).rejects.toThrow();
+    expect(f.requests).toHaveLength(1); expect(f.proxy.kills).toEqual(['SIGTERM']);
+  });
+});
 
 describe('native terminal Unix WebSocket transport', () => {
   it('routes each native turn while preserving initialize, tool approval, interrupt and IDs', async () => {
@@ -72,8 +118,18 @@ describe('native terminal Unix WebSocket transport', () => {
     expect(f.sent.find((p) => p.id === approval.id)).toEqual(allowed); expect(f.sent.at(-1)).toEqual(interrupt);
     expect(f.received.some((p) => String(p.id).startsWith('model-routing-gateway:'))).toBe(false);
   });
+  it('accepts the native /rpc request without Origin and rejects other handshake paths or origins', async () => {
+    const native = backend(); const transport = await createTerminalTransport({ child: native.child, diagnostics: new PassThrough() });
+    cleanups.push(() => transport.close());
+    for (const [requestPath, headers] of [['/', {}], ['/rpc', { Origin: 'http://localhost' }]]) {
+      const ws = new WebSocket(`ws+unix://${transport.socketPath}:${requestPath}`, { headers });
+      await new Promise((resolve) => ws.once('error', resolve)); expect(ws.readyState).not.toBe(WebSocket.OPEN);
+    }
+    const accepted = new WebSocket(`ws+unix://${transport.socketPath}:/rpc`); accepted.on('error', () => {});
+    await once(accepted, 'open'); cleanups.push(() => accepted.terminate()); expect(await transport.connected).toBe(true);
+  });
   it('refuses a second client without breaking the first', async () => {
-    const f = await fixture(); const other = new WebSocket(`ws+unix://${f.transport.socketPath}:/`);
+    const f = await fixture(); const other = new WebSocket(`ws+unix://${f.transport.socketPath}:/rpc`);
     const refused = new Promise((resolve) => other.once('error', resolve));
     await refused; expect(other.readyState).not.toBe(WebSocket.OPEN);
     f.send({ id: 8, method: 'thread/list', params: {} }); await until(() => f.sent.length === 1);
@@ -128,7 +184,7 @@ describe('terminal launch boundaries', () => {
     fs.chmodSync(directory, 0o755); expect(() => validateUpstreamSocket(file)).toThrow(/directory/);
   });
   it('preserves admin and interactive classification and refuses unproved/conflicting transports', () => {
-    for (const args of [[], ['resume', '--last'], ['fork', 'uuid'], ['-C', '/tmp', 'prompt'], ['--image', 'test.png', 'hello']]) expect(classifyTerminalArguments(args)).toBe('interactive');
+    for (const args of [[], ['--', 'login'], ['--', 'help'], ['--', 'update'], ['--', 'doctor'], ['--', 'exec'], ['resume', '--last'], ['fork', 'uuid'], ['-C', '/tmp', 'prompt'], ['--image', 'test.png', 'hello']]) expect(classifyTerminalArguments(args)).toBe('interactive');
     for (const args of [['--help'], ['--version'], ['login', 'status'], ['-c', 'foo=true', 'doctor']]) expect(classifyTerminalArguments(args)).toBe('admin');
     for (const arg of ['exec', 'e', 'review', 'queue', 'app-server', 'remote-control', 'cloud', '--remote=unix://', '--no-daemon', '--remote-auth-token-env=TOKEN']) expect(() => classifyTerminalArguments([arg])).toThrow();
     expect(parseTerminalInvocation(['--real-binary', '/native', '--upstream-socket', '/sock', '--', 'resume', '--last'], {})).toEqual({ realBinary: '/native', upstreamSocket: '/sock', args: ['resume', '--last'], env: {} });
@@ -138,14 +194,14 @@ describe('terminal launch boundaries', () => {
     const { file, directory } = await socketFixture(); fs.writeFileSync(path.join(directory, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'fixture' } }));
     const calls = [], native = backend(), signalSource = new EventEmitter(); let client;
     const args = ['resume', '--last', '--no-alt-screen', '-C', directory];
-    const result = await runTerminalGateway({ realBinary: process.execPath, upstreamSocket: file, args,
+    const result = await runTerminalGateway({ realBinary: process.execPath, upstreamSocket: file, args, adaptProxy: async (proxy) => proxy,
       env: { CODEX_HOME: directory, OPENAI_API_KEY: 'removed' }, signalSource, diagnostics: new PassThrough(),
       gatewayOptions: { decide: async () => decision, verifyDecision: () => {}, receipt: () => {} },
       spawnNative: (command, actualArgs, options) => {
         calls.push({ command, args: actualArgs, options });
         if (actualArgs[0] === 'app-server') return native.child;
         const tui = new EventEmitter(); tui.kill = (signal) => tui.emit('exit', null, signal);
-        client = new WebSocket(`ws+unix://${actualArgs[1].slice(7)}:/`); client.on('error', () => {});
+        client = new WebSocket(`ws+unix://${actualArgs[1].slice(7)}:/rpc`); client.on('error', () => {});
         client.once('open', () => client.send(JSON.stringify({ id: 1, method: 'initialize', params: {} })));
         client.once('message', () => { client.terminate(); setImmediate(() => tui.emit('exit', 7, null)); });
         return tui;
@@ -161,10 +217,10 @@ describe('terminal launch boundaries', () => {
     for (const signal of [null, 'SIGHUP']) {
       const native = backend(), signalSource = new EventEmitter(); let client; const kills = [];
       const result = await runTerminalGateway({ realBinary: process.execPath, upstreamSocket: file, env: { CODEX_HOME: directory },
-        startupMs: 20, signalSource, diagnostics: new PassThrough(), spawnNative: (_command, args) => {
+        startupMs: 20, adaptProxy: async (proxy) => proxy, signalSource, diagnostics: new PassThrough(), spawnNative: (_command, args) => {
           if (args[0] === 'app-server') return native.child;
           const tui = new EventEmitter(); tui.kill = (received) => { kills.push(received); tui.emit('exit', null, received); };
-          client = new WebSocket(`ws+unix://${args[1].slice(7)}:/`); client.on('error', () => {});
+          client = new WebSocket(`ws+unix://${args[1].slice(7)}:/rpc`); client.on('error', () => {});
           if (signal) client.once('open', () => signalSource.emit(signal));
           return tui;
         } });
