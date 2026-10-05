@@ -24,6 +24,8 @@ current campaign and is finalized by the lead session before the next release cu
   retries, degraded-state warnings or integrity checks. Concurrent deduplication is best effort.
 - Refresh failures name the first required failed stage instead of optional failures or
   cleanup skips. Historical receipts and overall failure classification remain unchanged.
+- Transcript capture rejects directories on Windows and rechecks the opened file, preserving
+  unknown handling instead of misreading a directory as an empty completed turn.
 
 4.5.6 native terminal routing and continuity (released, installation-verified):
 
