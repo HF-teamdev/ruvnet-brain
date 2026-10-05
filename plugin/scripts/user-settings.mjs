@@ -106,6 +106,15 @@ export const SETTINGS_SCHEMA = Object.freeze([
   }),
 
   Object.freeze({
+    key: 'updateSource', label: 'Code source used by explicitly requested updates',
+    type: 'enum', options: Object.freeze(['latest', 'installed']), default: 'latest',
+    escalates: Object.freeze([]),
+    help: 'Latest uses the published updater; installed explicitly uses the verified installed updater.',
+    whyItMatters: 'This user-owned preference selects updater code, not corpus freshness or search scope. Consumers must read the canonical user settings path, never project overrides.',
+    downside: 'Installed mode may retain older updater code; if that updater is unavailable or invalid it must report failure rather than silently download or switch sources.',
+  }),
+
+  Object.freeze({
     key: 'groundingScope', label: 'Products that trigger conversational grounding',
     type: 'product-list', default: 'all', escalates: Object.freeze([]),
     help: 'All products, or a nonempty list such as ["ruvector", "metaharness"]. RuVector includes RVF and ruvector-postgres.',
