@@ -104,7 +104,7 @@ export function controlledClaudeArguments(decision, sessionId, resume = false) {
 }
 
 /** One native process per routed turn. Permission requests require an explicit host answer. */
-export async function runControlledClaudeTurn({ binary, prompt, sessionId = crypto.randomUUID(), resume = false,
+export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt = prompt, sessionId = crypto.randomUUID(), resume = false,
   cwd = process.cwd(), env = process.env, decide = decideNativeTurn, verifyDecision = validateDispatchDecision,
   checkSettings = validateClaudeTerminalSettings, checkAuth = assertSubscriptionAuth, spawnNative = spawn,
   probe = execFileSync, approve = async () => false, output = () => {}, receipt = appendGatewayReceipt,
@@ -119,7 +119,7 @@ export async function runControlledClaudeTurn({ binary, prompt, sessionId = cryp
   if (fs.existsSync(managed)) throw new Error('Managed Claude settings require separate module-boundary qualification.');
   checkSettings({ env: clean, cwd, home: env.HOME || os.homedir() });
   checkAuth('claude-code', { env: clean, probe: (_name, args, options) => probe(binary, args, options) });
-  const decision = await decide(prompt, 'claude-code', { env: clean });
+  const decision = await decide(decisionPrompt, 'claude-code', { env: clean });
   verifyDecision(decision);
   const args = controlledClaudeArguments(decision, sessionId, resume);
   if (signal?.aborted) throw new Error(REFUSED);
@@ -216,7 +216,7 @@ export async function runControlledClaudeTurn({ binary, prompt, sessionId = cryp
 
 /** Native tool approvals are presented by this host; --print supplies no terminal dialogs. */
 export async function launchControlledClaudeTerminal({ binary, args = [], input = process.stdin, output = process.stdout,
-  diagnostics = process.stderr, env = process.env, cwd = process.cwd(), runTurn = runControlledClaudeTurn,
+  diagnostics = process.stderr, env = process.env, cwd = process.cwd(), signalSource = process, runTurn = runControlledClaudeTurn,
   managedPrompt = runManagedPrompt } = {}) {
   let sessionId, resume = false, initialPrompt, ownerBypass = false;
   const remaining = [...args];
@@ -236,14 +236,16 @@ export async function launchControlledClaudeTerminal({ binary, args = [], input 
   const controller = new AbortController();
   const cancel = () => controller.abort();
   terminal.on('SIGINT', cancel);
+  for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) signalSource.on(name, cancel);
   diagnostics.write('Controlled Claude: one reviewed native allocation per prompt; tool approvals are answered here. Native Agent/Task workers are disabled; use the managed dispatcher for independent child work. /exit closes.\n');
   if (ownerBypass) diagnostics.write('Owner permission bypass is active: native tool requests are approved by this host automatically. Agent/Task remain refused; routing and subscription guards remain active.\n');
   try {
     while (!controller.signal.aborted) {
-      const prompt = initialPrompt ?? await terminal.question('Claude> '); initialPrompt = undefined;
+      const prompt = initialPrompt ?? await terminal.question('Claude> ', { signal: controller.signal }); initialPrompt = undefined;
       if (prompt.trim() === '/exit') break;
       if (!prompt.trim()) continue;
-      const turn = await managedPrompt({ binary, originalPrompt: prompt, harness: 'claude-code', projectRoot: cwd,
+      const deadline = Date.now() + 900000;
+      const turn = await managedPrompt({ binary, originalPrompt: prompt, harness: 'claude-code', projectRoot: cwd, deadline,
         nativeContext: { sessionId, resume }, permissions: { apiBilling: false, write: ownerBypass },
         primaryTurn: runTurn, cwd, env, signal: controller.signal,
         output: text => output.write(text + '\n'), approve: async request => {
@@ -251,12 +253,15 @@ export async function launchControlledClaudeTerminal({ binary, args = [], input 
           const details = cleanText(JSON.stringify({ tool: request.tool_name, input: request.input, reason: request.decision_reason }));
           output.write(`Native permission request (untrusted tool text):\n${details}\n`);
           if (ownerBypass) return true;
-          return (await terminal.question('Approve this tool request? Type yes: ')).trim() === 'yes';
+          return (await terminal.question('Approve this tool request? Type yes: ', { signal: controller.signal })).trim() === 'yes';
         } });
       sessionId = turn.sessionId; resume = true;
+      const actual = turn.modelObserved === true ? turn.decision : undefined;
+      const reviewer = turn.managedWorkflow?.executions?.find(item => item.workerId === 'independent-review');
+      if (actual?.model && actual?.effort) diagnostics.write(`Completed by ${cleanText(actual.model)} · applied ${cleanText(actual.effort)}${reviewer ? `; review ${cleanText(reviewer.observedModel)} · ${cleanText(reviewer.observedEffort)}` : ''}\n`);
       diagnostics.write(`Native session: ${sessionId} (resume with --resume ${sessionId})\n`);
     }
-  } finally { terminal.close(); }
+  } finally { controller.abort(); terminal.close(); for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) signalSource.removeListener(name, cancel); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

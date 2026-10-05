@@ -209,7 +209,7 @@ describe('controlled Claude native turn boundary', () => {
       input.isTTY = true; output.isTTY = true;
       let messages = '', observed;
       diagnostics.on('data', chunk => { messages += chunk; });
-      await expect(launchControlledClaudeTerminal({ args: [...flags, 'literal initial prompt'], input, output, diagnostics,
+      await expect(launchControlledClaudeTerminal({ args: [...flags, 'literal initial prompt'], input, output, diagnostics, env: { RUVNET_AGENTDB_FIRST: 'off' },
         runTurn: async options => {
           observed = options;
           expect(await options.approve({ tool_name: 'Write', input: {} })).toBe(true);
