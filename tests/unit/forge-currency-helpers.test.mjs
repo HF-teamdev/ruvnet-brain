@@ -26,6 +26,27 @@ describe('forge-currency.mjs — brainKnownSet() sources from the canonical stor
     expect(brainKnownSet(root).has('some-repo')).toBe(true);
   });
 
+  it('uses array SOURCE aliases from the explicit root without leaking checkout aliases', () => {
+    const root = sandbox();
+    fs.writeFileSync(path.join(root, 'foreign-store.rvf'), '');
+    fs.writeFileSync(path.join(root, 'SOURCE.json'), JSON.stringify({ stores: [
+      { kbName: 'Foreign-Alias', sourceRepo: 'ruvnet/Foreign-Repository.git' },
+    ] }));
+    expect([...brainKnownSet(root)].sort()).toEqual(['foreign-alias', 'foreign-repository', 'foreign-store']);
+  });
+
+  it('uses object SOURCE aliases and preserves RVF names when SOURCE is malformed or missing', () => {
+    const root = sandbox();
+    fs.writeFileSync(path.join(root, 'root-only.big.rvf'), '');
+    const source = path.join(root, 'SOURCE.json');
+    fs.writeFileSync(source, JSON.stringify({ stores: { one: { kbName: 'Object-Alias' } } }));
+    expect([...brainKnownSet(root)].sort()).toEqual(['object-alias', 'root-only']);
+    fs.writeFileSync(source, '{broken');
+    expect([...brainKnownSet(root)]).toEqual(['root-only']);
+    fs.unlinkSync(source);
+    expect([...brainKnownSet(root)]).toEqual(['root-only']);
+  });
+
   it('does not throw for a root that has not materialized', () => {
     expect(() => brainKnownSet(path.join(os.tmpdir(), `never-${Date.now()}`))).not.toThrow();
   });
