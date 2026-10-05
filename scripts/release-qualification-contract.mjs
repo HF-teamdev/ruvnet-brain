@@ -2,6 +2,11 @@
 export const RELEASE_REQUIREMENTS = Object.freeze({
   "source": [
     {
+      "id": "installer-release-argument-safety",
+      "reason": "Incomplete named releases refuse before network or settings writes; valid named releases and installer help retain their contracts",
+      "files": ["tests/unit/install-release-fallback.test.mjs"]
+    },
+    {
       "id": "honest-currency-lesson-and-metrics-evidence",
       "reason": "Foreign KB roots remain isolated; panel currency derives from measured completion rather than checkout time; exact lesson readback binds this shell-free write; public metrics never fabricate performance or a competing product score",
       "files": ["tests/unit/forge-currency-selected-root.test.mjs", "tests/unit/brain-score-producer.test.mjs", "tests/unit/brain-grade-groundtruth-timestamp.test.mjs", "tests/unit/record-lesson.test.mjs", "tests/unit/lesson-presentation-budget.test.mjs", "tests/unit/metrics-truth.test.mjs", "tests/unit/issue-watch-retry.test.mjs"]
