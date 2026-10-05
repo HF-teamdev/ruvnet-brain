@@ -68,6 +68,7 @@ export function validateWorkflowRequest(request, now = Date.now()) {
   requireValue(canonical(request.projectRoot), 'Canonical project root required');
   verifyContextRefs(request.contextRefs);
   requireValue(request.taskFacts && typeof request.taskFacts === 'object' && !Array.isArray(request.taskFacts), 'Explicit task facts required');
+  requireValue(!Object.hasOwn(request.taskFacts, 'verifiedTaskQualityFailure'), 'Quality failure facts must come from validated workflow evidence');
   requireValue(request.permissions && request.permissions.apiBilling === false && typeof request.permissions.write === 'boolean', 'Explicit permissions and no API billing required');
   requireValue(Number.isFinite(request.deadline) && request.deadline > now, 'Future absolute workflow deadline required');
   for (const field of ['maxAttempts', 'maxConcurrent']) requireValue(Number.isInteger(request[field]) && request[field] > 0 && request[field] <= 64, `Invalid global ${field}`);
@@ -115,7 +116,8 @@ export async function buildWorkflowPlan(request, { route, feedback, now = Date.n
   const workers = [];
   for (const task of tasksFor(request)) {
     const decision = await route({ originalPrompt: request.originalPrompt, contextRefs: request.contextRefs,
-      taskFacts: request.taskFacts, permissions: request.permissions, task, feedback });
+      taskFacts: request.taskFacts, permissions: request.permissions, task, feedback,
+      priorDecision: feedback?.priorDecisions?.[task.repairsTaskId ?? task.id] });
     workers.push({ id: task.id, activity: 'implementation', role: 'worker', host: decision.harness === 'claude-code' ? 'claude' : decision.harness,
       configuredModel: decision.model, configuredEffort: decision.effort, decision, taskFacts: request.taskFacts, dependsOn: task.dependsOn ?? [],
       ownership: task.ownership, acceptanceChecks: task.acceptanceChecks,
@@ -144,15 +146,17 @@ export function validateWorkflowPlan(request, plan, { verifyDecision = validateD
 }
 
 function blockedResult(result) {
-  return result.status === 'blocked' || result.status === 'cancelled'
+  return result.status !== 'succeeded'
     || STOP.test(`${result.exitCategory} ${result.failure?.reason ?? ''}`)
-    || (result.status === 'succeeded' ? result.exitCategory !== 'success'
-      : result.failure?.retrySafe !== true || !['worker_error', 'timeout', 'model_unavailable'].includes(result.exitCategory));
+    || result.exitCategory !== 'success';
 }
 
 function blockedEvidence(value) {
   return value?.status === 'blocked' || value?.uncertainEffects === true
+    || value?.exitCode === 126 || value?.exitCode === 127 || value?.timedOut === true || !!value?.signal
     || STOP.test(`${value?.exitCategory ?? ''} ${value?.reason ?? ''}`)
+    || value?.passed === false && (/environment|unavailable|not.found|missing.executable|enoent|spawn.error|timeout/i.test(`${value?.exitCategory ?? ''} ${value?.reason ?? ''}`)
+      || /ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)|command not found|No such file or directory|permission denied|authentication required|quota exhausted|ECONNREFUSED|EAI_AGAIN|ENOTFOUND/i.test(value?.output ?? ''))
     || [...(value?.evidence ?? []), ...(value?.findings ?? [])].some((item) => item && typeof item === 'object' && blockedEvidence(item));
 }
 
@@ -214,7 +218,11 @@ function guardAdapters(adapters, request, budget, now) {
       ...(adapter.handoffRequestFor ? { handoffRequestFor: (...args) => adapter.handoffRequestFor(...args) } : {}),
       interpret: (...args) => {
         const result = adapter.interpret(...args);
-        if (blockedResult(result)) { budget.blocked = true; abort.abort(); }
+        if (blockedResult(result)) {
+          budget.blocked = true;
+          // A safely retired native failure still yields its receipt; later launches are refused.
+          if (result.failure?.retrySafe !== true || STOP.test(`${result.exitCategory} ${result.failure?.reason ?? ''}`)) abort.abort();
+        }
         return result;
       } }];
   }));
@@ -238,7 +246,8 @@ function validateAcceptance(request, acceptance) {
   requireValue(new Set(expected).size === expected.length, 'Duplicate acceptance check ID');
   requireValue(expected.every((id) => acceptance.evidence.some((e) => `${e.taskId}:${e.checkId}` === id
     && typeof e.passed === 'boolean' && e.artifactDigest === acceptance.artifactDigest)), 'Acceptance coverage incomplete');
-  return acceptance.passed === true && acceptance.evidence.every((e) => e.passed === true);
+  requireValue(typeof acceptance.passed === 'boolean' && acceptance.passed === acceptance.evidence.every((e) => e.passed === true), 'Acceptance aggregate contradicts actual check evidence');
+  return acceptance.passed;
 }
 
 async function bounded(budget, operation) {
@@ -296,7 +305,8 @@ export async function runRoutingWorkflow(input, { route, createAdapters, execute
       await persist('stage-finished', { nativeReceipts: results.map(nativeReceipt) });
       writerExecuted ||= plan.workers.some((worker, index) => worker.ownership.mode === 'write'
         && results[index].status !== 'blocked');
-      if (budget.blocked || results.some(blockedResult)) return { ...await persist('blocked'), results };
+      if (budget.blocked || results.some(blockedResult)) return {
+        ...await persist('blocked', { reason: 'native-execution-failed-without-quality-evidence' }), results, executionReceipts };
       if (results.every((result) => result.status === 'succeeded')) {
         acceptance = await bounded(budget, (signal) => checkAcceptance({ request, plan, results, executionReceipts, signal }));
         if (blockedEvidence(acceptance)) return { ...await persist('blocked', { reason: 'acceptance-boundary-blocked' }), results, acceptance };
@@ -328,9 +338,14 @@ export async function runRoutingWorkflow(input, { route, createAdapters, execute
           if (verdict.passed === true && verdict.findings.length === 0) return { ...await persist('complete', {
             artifactDigest: acceptance.artifactDigest, acceptanceEvidence: acceptance.evidence,
             reviewerWorkerId: verdict.reviewerWorkerId, reviewEvidence: verdict.evidence }), results, executionReceipts, acceptance, review: verdict };
-          feedback = { acceptance, review: verdict };
-        } else feedback = { acceptance };
+          requireValue(verdict.findings.length > 0, 'Failed review requires specific quality defects');
+          feedback = { acceptance, review: verdict, verifiedTaskQualityFailure: true };
+        } else feedback = { acceptance, verifiedTaskQualityFailure: true };
       } else feedback = { results };
+      feedback.priorDecisions = Object.fromEntries(plan.workers.map((worker) => {
+        const task = tasksFor(executionRequest).find((entry) => entry.id === worker.id);
+        return [task.repairsTaskId ?? task.id, worker.decision];
+      }));
       if (writerExecuted || planRepair) {
         if (typeof planRepair !== 'function') return { ...await persist('blocked', { reason: 'unsafe-writer-replay-refused' }), results, executionReceipts, acceptance };
         const repair = await bounded(budget, (signal) => planRepair({ request, plan, results, acceptance, feedback,

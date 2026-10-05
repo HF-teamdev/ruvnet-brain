@@ -1,4 +1,5 @@
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
+import * as controlledClaude from '../../scripts/claude-controlled-terminal.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,7 +15,7 @@ function fixture(overrides = {}) {
     prompt: JSON.stringify({ originalPrompt: request.originalPrompt }) };
   const map = createGuardedWorkflowAdapters({ request, budget: { deadline: Date.now() + 10000 }, binaries: { codex: process.execPath, claude: process.execPath },
     verifyDecision: () => {}, executeNative: async () => ({ model: 'fixture-model', effort: 'medium', completed: true, sessionId: 'fixture-session', answer: '{"outcome":"done","artifacts":[],"decisions":[],"risks":[]}' }), ...overrides });
-  return { request, worker, adapter: map.codex };
+  return { request, worker, adapter: map.codex, claude: map.claude };
 }
 test('adapter conforms to actual runner lifecycle and requires native observation', async () => {
   const { worker, adapter } = fixture(); validateExecutionAdapter(adapter);
@@ -25,6 +26,40 @@ test('adapter conforms to actual runner lifecycle and requires native observatio
   assert.equal(result.providerProvenance, 'configured');
   assert.equal(adapter.summarize(state).outcome, 'done'); assert.deepEqual(await adapter.cleanup(state), { cleaned: true });
 });
+test('Claude workflow uses only the bound native final JSON after commentary', async () => {
+  const { worker, claude: adapter } = fixture({ executeNative: undefined });
+  worker.decision = { ...worker.decision, harness: 'claude-code', provider: 'anthropic' };
+  const finalAnswer = '{"outcome":"done","artifacts":[],"decisions":[],"risks":[]}';
+  const turn = { sessionId: crypto.randomUUID(), decision: worker.decision, finalAnswer,
+    modelObserved: true, effortSettingsObserved: true };
+  const native = vi.spyOn(controlledClaude, 'runControlledClaudeTurn').mockImplementation(async options => {
+    options.output?.('I will inspect the source.');
+    options.output?.(finalAnswer);
+    options.receipt({ status: 'completed', model: worker.decision.model, effort: worker.decision.effort });
+    return turn;
+  });
+  try {
+    const state = await adapter.prepare({ worker, timeoutMs: 5000 });
+    await adapter.launch(state);
+    const observation = await adapter.observe(state);
+    assert.equal(observation.answer, finalAnswer);
+    assert.equal(observation.sessionId, turn.sessionId);
+    assert.equal(adapter.interpret(state, observation).status, 'succeeded');
+    assert.equal(adapter.summarize(state).outcome, 'done');
+    for (const override of [{ finalAnswer: undefined }, { finalAnswer: {} },
+      { decision: { ...worker.decision, model: 'other' } }, { effortSettingsObserved: false }]) {
+      native.mockResolvedValueOnce({ ...turn, ...override });
+      const rejected = await adapter.prepare({ worker, timeoutMs: 5000 });
+      await adapter.launch(rejected);
+      assert.equal(adapter.interpret(rejected, await adapter.observe(rejected)).status, 'blocked');
+    }
+    native.mockResolvedValueOnce({ ...turn, finalAnswer: 'malformed final JSON' });
+    const malformed = await adapter.prepare({ worker, timeoutMs: 5000 });
+    await adapter.launch(malformed);
+    assert.throws(() => adapter.summarize(malformed), /missing or malformed/);
+  } finally { native.mockRestore(); }
+});
+
 test('exit success without observed model or completion cannot succeed', async () => {
   for (const observation of [{ model: 'other', effort: 'medium', completed: true }, { model: 'fixture-model', effort: 'medium', completed: false }]) {
     const { worker, adapter } = fixture({ executeNative: async () => observation });

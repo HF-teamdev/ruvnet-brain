@@ -87,7 +87,9 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/qualified-candidate-check.test.mjs",
         "tests/unit/release-qualification.test.mjs",
         "tests/unit/development-push-boundary.test.mjs",
-        "tests/unit/protected-release-workflow.test.mjs"
+        "tests/unit/protected-release-workflow.test.mjs",
+        "tests/unit/agentic-qe-early-public.test.mjs",
+        "tests/unit/release-evidence-dag.test.mjs"
       ]
     },
     {
@@ -218,7 +220,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       "id": "qualification-topology",
       "reason": "Release promotion consumes qualified exact-source receipts and preserves required contexts",
       "files": [
-        "tests/unit/qualify-once-workflow.test.mjs"
+        "tests/unit/qualify-once-workflow.test.mjs",
+        "tests/unit/architecture-review-lock.test.mjs"
       ]
     },
     {

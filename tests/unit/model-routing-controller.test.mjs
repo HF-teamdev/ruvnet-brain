@@ -163,7 +163,10 @@ test('bounded gate repair recomputes decisions with original facts and shares at
     let gates = 0, routes = 0;
     const b = boundaries(f, {
       route: async ({ originalPrompt, taskFacts, feedback }) => { routes++; assert.equal(originalPrompt, f.request.originalPrompt);
-        assert.deepEqual(taskFacts, f.request.taskFacts); if (routes > 1) assert.equal(feedback.acceptance.passed, false); return decision; },
+        assert.deepEqual(taskFacts, f.request.taskFacts); if (routes > 1) {
+          assert.equal(feedback.acceptance.passed, false); assert.equal(feedback.verifiedTaskQualityFailure, true);
+          assert.deepEqual(feedback.priorDecisions.work, decision);
+        } return decision; },
       checkAcceptance: async () => { gates++; const a = f.acceptance(); if (gates === 1) { a.passed = false; a.evidence[0].passed = false; } return a; },
     });
     const result = await runRoutingWorkflow(f.request, b.options);
@@ -171,6 +174,43 @@ test('bounded gate repair recomputes decisions with original facts and shares at
     f.request.maxAttempts = 2; gates = 0; routes = 0;
     const bounded = await runRoutingWorkflow(f.request, b.options);
     assert.equal(bounded.status, 'blocked'); assert.equal(bounded.attemptsUsed, 1); assert.equal(routes, 1);
+  } finally { f.cleanup(); }
+});
+
+test('environment-only worker or checker failures never schedule a repair, and caller quality claims are refused', async () => {
+  const f = fixture(); try {
+    const forged = { ...f.request, taskFacts: { verifiedTaskQualityFailure: true } };
+    assert.throws(() => validateWorkflowRequest(forged), /validated workflow evidence/);
+    for (const error of [{ reason: 'environment-unavailable' }, { exitCode: 127 }, { signal: 'SIGTERM' },
+      { output: "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'missing'" }, { reason: 'permission_required' }]) {
+      let repairs = 0;
+      const b = boundaries(f, { checkAcceptance: async () => {
+        const a = f.acceptance(); a.passed = false; Object.assign(a.evidence[0], { passed: false }, error); return a;
+      }, planRepair: async () => { repairs++; throw new Error('Must not repair environment'); } });
+      const result = await runRoutingWorkflow(f.request, b.options);
+      assert.equal(result.status, 'blocked'); assert.equal(repairs, 0);
+      assert.equal(b.log.filter(([phase]) => phase === 'launch').length, 1);
+    }
+    for (const category of ['worker_error', 'timeout', 'model_unavailable']) {
+      let routes = 0;
+      const log = [], b = boundaries(f, { route: async () => { routes++; return decision; },
+        createAdapters: async () => adapters(log, { status: 'failed', exitCategory: category,
+          failure: { reason: 'native environment unavailable', retrySafe: true } }) });
+      assert.equal((await runRoutingWorkflow(f.request, b.options)).status, 'blocked'); assert.equal(routes, 1);
+      assert.equal(log.filter(([phase]) => phase === 'launch').length, 1);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('passing expected-denial checks retain success even when output contains environment error examples', async () => {
+  const f = fixture(); try {
+    const b = boundaries(f, { checkAcceptance: async () => {
+      const a = f.acceptance(); Object.assign(a.evidence[0], { exitCode: 0,
+        output: "Expected refusals: permission denied; Cannot find module; command not found; quota exhausted" }); return a;
+    } });
+    const result = await runRoutingWorkflow(f.request, b.options);
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(b.log.filter(([phase]) => phase === 'launch').map(([, id]) => id), ['work', 'independent-review']);
   } finally { f.cleanup(); }
 });
 
@@ -213,7 +253,7 @@ test('successful writer A runs once when B fails; original DAG replay is blocked
         : interpret(state); return map;
     } });
     const result = await runRoutingWorkflow(f.request, b.options);
-    assert.equal(result.status, 'blocked'); assert.equal(result.reason, 'unsafe-writer-replay-refused');
+    assert.equal(result.status, 'blocked'); assert.equal(result.reason, 'native-execution-failed-without-quality-evidence');
     assert.deepEqual(log.filter(([phase]) => phase === 'launch').map(([, id]) => id), ['writer-a', 'worker-b']);
     assert.equal(result.executionReceipts[0].results[0].status, 'succeeded');
   } finally { f.cleanup(); }

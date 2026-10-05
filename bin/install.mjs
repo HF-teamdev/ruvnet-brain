@@ -14,6 +14,7 @@
 import { downloadFileWithRetry, httpsJsonWithRetry } from '../kb/download-retry.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
+import { installCodexConsoleAlias } from '../plugin/scripts/codex-console-alias.mjs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { readAll as readAllReadiness, aggregate as aggregateReadiness } from '../plugin/scripts/mcp-readiness.mjs';
@@ -2000,6 +2001,7 @@ export function wireCodexPlugin({
   cwd = process.cwd(),
   announce = true,
   runJson = runCodexJson,
+  aliasHome,
 } = {}) {
   if (!fs.existsSync(codexDir)) return { host: false, action: 'no-host' };
   const options = { codexBin, codexHome, cwd };
@@ -2023,6 +2025,11 @@ export function wireCodexPlugin({
   if (before.installed && !before.enabled) {
     if (announce) warn(`Codex Brain plugin is installed but disabled by user or policy — left disabled (${CODEX_PLUGIN_ID}).`);
     return { host: true, action: 'disabled', ...before };
+  }
+  // Explicit alternate homes support isolated host qualification; metadata-only injected probes
+  // must not write the real user's skill directory.
+  if (aliasHome !== undefined || (runJson === runCodexJson && codexHome === codexHomeDir())) {
+    installCodexConsoleAlias({ home: aliasHome ?? os.homedir(), codexHome });
   }
   // An existing Codex session can keep the plugin generation it loaded at boot. Compare the
   // installed bytes with the source candidate before mutating the marketplace so body-only updates

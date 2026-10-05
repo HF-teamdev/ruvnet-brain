@@ -186,13 +186,14 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       }
       if (message.session_id && message.session_id !== sessionId) return fail();
       if (message.type === 'assistant' && !message.parent_tool_use_id) {
-        if (phase !== 'turn' || message.message?.model !== decision.model) return fail();
+        if (phase !== 'turn' || message.session_id !== sessionId || message.message?.model !== decision.model) return fail();
         observed = true;
         for (const block of message.message.content || []) if (block.type === 'text') assistantText.push(cleanText(block.text));
       }
       if (message.type === 'result') {
         if (phase !== 'turn' || permissions || !observed || message.session_id !== sessionId || message.subtype !== 'success' ||
-            message.is_error || message.permission_denials?.length || message.errors?.length) return fail();
+            message.is_error !== false || typeof message.result !== 'string' || !message.result.trim() ||
+            message.permission_denials?.length || message.errors?.length) return fail();
         result = message; control('after');
       }
     };
@@ -213,13 +214,14 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       if (code !== 0 || phase !== 'exit' || !result || buffer.trim() || decoder.end()) return fail();
       try {
         await assertModelRoutingText(assistantText.join('\n'));
+        await assertModelRoutingText(result.result);
         if (done || expired()) return fail();
         for (const text of assistantText) { if (expired()) return fail(); output(text); }
         if (expired()) return fail();
         receipt({ ts: new Date().toISOString(), harness: 'claude-code', status: 'completed', model: decision.model,
           effort: decision.effort, taskClass: decision.taskClass, modelObserved: true,
           evidence: 'assistant model observed; get_settings applied effort matched before and after turn; per-request effort not exposed' }, { env: clean });
-        done = true; clear(); resolve({ sessionId, decision, modelObserved: true, effortSettingsObserved: true, perRequestEffortObserved: false });
+        done = true; clear(); resolve({ sessionId, decision, finalAnswer: result.result, modelObserved: true, effortSettingsObserved: true, perRequestEffortObserved: false });
       } catch { fail(); }
     });
     control('initialize');

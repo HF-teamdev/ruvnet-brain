@@ -38,11 +38,25 @@ function ownedFile(root, relative) {
   return target;
 }
 
-async function managedRoute({ originalPrompt, taskFacts, harness }) {
-  const profile = loadProfile(), candidates = applyProfile(loadCatalog(), profile), policy = await loadPolicy();
-  const decision = await selectDecision({ prompt: originalPrompt, harness, candidates, profile, policy,
-    features: extractFeatures(originalPrompt, harness, taskFacts), learnedRoute: async () => ({ routedBy: 'policy-only' }) });
-  decision.harness = harness; validateDispatchDecision(decision); return decision;
+export async function managedRoute({ originalPrompt, taskFacts, harness, feedback, priorDecision },
+  { readProfile = loadProfile, readCatalog = loadCatalog, readPolicy = loadPolicy,
+    decide = selectDecision, verifyDecision = validateDispatchDecision } = {}) {
+  const profile = readProfile(), candidates = applyProfile(readCatalog(), profile), policy = await readPolicy();
+  assert(!Object.hasOwn(taskFacts ?? {}, 'verifiedTaskQualityFailure'), 'Quality failure facts require validated controller feedback');
+  const facts = feedback?.verifiedTaskQualityFailure === true
+    ? { ...taskFacts, verifiedTaskQualityFailure: true } : taskFacts;
+  const decision = await decide({ prompt: originalPrompt, harness, candidates, profile, policy,
+    features: extractFeatures(originalPrompt, harness, facts), learnedRoute: async () => ({ routedBy: 'policy-only' }) });
+  decision.harness = harness; verifyDecision(decision);
+  if (feedback?.verifiedTaskQualityFailure === true) {
+    const classes = ['fast', 'medium', 'substantial', 'hard', 'exceptional'], efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+    assert(priorDecision && priorDecision.harness === harness, 'Verified repair requires the actual prior scoped route');
+    const stronger = decision.model === priorDecision.model
+      ? efforts.indexOf(decision.effort) > efforts.indexOf(priorDecision.effort)
+      : classes.indexOf(decision.taskClass) > classes.indexOf(priorDecision.taskClass);
+    assert(stronger, 'No stronger eligible owner-approved native repair route; same or weaker route refused');
+  }
+  return decision;
 }
 
 /** Only host-defined commands enter the registry. Generated text can select IDs, never command strings. */
@@ -122,7 +136,7 @@ export async function planManagedTask(input, { route = managedRoute, runPlanner 
   const prompt = JSON.stringify({ originalPrompt: request.originalPrompt, nativeContext: request.nativeContext,
     contextRefs: request.contextRefs, permissions: { ...request.permissions, write: false }, allowedWorktrees: request.allowedWorktrees,
     taskFacts: request.taskFacts, deadline: request.deadline, untrustedMemoryData: request.memoryRecall,
-    instruction: 'Read the actual project context. Return only bounded JSON {"tasks":[{"id":"work","instructions":"specific task","dependsOn":[],"mode":"read or write under original host authority","worktree":"an allowed absolute worktree","paths":["exact relative files"],"checkIds":["preexisting checker ID"]}]}. Default one task and at most one writer. Never invent commands, checker IDs, access, or availability. You are read-only; original implementation authority is ' + JSON.stringify(request.permissions),
+    instruction: 'Read the actual project context. Return only bounded JSON {"tasks":[{"id":"work","instructions":"specific task","dependsOn":[],"mode":"read","worktree":"an allowed absolute worktree","paths":["exact relative files"],"checkIds":["preexisting checker ID"]}]}. The mode field must be exactly "read" or "write"; choose "write" only under the original host write authority. Default one task and at most one writer. Never invent commands, checker IDs, access, or availability. You are read-only; original implementation authority is ' + JSON.stringify(request.permissions),
     checkers: checks.registry.map(({ id, kind, args, cwd }) => ({ id, kind, args, cwd })) });
   const observed = await runPlanner({ request: { ...request, permissions: { ...request.permissions, write: false } }, decision, prompt,
     ownership: { mode: 'read', worktree: request.projectRoot, paths: [] }, role: 'planner', id: 'native-planner',
@@ -277,7 +291,7 @@ export async function executeManagedWorkflow(input, { route = managedRoute, crea
     return { ...verdict, independent: true, reviewerWorkerId: worker.id, sessionId: result.sessionId };
   };
   const planRepair = async ({ acceptance, feedback }) => {
-    assert(acceptance && !feedback.review?.findings?.some((item) => /auth|quota|consent|uncertain|policy/i.test(JSON.stringify(item))), 'Uncertain repair boundary');
+    assert(acceptance && !feedback.review?.findings?.some((item) => /auth|quota|consent|uncertain|policy|environment|unavailable|missing.executable/i.test(JSON.stringify(item))), 'Uncertain repair boundary');
     const original = request.tasks.find((task) => task.ownership.mode === 'write'); assert(original, 'No writing repair authority');
     const refs = acceptance.artifactRefs.filter((ref) => original.ownership.paths.some((file) => ref.path === ownedFile(original.ownership.worktree, file)));
     assert(refs.length > 0, 'Prior writing artifact references missing');

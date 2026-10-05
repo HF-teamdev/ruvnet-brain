@@ -233,13 +233,13 @@ export function createGuardedWorkflowAdapters({ request, budget, env = process.e
             if (write) state.observation.appliedArtifacts = applyOwnedCodexEdits(state.worker, state.observation.answer, { signal: state.signal, deadline: budget.deadline });
           }
           else {
-            const output = [], receipts = [];
+            const receipts = [];
             const turn = await runControlledClaudeTurn({ ...state, prompt: state.worker.prompt + (state.worker.reviewContract ? '\n' + state.worker.reviewContract : ''), env,
               decide: async () => state.decision, approve: async permission => ownedPermission(request, state.worker, permission),
-              output: text => output.push(text), receipt: value => receipts.push(value) });
-            const observed = receipts.find(value => value.status === 'completed');
-            state.observation = { model: observed?.model, effort: observed?.effort,
-              sessionId: turn.sessionId, completed: Boolean(observed), answer: output.join('\n'),
+              receipt: value => receipts.push(value) });
+            if (typeof turn.finalAnswer !== 'string' || !turn.finalAnswer.trim()) throw blocked('Native final answer unavailable');
+            state.observation = { model: turn.decision?.model, effort: turn.decision?.effort,
+              sessionId: turn.sessionId, completed: turn.modelObserved === true && turn.effortSettingsObserved === true, answer: turn.finalAnswer,
               evidence: receipts, effortEvidence: 'Native settings observed before and after; per-request effort not exposed' };
           }
           if (state.observation?.completed && state.observation.model === state.decision.model && state.observation.effort === state.decision.effort) {

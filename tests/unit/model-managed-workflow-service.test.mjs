@@ -6,8 +6,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { planManagedTask, executeManagedWorkflow, captureCheckerRegistry, runRegisteredChecker,
+import { managedRoute, planManagedTask, executeManagedWorkflow, captureCheckerRegistry, runRegisteredChecker,
   commitManagedReceipt } from '../../scripts/model-managed-workflow-service.mjs';
+import { selectDecision } from '../../scripts/model-router-engine.mjs';
+import * as routingPolicy from '../../config/model-router/policy.default.mjs';
+import { artifactDigest } from '../../scripts/model-routing-controller.mjs';
 const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const decision = { harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium', provider: 'openai' };
 function fixture(write = false) {
@@ -41,12 +44,14 @@ function executor(log, alter) {
       const answer = state.worker.role === 'reviewer'
         ? JSON.stringify({ passed: true, artifactDigest: canonical.acceptance.artifactDigest, findings: [], evidence: ['Inspected exact referenced artifacts'] })
         : JSON.stringify({ outcome: 'Completed from actual source context', artifacts: [], decisions: [], risks: [] });
-      state.observed = { completed: true, model: decision.model, effort: decision.effort, sessionId: `session-${state.worker.id}`, answer };
+      state.observed = { completed: true, model: state.worker.configuredModel, effort: state.worker.configuredEffort,
+        sessionId: `session-${state.worker.id}`, answer };
       alter?.(state); captureObservation(state.worker, state.observed); return state;
     }, observe: async (state) => state.observed,
     interpret: (state) => ({ workerId: state.worker.id, activity: state.worker.activity, role: state.worker.role, host: 'codex',
       status: 'succeeded', exitCategory: 'success', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), durationMs: 0,
-      provider: 'openai', providerProvenance: 'observed', configuredModel: decision.model, observedModel: decision.model,
+      provider: 'openai', providerProvenance: 'observed', configuredModel: state.worker.configuredModel,
+      observedModel: state.observed.model, configuredEffort: state.worker.configuredEffort, observedEffort: state.observed.effort,
       sessionId: state.observed.sessionId, transcriptRefs: [], failure: null, usage: null }),
     summarize: () => ({ outcome: 'Done', artifacts: [], decisions: [], risks: [] }), cancel: async () => ({}), cleanup: async () => ({}),
   } });
@@ -64,6 +69,19 @@ test('one native read-only planner preserves full host context and captured trus
     assert.equal(plan.request.tasks.length, 1); assert.equal(Object.isFrozen(plan.request.checkerRegistry), true);
     const captured = captureCheckerRegistry(f.root); assert.equal(captured.registry.length, 3);
     assert.ok(captured.registry.filter((c) => c.kind === 'command').every((c) => !c.script.includes('curl')));
+  } finally { f.cleanup(); }
+});
+
+test('native planner contract contains a valid example and exact mode enum rather than an authority phrase', async () => {
+  const f = fixture(); try {
+    await planManagedTask(f.input, { route: async () => decision, runPlanner: async (input) => {
+      const { instruction } = JSON.parse(input.prompt);
+      const example = JSON.parse(instruction.match(/\{"tasks":.*?\}\]\}/)[0]);
+      assert.equal(example.tasks[0].mode, 'read');
+      assert.ok(instruction.includes('mode field must be exactly "read" or "write"'));
+      assert.ok(!instruction.includes('"mode":"read or write under original host authority"'));
+      return planner(f)(input);
+    } });
   } finally { f.cleanup(); }
 });
 
@@ -160,12 +178,81 @@ test('scoped repair maps successful final result back to original task without r
   const f = fixture(true); try {
     const plan = await planManagedTask(f.input, { route: async () => decision, runPlanner: planner(f) });
     let checks = 0; const log = [];
-    const result = await executeManagedWorkflow(plan.request, { route: async () => decision, createAdapters: executor(log),
+    const routes = [];
+    const result = await executeManagedWorkflow(plan.request, { route: async (ctx) => {
+      routes.push(ctx); return decision;
+    }, createAdapters: executor(log),
       check: async () => ({ passed: ++checks > 1, exitCode: checks > 1 ? 0 : 1 }),
       verifyDecision: () => {}, recordReceipt: async () => ({ durable: true }) });
     assert.equal(result.status, 'complete'); assert.equal(result.results[0].workerId, 'work');
     assert.ok(result.results[0].executedWorkerId.startsWith('repair-')); assert.equal(result.results[0].exitCategory, 'success');
     assert.equal(log.filter((id) => id === 'work').length, 1); assert.equal(log.length, 3);
+    assert.equal(routes[0].feedback, undefined);
+    assert.equal(routes[1].feedback.verifiedTaskQualityFailure, true);
+    assert.deepEqual(routes[1].priorDecision, decision); assert.deepEqual(routes[1].taskFacts, f.input.taskFacts);
+    assert.equal(routes[1].feedback.acceptance.artifactDigest, artifactDigest(routes[1].feedback.acceptance.artifactRefs));
+  } finally { f.cleanup(); }
+});
+
+test('verified quality repair dynamically selects the approved eligible hard route and refuses an unchanged route', async () => {
+  const profile = { harnesses: { codex: { available: true, subscription: true } } };
+  const candidates = ['routine-fixture', 'strong-fixture'].map((id) => ({ id, provider: 'openai',
+    harness: ['codex'], subscription: ['codex'], supportedEfforts: ['medium', 'high'] }));
+  const selection = { schemaVersion: 1, reviewedAt: new Date().toISOString(), routes: { codex: {
+    medium: { model: 'routine-fixture', effort: 'medium' }, hard: { model: 'strong-fixture', effort: 'high' } } } };
+  const deps = { readProfile: () => profile, readCatalog: () => candidates, readPolicy: async () => routingPolicy,
+    decide: (input) => selectDecision({ ...input, selection }), verifyDecision: () => {} };
+  const input = { originalPrompt: 'Fix this routine task', harness: 'codex', taskFacts: { taskType: 'coding', scope: 'routine' } };
+  const ordinary = await managedRoute(input, deps);
+  assert.equal(ordinary.model, 'routine-fixture'); assert.equal(ordinary.effort, 'medium');
+  const repairInput = { ...input, feedback: { verifiedTaskQualityFailure: true }, priorDecision: ordinary };
+  const repair = await managedRoute(repairInput, deps);
+  assert.equal(repair.model, 'strong-fixture'); assert.equal(repair.effort, 'high'); assert.equal(repair.taskClass, 'hard');
+  await assert.rejects(managedRoute({ ...repairInput, priorDecision: repair }, deps), /No stronger eligible owner-approved/);
+  selection.routes.codex.hard = { model: 'routine-fixture', effort: 'high' };
+  assert.equal((await managedRoute(repairInput, deps)).effort, 'high');
+  selection.routes.codex.hard = { model: 'routine-fixture', effort: 'medium' };
+  await assert.rejects(managedRoute(repairInput, deps), /No stronger eligible owner-approved/);
+  selection.routes.codex.hard = { model: 'unavailable-fixture', effort: 'high' };
+  await assert.rejects(managedRoute(repairInput, deps), /unavailable or unauthorized/);
+  await assert.rejects(managedRoute({ ...input, taskFacts: { verifiedTaskQualityFailure: true } }, deps), /validated controller feedback/);
+});
+
+test('actual independent review defects reach the classifier and a stronger scoped repair still needs fresh review', async () => {
+  const f = fixture(true); try {
+    const profile = { harnesses: { codex: { available: true, subscription: true } } };
+    const candidates = ['ordinary-fixture', 'reasoning-fixture'].map((id) => ({ id, provider: 'openai',
+      harness: ['codex'], subscription: ['codex'] }));
+    const selection = { schemaVersion: 1, reviewedAt: new Date().toISOString(), routes: { codex: {
+      medium: { model: 'ordinary-fixture', effort: 'medium' }, hard: { model: 'reasoning-fixture', effort: 'high' } } } };
+    const routes = [], route = async (ctx) => {
+      const picked = await managedRoute(ctx, { readProfile: () => profile, readCatalog: () => candidates,
+        readPolicy: async () => routingPolicy, decide: (input) => selectDecision({ ...input, selection }), verifyDecision: () => {} });
+      routes.push({ ctx, picked }); return picked;
+    };
+    const plan = await planManagedTask(f.input, { route: async () => decision, runPlanner: planner(f) });
+    const log = []; let reviews = 0;
+    const result = await executeManagedWorkflow(plan.request, { route, check: async () => ({ passed: true, exitCode: 0 }),
+      createAdapters: executor(log, (state) => {
+        const packet = JSON.parse(state.worker.prompt);
+        assert.equal(packet.originalPrompt, f.input.originalPrompt); assert.deepEqual(packet.contextRefs, f.input.contextRefs);
+        if (state.worker.role === 'reviewer') {
+          state.observed.sessionId = `independent-review-session-${++reviews}`;
+          if (reviews === 1) state.observed.answer = JSON.stringify({ passed: false,
+            artifactDigest: packet.acceptance.artifactDigest, findings: ['Original artifact omits a required case'], evidence: ['Inspected work.mjs'] });
+        } else {
+          assert.deepEqual(packet.permissions, f.input.permissions); assert.equal(packet.deadline, f.input.deadline);
+        }
+      }), verifyDecision: () => {}, recordReceipt: async () => ({ durable: true }) });
+    assert.equal(result.status, 'complete'); assert.equal(result.attemptsUsed, 4); assert.equal(reviews, 2);
+    assert.deepEqual(log.filter((id) => !id.startsWith('repair-')), ['work', 'independent-review', 'independent-review']);
+    const repair = routes.find(({ ctx }) => ctx.task?.repairsTaskId);
+    assert.equal(repair.ctx.feedback.verifiedTaskQualityFailure, true);
+    assert.equal(repair.ctx.feedback.review.independent, true);
+    assert.equal(repair.ctx.priorDecision.model, 'ordinary-fixture');
+    assert.equal(repair.picked.model, 'reasoning-fixture'); assert.equal(repair.picked.effort, 'high');
+    assert.equal(result.executionReceipts[1].results[0].observedModel, 'reasoning-fixture');
+    assert.equal(result.review.sessionId, 'independent-review-session-2');
   } finally { f.cleanup(); }
 });
 
