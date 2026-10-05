@@ -3,7 +3,7 @@ import path from 'node:path';
 import { constants } from 'node:buffer';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { adoptedProject, tmp, cleanup } from '../helpers/continuity-fixture.mjs';
+import { adoptedProject, tmp, cleanup, fakeRuflo } from '../helpers/continuity-fixture.mjs';
 import { ProgressionOutbox } from '../../plugin/scripts/project-progression-outbox.mjs';
 import { ProjectProgressionStore, projectResumePayloadToBound } from '../../plugin/scripts/project-progression-store.mjs';
 import { enrichStateWithObservation } from '../../plugin/scripts/project-progression-hook.mjs';
@@ -78,7 +78,7 @@ describe('canonical bounded restore #389', () => {
     const row = createProgressionSnapshot({ projectIdentity: resolution.projectIdentity, sourceIdentity: { checkoutPath: dir, worktreeId: 'a', branch: 'main', head: 'a', trackedDigest: 'a', untrackedDigest: 'a', dirtyTreeDigest: 'a' }, hostIdentity: { host: 'codex', adapterVersion: 'test' }, sessionIdentity: 's', sequence: 1, occurredAt: '2026-10-04T00:00:00Z', trigger: 'Stop', parentEventKeys: [], dedupId: 'bounded', completeProjectState: state });
     const content = JSON.stringify(row); const db = new DatabaseSync(resolution.canonicalAgentDbPath);
     db.prepare('INSERT INTO memory_entries (id,key,namespace,content,status) VALUES (?,?,?,?,?)').run('id', row.eventKey, 'project-progression', content, 'active');
-    const store = new ProjectProgressionStore({ projectDir: dir, runner: () => { throw new Error('native reader must not use CLI fallback'); } });
+    const store = new ProjectProgressionStore({ projectDir: dir, rufloBinary: fakeRuflo().bin, runner: () => { throw new Error('native reader must not use CLI fallback'); } });
     const restored = store.restoreLatest({ replayPending: false, projectToBound: true, maxOutputBytes: 7700 });
     expect(restored.projected).toBe(true); expect(restored.payload.evidence).toMatchObject({ exactRetrieved: 1, readPath: 'node:sqlite' });
     expect(restored.payload.heads).toEqual([row.eventKey]); expect(restored.payload.state).toMatchObject({ currentGoal: 'goal', nextAction: 'action', observations: { omitted: true, count: 100, sha256: digestCanonical(state.observations) } });

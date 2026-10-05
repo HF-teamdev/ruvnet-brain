@@ -4951,8 +4951,9 @@ export function syncManagedRouterTools({ routerDir = path.join(os.homedir(), '.c
     finally { fs.rmSync(temporary, { force: true }); }
     copied++;
   }
-  // Preserve the package-relative import used by the optional legacy routing helper.
-  const runtimeRelative = path.join('plugin', 'scripts', 'runtime-preferences.mjs');
+  // Preserve package-relative imports without replacing user policy.mjs overrides.
+  for (const runtimeRelative of [path.join('plugin', 'scripts', 'runtime-preferences.mjs'),
+    path.join('config', 'model-router', 'policy.default.mjs')]) {
   const runtimeTarget = path.join(routerDir, runtimeRelative);
   const runtimeBytes = fs.readFileSync(path.join(packageRoot, runtimeRelative));
   if (!fs.existsSync(runtimeTarget) || !fs.readFileSync(runtimeTarget).equals(runtimeBytes)) {
@@ -4961,6 +4962,7 @@ export function syncManagedRouterTools({ routerDir = path.join(os.homedir(), '.c
     try { fs.writeFileSync(temporary, runtimeBytes, { mode: 0o600 }); fs.renameSync(temporary, runtimeTarget); }
     finally { fs.rmSync(temporary, { force: true }); }
     copied++;
+  }
   }
   const qualificationSource = path.join(packageRoot, 'config', 'model-router', 'qualification-contract.json');
   const qualificationTarget = path.join(routerDir, 'qualification-contract.json');

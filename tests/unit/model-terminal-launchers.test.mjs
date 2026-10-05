@@ -5,6 +5,7 @@ import net from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { describe, it, expect, afterEach } from 'vitest';
 import { installTerminalLaunchers, terminalShellPlan, terminalInvocation, resolveTerminalUpstream,
   runClaudeTerminal, validateClaudeReadiness, validateClaudeTerminalSettings, validateClaudeTerminalArguments,
@@ -31,7 +32,9 @@ describe('per-user native terminal installation', () => {
     expect(fs.existsSync(planned.configPath)).toBe(false);
     const nativeBefore = fs.readFileSync(process.execPath);
     const installed = installTerminalLaunchers({ ...options(home), realClaude: process.execPath, apply: true });
-    expect(fs.readFileSync(process.execPath)).toEqual(nativeBefore);
+    const nativeAfter = fs.readFileSync(process.execPath);
+    expect(nativeAfter.length).toBe(nativeBefore.length);
+    expect(createHash('sha256').update(nativeAfter).digest('hex')).toBe(createHash('sha256').update(nativeBefore).digest('hex'));
     expect(fs.readFileSync(zshrc, 'utf8')).toContain(original);
     expect(fs.readFileSync(installed.shellSource, 'utf8')).not.toContain('function');
     expect(installed.backups.some((file) => fs.readFileSync(file, 'utf8') === original)).toBe(true);

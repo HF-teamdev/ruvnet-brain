@@ -9,7 +9,6 @@ import { EventEmitter } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { WebSocketServer, WebSocket } from 'ws';
 import { connectNativeGateway, decideNativeTurn, nativeGatewayLaunch } from './model-routing-gateway.mjs';
 import { subscriptionEnvironment, assertSubscriptionAuth } from './model-router-dispatch.mjs';
 
@@ -73,6 +72,7 @@ function jsonPacket(text) {
 
 /** Official proxy is a byte tunnel: perform the daemon's /rpc WebSocket handshake over its stdio. */
 export async function connectProxyWebSocket(proxy, { startupMs = 10000, maxBytes = MAX_TERMINAL_BYTES } = {}) {
+  const { WebSocket } = await import('ws');
   const tunnel = Duplex.from({ readable: proxy.stdout, writable: proxy.stdin });
   // createConnection always returns the owned tunnel; even the placeholder endpoint is Unix-only.
   const ws = new WebSocket('ws+unix:///native-proxy:/rpc', { createConnection: () => tunnel,
@@ -139,6 +139,7 @@ export async function connectProxyWebSocket(proxy, { startupMs = 10000, maxBytes
 /** Real HTTP/WebSocket framing over one private Unix socket, converted to native JSONL streams. */
 export async function createTerminalTransport({ child, diagnostics = process.stderr, gatewayOptions = {},
   tempRoot = '/private/tmp', maxBytes = MAX_TERMINAL_BYTES, startupMs = 10000, onFailure = () => {} } = {}) {
+  const { WebSocketServer, WebSocket } = await import('ws');
   if (!child?.stdin || !child?.stdout) throw new Error('Native proxy child required');
   if (!(maxBytes > 0 && maxBytes <= MAX_TERMINAL_BYTES)) throw new Error('Invalid transport byte bound');
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(tempRoot), 'crt-'));
