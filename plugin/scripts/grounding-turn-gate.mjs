@@ -90,7 +90,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { groundingSubjectAllowed } from './ruvnet-gate1-pattern.mjs';
 import { readStopHookInput } from './hook-input.mjs';
-import { markerPathFor, readMarker } from './grounding-turn-mark.mjs';
+import { markerPathFor, consumeMarker } from './grounding-turn-mark.mjs';
 import { readSettledTranscript } from './turn-outcome-capture.mjs';
 import {
   architectureShadow, auditAssertions, correctionText, describeSources, loadVocabulary, logShadow,
@@ -212,17 +212,9 @@ async function main() {
   const marker = markerPathFor(hookInput.session_id);
   if (!marker) process.exit(EXIT_ALLOW);
 
-  let markerStat;
-  try { markerStat = fs.statSync(marker); } catch { process.exit(EXIT_ALLOW); }
-
-  // Consume the marker unconditionally: whether this fires or not, it must never pressure a LATER,
-  // unrelated turn (same reasoning as continuation-gate.mjs's cooldown lock, applied here as a
-  // single-use marker instead of a timed window, because "did this turn ground itself" has no
-  // meaningful reading beyond the one turn it was written for).
-  const armed = readMarker(marker) || { gate1: true, subjects: [] };
-  try { fs.unlinkSync(marker); } catch { /* a marker that vanished between stat and unlink already told us what we needed */ }
-
-  const text = decide({ hookInput, marker: armed, markerMs: markerStat.mtimeMs });
+  const episode = consumeMarker(marker);
+  if (!episode) process.exit(EXIT_ALLOW);
+  const text = decide({ hookInput, marker: episode.marker, markerMs: episode.markerMs });
   if (!text) process.exit(EXIT_ALLOW);
 
   process.stdout.write(JSON.stringify({
