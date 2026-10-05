@@ -126,6 +126,19 @@ function stableNode() {
   return process.execPath;
 }
 
+/** Terminal routing does not require a VS Code extension installation. */
+export function installRoutingRuntime({ sourceRoot, home = os.homedir(), apply = false } = {}) {
+  const snapshot = runtimeSnapshot(sourceRoot);
+  const runtimeRoot = path.join(home, '.cache/ruvnet-brain/model-routing/versions', snapshot.digest);
+  if (apply) for (const [relative, bytes] of snapshot.files) {
+    const file = path.join(runtimeRoot, relative);
+    if (fs.existsSync(file)) {
+      if (sha(fs.readFileSync(regular(file))) !== sha(bytes)) throw new Error('Immutable runtime snapshot mismatch');
+    } else atomic(file, bytes);
+  }
+  return { apply, runtimeRoot, runtimeDigest: snapshot.digest, runtimeFiles: snapshot.identity };
+}
+
 export function installNativeLaunchers({ sourceRoot, home = os.homedir(), extensionsRoot = path.join(home, '.vscode-server/extensions'), nodeBinary = stableNode(), apply = false } = {}) {
   // VS Code spawns its executable directly. A .cmd/.sh surrogate is not a proved
   // Windows executable adapter; refuse before writing a misleading registration.
