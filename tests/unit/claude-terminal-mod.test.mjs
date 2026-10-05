@@ -30,6 +30,29 @@ describe('native terminal policy bridge',()=>{
   test('settled prompt cannot lower the original hard class',()=>{
     expect(route('summarize supplied notes',{minimumClass:'hard'})).toMatchObject({taskClass:'hard',model:'claude-opus-fixture',effort:'high'});
   });
+  test('actual native security review elevates an unchanged legacy owner policy before engine selection',()=>{
+    const prompt='Architecture and security review: identify the most important risk of silently bypassing a subscription-only model router. Do not use tools. Answer in one sentence and repeat ROUTER_CLAUDE_CONTEXT_91.';
+    const ownerPolicy="export async function choose({features,selection,harness}) { const taskClass=features.taskHints.includes('final substantive review')?'hard':'medium'; return {...selection.routes[harness][taskClass],taskClass}; }";
+    fs.writeFileSync(path.join(dir,'policy.mjs'),ownerPolicy);
+    const d=route(prompt,{minimumClass:'fast'});
+    expect(d).toMatchObject({model:'claude-opus-fixture',effort:'high',taskClass:'hard'});
+    expect(()=>inspectDecision(d,prompt,now)).not.toThrow();
+    expect(fs.readFileSync(path.join(dir,'policy.mjs'),'utf8')).toBe(ownerPolicy);
+  });
+  test('classification hint preserves the complete original request for the owner policy',()=>{
+    const prompt='Security assessment: identify bypass risks. Retain CONTEXT_91; no tools.';
+    const observed=path.join(dir,'owner-prompt.txt');
+    fs.writeFileSync(path.join(dir,'policy.mjs'),`import fs from 'node:fs'; export async function choose({features,selection,harness}) { fs.writeFileSync(${JSON.stringify(observed)},features.taskHints); return {...selection.routes[harness].hard,taskClass:'hard'}; }`);
+    route(prompt);expect(fs.readFileSync(observed,'utf8')).toBe('final substantive review\n'+prompt);
+  });
+  test('headings-only security review data stays fast and ordinary architecture stays medium',()=>{
+    expect(route('Summarize the headings in this supplied document titled Security and Risk Review; do not assess security or recommend changes.')).toMatchObject({taskClass:'fast',effort:'low'});
+    expect(route('Review the architecture diagram labels for typos')).toMatchObject({taskClass:'medium',effort:'medium'});
+  });
+  test('an owner policy cannot silently lower the canonical security review floor',()=>{
+    fs.writeFileSync(path.join(dir,'policy.mjs'),"export async function choose({selection,harness}) { return {...selection.routes[harness].medium,taskClass:'medium'}; }");
+    expect(()=>route('Security review: identify the principal risk.')).toThrow(/below canonical floor; no fallback/);
+  });
   test('honors a user policy that raises a simple task to the approved hard allocation',()=>{
     fs.writeFileSync(path.join(dir,'policy.mjs'), "export async function choose({selection,harness}) { return {...selection.routes[harness].hard,taskClass:'hard'}; }");
     const d=route('summarize supplied notes');

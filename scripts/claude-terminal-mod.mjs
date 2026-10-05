@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { classify } from '../config/model-router/policy.default.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MOD_SOURCE = path.join(ROOT, 'config/model-router/claude-terminal-mod');
 export function terminalModDigest(pluginRoot) {
@@ -43,14 +44,20 @@ export function routeNativePrompt({ prompt, turnId, minimumClass, enginePath = p
   policyPath = path.join(ROOT, 'config/model-router/policy.default.mjs'), env = process.env } = {}) {
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 200000) throw new Error('Native routing requires a bounded text prompt');
   if (minimumClass !== undefined && !['fast', 'medium', 'hard'].includes(minimumClass)) throw new Error('Invalid class floor');
-  const classificationPrompt = minimumClass === 'hard' ? 'final substantive review\n' + prompt :
-    minimumClass === 'medium' ? 'review task\n' + prompt : prompt;
+  const codeFences = Math.floor((prompt.match(/```/g) || []).length / 2);
+  const hasCode = codeFences > 0 || /\b(function|const|let|def|class|import|=>|SELECT|async)\b/.test(prompt) || /[{};]\s*$/m.test(prompt);
+  const rank = { fast: 0, medium: 1, hard: 2 };
+  const canonicalFloor = classify({ taskHints: prompt, hasCode }, 'claude-code');
+  const floor = rank[minimumClass] > rank[canonicalFloor] ? minimumClass : canonicalFloor;
+  const classificationPrompt = floor === 'hard' ? 'final substantive review\n' + prompt :
+    floor === 'medium' ? 'review task\n' + prompt : prompt;
   // Let the engine honor the user's policy.mjs; the bundled copy is only the
   // deterministic classification floor used by the sandboxed hook.
   const result = spawnSync(process.execPath, [enginePath, '--harness', 'claude-code', '--request-json', '--policy-only', '--json'],
     { input: JSON.stringify({ prompt: classificationPrompt }), encoding: 'utf8', env, timeout: 8000, maxBuffer: 262144 });
   if (result.error || result.status !== 0) throw new Error('Reviewed native routing policy unavailable; no fallback');
   const d = validateDecision(JSON.parse(result.stdout));
+  if (rank[d.taskClass] < rank[floor]) throw new Error('Reviewed native routing policy below canonical floor; no fallback');
   // No prompt, reasoning, credentials, or arbitrary engine output crosses back to the sandbox.
   return { schemaVersion: 1, turnId: typeof turnId === 'string' ? turnId : null, model: d.model, effort: d.effort,
     taskClass: d.taskClass, expiresAt: Date.parse(d.selectionReviewedAt) + d.selectionMaxAgeMs,
