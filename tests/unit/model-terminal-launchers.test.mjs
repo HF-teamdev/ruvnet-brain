@@ -169,7 +169,9 @@ describe('Claude native startup guard', () => {
       fs.writeFileSync(process.env.RNB_CLAUDE_MOD_RECEIPT,JSON.stringify(receipt),{mode:0o600});
       }setTimeout(()=>process.exit(7),250)})();`);
     const config = { realClaude: native, nodeBinary: process.execPath, claudeHelperPath: path.join(root, 'scripts/claude-terminal-mod.mjs'), enginePath: path.join(root, 'scripts/model-router-engine.mjs') };
-    return { config, env: { ...process.env, CLAUDE_CONFIG_DIR: configDir }, cwd: dir, tempRoot: dir, startupMs: 100, signalSource: new EventEmitter(), diagnostics: new PassThrough() };
+    // Successful subprocess startup includes a real Node import; 100ms is not a host prerequisite.
+    // Keep the negative receipt deadline short, while allowing the ready fixture to start under suite load.
+    return { config, env: { ...process.env, CLAUDE_CONFIG_DIR: configDir }, cwd: dir, tempRoot: dir, startupMs: mode === 'ready' ? 2000 : 100, signalSource: new EventEmitter(), diagnostics: new PassThrough() };
   }
   it('accepts bound live receipt, preserves native status, and cleans owned launch data', async () => {
     const f = fixture('ready'); const result = await runClaudeTerminal(f);
