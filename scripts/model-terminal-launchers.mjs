@@ -111,7 +111,7 @@ export function installTerminalLaunchers({ home = os.homedir(), nodeBinary = pro
     if ([runner, ...Object.keys(contents)].includes(binary)) throw new Error('Native terminal launcher recursion refused');
   }
   const receipt = { apply, launchers, configPath, config, shellSource, shellConflicts: shell.conflicts, backups: [],
-    claudeEnforcementScope: realClaude ? 'Startup hook activation guard; continuing native worker enforcement requires separate proof' : null };
+    claudeEnforcementScope: realClaude ? 'Controlled native prompt boundary; model observations and effective effort settings checked for each completed turn' : null };
   if (!apply) return receipt;
   for (const file of [configPath, ...Object.keys(contents), ...(manageZsh ? [shellSource, zshrc] : [])]) {
     const original = backup(file); if (original) receipt.backups.push(original);
@@ -280,8 +280,16 @@ export async function runClaudeTerminal({ config, args = [], env = process.env, 
   }
 }
 
-export async function runTerminalLauncher({ host, args, config, env = process.env, signalSource = process } = {}) {
-  if (host === 'claude') return runClaudeTerminal({ config, args, env, signalSource });
+export async function runTerminalLauncher({ host, args = [], config, env = process.env, signalSource = process } = {}) {
+  if (host === 'claude') {
+    const administrative = ['auth', 'mcp', 'plugin', 'plugins', 'update', 'upgrade', 'doctor', 'install'].includes(args[0]) ||
+      args.length > 0 && args.every(arg => ['--help', '-h', '--version', '-v'].includes(arg));
+    if (administrative) return runClaudeTerminal({ config, args, env, signalSource });
+    if (env.RNB_TERMINAL_LAUNCH_ACTIVE) throw new Error('Native terminal launcher recursion refused');
+    const { launchControlledClaudeTerminal } = await import('./claude-controlled-terminal.mjs');
+    await launchControlledClaudeTerminal({ binary: executable(config.realClaude), args, env, cwd: process.cwd() });
+    return { code: 0, signal: null };
+  }
   if (host !== 'codex') throw new Error('Unsupported terminal host');
   const invocation = terminalInvocation({ host, args, config, env });
   const child = spawn(invocation.command, invocation.args, { env: { ...subscriptionEnvironment(env), RNB_TERMINAL_LAUNCH_ACTIVE: '1' }, stdio: 'inherit', shell: false });

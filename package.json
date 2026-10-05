@@ -41,6 +41,7 @@
     "metaharness:receipts": "node scripts/metaharness-receipts.mjs",
     "route:cheap": "node scripts/route-cheap.mjs",
     "routing:eval": "node scripts/model-routing-eval.mjs",
+    "routing:hooks:plan": "node scripts/user-model-hook-install.mjs --plan",
     "hooks:security-guidance:compat": "node scripts/security-guidance-codex-compat.mjs",
     "route:receipt": "node scripts/dispatch-receipt.mjs",
     "trismart": "node scripts/trismart.mjs",

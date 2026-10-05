@@ -9,12 +9,14 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { terminalTempRoot } from '../../scripts/model-terminal-gateway.mjs';
 import { installTerminalLaunchers, terminalShellPlan, terminalInvocation, resolveTerminalUpstream,
-  runClaudeTerminal, validateClaudeReadiness, validateClaudeTerminalSettings, validateClaudeTerminalArguments,
+  runClaudeTerminal, runTerminalLauncher, validateClaudeReadiness, validateClaudeTerminalSettings, validateClaudeTerminalArguments,
   verifyNativeWorkerAncestry } from '../../scripts/model-terminal-launchers.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const shortTemp = process.platform === 'darwin' ? '/private/tmp' : os.tmpdir();
 const cleanups = [];
+const controlledLaunch = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../../scripts/claude-controlled-terminal.mjs', () => ({ launchControlledClaudeTerminal: controlledLaunch }));
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 function directory(tempRoot = os.tmpdir(), prefix = 'rnbtl-') {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(tempRoot), prefix));
@@ -26,6 +28,13 @@ function binary(dir, content) {
 const options = (home) => ({ home, runtimeRoot: root, runtimeDigest: 'a'.repeat(64), realCodex: process.execPath });
 
 describe('per-user native terminal installation', () => {
+  it('normal Claude uses the controlled prompt boundary instead of the fall-open native mod', async () => {
+    controlledLaunch.mockClear();
+    const result = await runTerminalLauncher({ host: 'claude', config: { realClaude: process.execPath }, env: {} });
+    expect(result).toEqual({ code: 0, signal: null });
+    expect(controlledLaunch).toHaveBeenCalledExactlyOnceWith({ binary: fs.realpathSync(process.execPath), args: [], env: {}, cwd: process.cwd() });
+    await expect(runTerminalLauncher({ host: 'claude', config: { realClaude: process.execPath }, env: { RNB_TERMINAL_LAUNCH_ACTIVE: '1' } })).rejects.toThrow(/recursion/);
+  });
   it('plans without mutation; preserves native binaries and unrelated shell data with backups', () => {
     const home = directory(); const zshrc = path.join(home, '.zshrc');
     const original = 'export USER_SETTING=kept\nalias codex="custom"\nfunction claude() { custom; }\n'; fs.writeFileSync(zshrc, original);
