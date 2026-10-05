@@ -30,6 +30,21 @@ describe('native terminal policy bridge',()=>{
   test('settled prompt cannot lower the original hard class',()=>{
     expect(route('summarize supplied notes',{minimumClass:'hard'})).toMatchObject({taskClass:'hard',model:'claude-opus-fixture',effort:'high'});
   });
+  test.each(['Implement a risk register', 'Add a security banner', 'Explain this risk field'])('ordinary security-named task retains its medium class: %s',(prompt)=>{
+    expect(route(prompt)).toMatchObject({model:'claude-sonnet-fixture',taskClass:'medium'});
+  });
+  test('medium classification preserves the exact original request for the owner policy',()=>{
+    const prompt='Explain this risk field. Retain CONTEXT_91; no tools.';
+    const observed=path.join(dir,'owner-prompt.txt');
+    fs.writeFileSync(path.join(dir,'policy.mjs'),`import fs from 'node:fs'; export async function choose({features,selection,harness}) { fs.writeFileSync(${JSON.stringify(observed)},features.taskHints); return {...selection.routes[harness].medium,taskClass:'medium'}; }`);
+    expect(route(prompt)).toMatchObject({taskClass:'medium'});
+    expect(fs.readFileSync(observed,'utf8')).toBe(prompt);
+  });
+  test('below-medium owner choice refuses without inventing a review action',()=>{
+    fs.writeFileSync(path.join(dir,'policy.mjs'),"export async function choose({selection,harness}) { return {...selection.routes[harness].fast,taskClass:'fast'}; }");
+    expect(()=>route('Explain this risk field')).toThrow(/below canonical floor; no fallback/);
+    expect(()=>route('Summarize these supplied notes',{minimumClass:'medium'})).toThrow(/below canonical floor; no fallback/);
+  });
   test('actual native security review elevates an unchanged legacy owner policy before engine selection',()=>{
     const prompt='Architecture and security review: identify the most important risk of silently bypassing a subscription-only model router. Do not use tools. Answer in one sentence and repeat ROUTER_CLAUDE_CONTEXT_91.';
     const ownerPolicy="export async function choose({features,selection,harness}) { const taskClass=features.taskHints.includes('final substantive review')?'hard':'medium'; return {...selection.routes[harness][taskClass],taskClass}; }";

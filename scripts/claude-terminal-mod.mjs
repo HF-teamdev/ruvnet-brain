@@ -49,8 +49,7 @@ export function routeNativePrompt({ prompt, turnId, minimumClass, enginePath = p
   const rank = { fast: 0, medium: 1, hard: 2 };
   const canonicalFloor = classify({ taskHints: prompt, hasCode }, 'claude-code');
   const floor = rank[minimumClass] > rank[canonicalFloor] ? minimumClass : canonicalFloor;
-  const classificationPrompt = floor === 'hard' ? 'final substantive review\n' + prompt :
-    floor === 'medium' ? 'review task\n' + prompt : prompt;
+  const classificationPrompt = floor === 'hard' ? 'final substantive review\n' + prompt : prompt;
   // Let the engine honor the user's policy.mjs; the bundled copy is only the
   // deterministic classification floor used by the sandboxed hook.
   const result = spawnSync(process.execPath, [enginePath, '--harness', 'claude-code', '--request-json', '--policy-only', '--json'],
