@@ -247,17 +247,16 @@ describe('lifecycle: every transition is observed at a boundary that is actually
 describe('fail-open: a broken environment produces silence, never an exception and never a wrong claim', () => {
   const P1 = FIXTURE.find(([l]) => l === 'P1')[1];
 
-  it('an unwritable state directory yields NO candidate (cannot remember ⇒ must not speak)', () => {
+  it('a non-directory state ancestor yields NO candidate (cannot remember ⇒ must not speak)', () => {
     const blocked = path.join(dir, 'blocked');
-    fs.mkdirSync(blocked);
-    fs.writeFileSync(path.join(blocked, 'state.json'), 'x');
-    fs.chmodSync(blocked, 0o500);
+    // An actual filesystem failure on every OS; Windows does not enforce POSIX chmod bits.
+    fs.writeFileSync(blocked, 'existing file must remain unchanged');
     process.env.RUVNET_ADVOCACY_ROUTE_STATE = path.join(blocked, 'sub', 'state.json');
     return import(`${MOD}?t=${Date.now()}b`).then((r) => {
       const { candidate, reason } = r.decide({ prompt: P1, sessionId: 's1', file: ledger() });
-      try { fs.chmodSync(blocked, 0o700); } catch { /* cleanup */ }
       expect(candidate).toBeNull();
       expect(reason).toBe('state-unwritable');
+      expect(fs.readFileSync(blocked, 'utf8')).toBe('existing file must remain unchanged');
     });
   });
 
