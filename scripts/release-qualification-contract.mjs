@@ -4,7 +4,7 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     {
       "id": "bounded-advocacy-and-write-grounding",
       "reason": "Explicit document meaning requests retain corroboration; literal searches stay silent; POSIX complete-write exemptions preserve executable and managed-store grounding",
-      "files": ["tests/unit/advocacy-route.test.mjs", "tests/unit/advocacy-catalog.test.mjs"],
+      "files": ["tests/unit/advocacy-route.test.mjs", "tests/unit/advocacy-catalog.test.mjs", "tests/unit/card-lane.test.mjs"],
       "platformFiles": {
         "linux": ["tests/unit/advocacy-route-budget.test.mjs", "tests/unit/ground-before-write.test.mjs", "tests/unit/grounding-code-projection.test.mjs"],
         "macos": ["tests/unit/advocacy-route-budget.test.mjs", "tests/unit/ground-before-write.test.mjs", "tests/unit/grounding-code-projection.test.mjs"]
