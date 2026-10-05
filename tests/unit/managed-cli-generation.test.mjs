@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createManagedCliDispatcher } from '../../plugin/mcp/managed-cli-generation.mjs';
 
+// Synthetic generations do not depend on the shipping release version.
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 function fixture() {
@@ -34,62 +35,62 @@ function binary(fx) {
 
 describe('active managed generation boundary (#384)', () => {
   it('uses active code for help, registry and run and refuses stamps from the previous generation', async () => {
-    const fx = fixture(); binary(fx); stage(fx, '4.5.6'); stage(fx, '4.5.7'); activate(fx, '4.5.6');
+    const fx = fixture(); binary(fx); stage(fx, '0.0.101'); stage(fx, '0.0.102'); activate(fx, '0.0.101');
     const call = createManagedCliDispatcher({ fallbackRoot: fx.shell });
     const lifecycle = { capture: () => ({ adopted: false }) };
-    const helped = await call('ruvnet_cli_help', args, fx.env); expect(helped).toMatchObject({ isError: false, fixtureGeneration: '4.5.6' });
+    const helped = await call('ruvnet_cli_help', args, fx.env); expect(helped).toMatchObject({ isError: false, fixtureGeneration: '0.0.101' });
     const stamp = path.join(fx.brain, 'help-read/ruflo.status'); const previous = fs.readFileSync(stamp, 'utf8');
-    const ran = await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle); expect(ran).toMatchObject({ isError: false, fixtureGeneration: '4.5.6' });
-    activate(fx, '4.5.7', 2);
+    const ran = await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle); expect(ran).toMatchObject({ isError: false, fixtureGeneration: '0.0.101' });
+    activate(fx, '0.0.102', 2);
     const refused = await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle);
-    expect(refused).toMatchObject({ isError: true, fixtureGeneration: '4.5.7' }); expect(refused.content[0].text).toMatch(/read the interface first/i);
-    expect((await call('ruvnet_cli_help', args, fx.env)).fixtureGeneration).toBe('4.5.7');
+    expect(refused).toMatchObject({ isError: true, fixtureGeneration: '0.0.102' }); expect(refused.content[0].text).toMatch(/read the interface first/i);
+    expect((await call('ruvnet_cli_help', args, fx.env)).fixtureGeneration).toBe('0.0.102');
     expect(fs.readFileSync(stamp, 'utf8')).not.toBe(previous);
-    expect(await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle)).toMatchObject({ isError: false, fixtureGeneration: '4.5.7' });
+    expect(await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle)).toMatchObject({ isError: false, fixtureGeneration: '0.0.102' });
     const fetch = async () => ({ ok: true, text: async () => '{"version":"3.0.0"}' });
-    expect(await call('ruvnet_registry_latest', args, fx.env, fetch)).toMatchObject({ isError: false, fixtureGeneration: '4.5.7' });
+    expect(await call('ruvnet_registry_latest', args, fx.env, fetch)).toMatchObject({ isError: false, fixtureGeneration: '0.0.102' });
     // A descriptor promotion changes authorization even if its code root/version remains the same.
-    activate(fx, '4.5.7', 3);
+    activate(fx, '0.0.102', 3);
     expect((await call('ruvnet_cli_run', args, fx.env, undefined, lifecycle)).isError).toBe(true);
   });
 
   it('fails closed for missing or malformed active state, escaping roots and manifest mismatch', async () => {
-    const fx = fixture(); const root = stage(fx, '4.5.6');
+    const fx = fixture(); const root = stage(fx, '0.0.101');
     const call = createManagedCliDispatcher({ fallbackRoot: fx.shell });
     expect((await call('ruvnet_cli_help', args, fx.env)).isError).toBe(true);
-    for (const value of ['{', '{}', JSON.stringify({ version: '4.5.6', generation: 1, codeRoot: '../../outside' })]) {
+    for (const value of ['{', '{}', JSON.stringify({ version: '0.0.101', generation: 1, codeRoot: '../../outside' })]) {
       fs.writeFileSync(path.join(fx.brain, 'active.json'), value);
       expect((await call('ruvnet_cli_help', args, fx.env)).isError).toBe(true);
     }
-    activate(fx, '4.5.6');
-    for (const manifest of [{ name: 'foreign', version: '4.5.6' }, { name: 'ruvnet-brain', version: '4.5.7' }]) {
+    activate(fx, '0.0.101');
+    for (const manifest of [{ name: 'foreign', version: '0.0.101' }, { name: 'ruvnet-brain', version: '0.0.102' }]) {
       fs.writeFileSync(path.join(root, '.claude-plugin/plugin.json'), JSON.stringify(manifest));
       expect((await call('ruvnet_cli_help', args, fx.env)).content[0].text).toMatch(/manifest name\/version mismatch/);
     }
-    fs.writeFileSync(path.join(root, '.claude-plugin/plugin.json'), '{"name":"ruvnet-brain","version":"4.5.6"}');
+    fs.writeFileSync(path.join(root, '.claude-plugin/plugin.json'), '{"name":"ruvnet-brain","version":"0.0.101"}');
     const handler = path.join(root, 'mcp/managed-cli-interface.mjs'); fs.unlinkSync(handler);
     fs.symlinkSync(path.resolve(import.meta.dirname, '../../plugin/mcp/managed-cli-interface.mjs'), handler);
     expect((await call('ruvnet_cli_help', args, fx.env)).content[0].text).toMatch(/contained regular file/);
   });
 
   it('protects one selected generation during a concurrent promotion and rejects same-path mutations', async () => {
-    const fx = fixture(); const root = stage(fx, '4.5.6'); stage(fx, '4.5.7'); activate(fx, '4.5.6');
+    const fx = fixture(); const root = stage(fx, '0.0.101'); stage(fx, '0.0.102'); activate(fx, '0.0.101');
     let release; let imported; const entered = new Promise((resolve) => { imported = resolve; });
     const call = createManagedCliDispatcher({ fallbackRoot: fx.shell, importModule: async (url) => {
       imported(url); await new Promise((resolve) => { release = resolve; });
       return { callManagedCli: async () => ({ isError: false }) };
     } });
     const inFlight = call('ruvnet_cli_help', args, fx.env);
-    expect(await entered).toContain('/versions/4.5.6/');
+    expect(await entered).toContain('/versions/0.0.101/');
     const leases = path.join(fx.brain, 'leases'); const files = fs.readdirSync(leases);
-    expect(files).toHaveLength(1); expect(JSON.parse(fs.readFileSync(path.join(leases, files[0]), 'utf8')).version).toBe('4.5.6');
-    activate(fx, '4.5.7', 2); release(); expect((await inFlight).isError).toBe(false); expect(fs.readdirSync(leases)).toEqual([]);
-    activate(fx, '4.5.6', 3); fs.appendFileSync(path.join(root, 'mcp/managed-cli-interface.mjs'), '\n// altered immutable code\n');
+    expect(files).toHaveLength(1); expect(JSON.parse(fs.readFileSync(path.join(leases, files[0]), 'utf8')).version).toBe('0.0.101');
+    activate(fx, '0.0.102', 2); release(); expect((await inFlight).isError).toBe(false); expect(fs.readdirSync(leases)).toEqual([]);
+    activate(fx, '0.0.101', 3); fs.appendFileSync(path.join(root, 'mcp/managed-cli-interface.mjs'), '\n// altered immutable code\n');
     expect((await call('ruvnet_cli_help', args, fx.env)).content[0].text).toMatch(/immutable generation changed/);
   });
 
   it('never takes a generation path or authorization stamp from client arguments', async () => {
-    const fx = fixture(); binary(fx); stage(fx, '4.5.6'); activate(fx, '4.5.6');
+    const fx = fixture(); binary(fx); stage(fx, '0.0.101'); activate(fx, '0.0.101');
     const call = createManagedCliDispatcher({ fallbackRoot: fx.shell });
     fs.mkdirSync(path.join(fx.brain, 'help-read'), { recursive: true });
     fs.writeFileSync(path.join(fx.brain, 'help-read/ruflo.status'), '');
