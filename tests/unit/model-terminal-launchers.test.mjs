@@ -13,8 +13,8 @@ import { installTerminalLaunchers, terminalShellPlan, terminalInvocation, resolv
 const root = path.resolve(import.meta.dirname, '../..');
 const cleanups = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-function directory(tempRoot = os.tmpdir()) {
-  const dir = fs.mkdtempSync(path.join(fs.realpathSync(tempRoot), 'rnbtl-'));
+function directory(tempRoot = os.tmpdir(), prefix = 'rnbtl-') {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(tempRoot), prefix));
   fs.chmodSync(dir, 0o700); cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true })); return dir;
 }
 function binary(dir, content) {
@@ -58,16 +58,16 @@ describe('per-user native terminal installation', () => {
 
 describe('known native daemon locator', () => {
   async function fixture() {
-    const base = directory(); const codexHome = path.join(base, 'home');
+    const base = directory('/private/tmp', 't'); const codexHome = path.join(base, 'home');
     const control = path.join(codexHome, 'app-server-control'); fs.mkdirSync(control, { recursive: true, mode: 0o700 });
     const daemon = path.join(base, `codex-daemon-${process.getuid()}`); fs.mkdirSync(daemon, { mode: 0o700 });
-    const actual = path.join(daemon, 'actualsocket'); const server = net.createServer();
+    const actual = path.join(daemon, 'a'.repeat(64)); const server = net.createServer();
     await new Promise((resolve) => server.listen(actual, resolve)); fs.chmodSync(actual, 0o600);
     cleanups.push(() => new Promise((resolve) => server.close(resolve)));
     const locator = path.join(control, 'app-server-control.sock'); fs.symlinkSync(actual, locator);
     return { base, codexHome, actual, locator, daemon };
   }
-  it('resolves only known owned private actualsocket and refuses foreign/misplaced targets', async () => {
+  it('resolves only known owned private hash-named endpoints and refuses foreign/misplaced targets', async () => {
     const f = await fixture(); expect(resolveTerminalUpstream({ codexHome: f.codexHome, daemonRoot: f.base })).toBe(f.actual);
     expect(() => resolveTerminalUpstream({ codexHome: f.codexHome, daemonRoot: f.base, uid: process.getuid() + 1 })).toThrow();
     fs.chmodSync(f.daemon, 0o755); expect(() => resolveTerminalUpstream({ codexHome: f.codexHome, daemonRoot: f.base })).toThrow(/private/);

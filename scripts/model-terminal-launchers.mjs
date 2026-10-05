@@ -59,7 +59,7 @@ export function resolveTerminalUpstream({ codexHome = path.join(os.homedir(), '.
   if (s.uid !== uid) throw new Error('Native socket locator is foreign');
   const actual = fs.realpathSync(locator);
   const expected = path.join(fs.realpathSync(daemonRoot), `codex-daemon-${uid}`);
-  if (path.dirname(actual) !== expected || path.basename(actual) !== 'actualsocket') throw new Error('Native socket locator escaped the known daemon endpoint');
+  if (path.dirname(actual) !== expected || !/^[a-f0-9]{64}$/.test(path.basename(actual))) throw new Error('Native socket locator escaped the known daemon endpoint');
   return validateUpstreamSocket(actual, { uid });
 }
 
