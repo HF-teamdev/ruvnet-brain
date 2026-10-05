@@ -45,7 +45,9 @@ export function routeNativePrompt({ prompt, turnId, minimumClass, enginePath = p
   if (minimumClass !== undefined && !['fast', 'medium', 'hard'].includes(minimumClass)) throw new Error('Invalid class floor');
   const classificationPrompt = minimumClass === 'hard' ? 'final substantive review\n' + prompt :
     minimumClass === 'medium' ? 'review task\n' + prompt : prompt;
-  const result = spawnSync(process.execPath, [enginePath, '--harness', 'claude-code', '--request-json', '--policy-only', '--policy', policyPath, '--json'],
+  // Let the engine honor the user's policy.mjs; the bundled copy is only the
+  // deterministic classification floor used by the sandboxed hook.
+  const result = spawnSync(process.execPath, [enginePath, '--harness', 'claude-code', '--request-json', '--policy-only', '--json'],
     { input: JSON.stringify({ prompt: classificationPrompt }), encoding: 'utf8', env, timeout: 8000, maxBuffer: 262144 });
   if (result.error || result.status !== 0) throw new Error('Reviewed native routing policy unavailable; no fallback');
   const d = validateDecision(JSON.parse(result.stdout));

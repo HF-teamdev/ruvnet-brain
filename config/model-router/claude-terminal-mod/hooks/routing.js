@@ -20,7 +20,9 @@ export function inspectDecision(value, text, now, minimumClass) {
   text = minimumClass === 'hard' ? 'final substantive review\n' + text : minimumClass === 'medium' ? 'review task\n' + text : text;
   const codeFences = Math.floor((text.match(/```/g) || []).length / 2);
   const hasCode = codeFences > 0 || /\b(function|const|let|def|class|import|=>|SELECT|async)\b/.test(text) || /[{};]\s*$/m.test(text);
-  if (value.taskClass !== classify({ taskHints: text, hasCode }, 'claude-code')) throw new Error(REFUSAL);
+  const rank = { fast: 0, medium: 1, hard: 2 };
+  const floor = classify({ taskHints: text, hasCode }, 'claude-code');
+  if (!Object.hasOwn(rank, value.taskClass) || rank[value.taskClass] < rank[floor]) throw new Error(REFUSAL);
   return Object.freeze({ model: value.model, effort: value.effort, taskClass: value.taskClass, expiresAt: value.expiresAt });
 }
 // Prompt text exists only in this bounded in-memory queue; Claude mints turnId later.

@@ -30,6 +30,14 @@ describe('native terminal policy bridge',()=>{
   test('settled prompt cannot lower the original hard class',()=>{
     expect(route('summarize supplied notes',{minimumClass:'hard'})).toMatchObject({taskClass:'hard',model:'claude-opus-fixture',effort:'high'});
   });
+  test('honors a user policy that raises a simple task to the approved hard allocation',()=>{
+    fs.writeFileSync(path.join(dir,'policy.mjs'), "export async function choose({selection,harness}) { return {...selection.routes[harness].hard,taskClass:'hard'}; }");
+    const d=route('summarize supplied notes');
+    expect(d).toMatchObject({model:'claude-opus-fixture',taskClass:'hard'});
+    expect(()=>inspectDecision(d,'summarize supplied notes',now)).not.toThrow();
+    fs.writeFileSync(path.join(dir,'policy.mjs'),'throw new Error("broken owner policy");');
+    expect(()=>route('summarize supplied notes')).toThrow(/no fallback/);
+  });
   test.each([['disabled',{available:false,subscription:true}],['not covered',{available:true,subscription:false}]])('%s host has no metered or native model fallback',(label,host)=>{
     put('profile.json',{harnesses:{'claude-code':host}});expect(()=>route('summarize notes')).toThrow(/no fallback/);
   });

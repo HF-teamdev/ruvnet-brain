@@ -40,7 +40,7 @@ describe('native gateway shared-backend and disconnect boundaries', () => {
         const m = JSON.parse(chunk.toString());
         if (m.method === 'account/read') f.reply(m, { account: { type: 'chatgpt' } });
         if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: 'openai', cwd: '/tmp/thread-project' } });
-        if (m.method === 'config/read') f.reply(m, { config: { model_provider: 'openai', chatgpt_base_url: null } });
+        if (m.method === 'config/read') f.reply(m, { config: { model_provider: null, chatgpt_base_url: 'https://chatgpt.com/backend-api/' } });
         if (m.method === 'account/rateLimits/read') f.reply(m, { ordinaryUsageAllowed: true });
       });
       const request = turn(); if (override) request.params.cwd = override;
@@ -57,7 +57,7 @@ describe('native gateway shared-backend and disconnect boundaries', () => {
         const m = JSON.parse(chunk.toString());
         if (m.method === 'account/read') f.reply(m, { account: { type: 'chatgpt' } });
         if (m.method === 'config/read') f.reply(m, { config: {
-          model_provider: variant === 'custom-provider' ? 'foreign' : variant === 'unknown-provider' ? null : 'openai',
+          model_provider: variant === 'custom-provider' ? 'foreign' : variant === 'unknown-provider' ? 'unknown' : 'openai',
           ...(variant === 'custom-openai-endpoint' ? { model_providers: { openai: { base_url: 'https://untrusted.invalid', api_key: 'PRIVATE' } } } : {}),
           ...(variant === 'flattened-endpoint' ? { 'model_providers.openai.base_url': 'https://untrusted.invalid' } : {}),
           ...(variant === 'base-url-override' ? { openai_base_url: 'https://untrusted.invalid' } : {}),

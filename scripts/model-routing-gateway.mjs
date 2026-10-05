@@ -21,12 +21,13 @@ const UNQUALIFIED = new Set(['review/start', 'thread/queue/add', 'thread/queue/u
   'thread/goal/set', 'thread/goal/create', 'thread/goal/resume', 'thread/compact/start', 'turn/addUserMessage', 'thread/startAeon']);
 
 function canonicalCodexConfig(config) {
-  if (!config || config.model_provider !== 'openai' || unsafeSettings({ serviceTier: config.service_tier ?? 'default',
+  if (!config || (config.model_provider ?? 'openai') !== 'openai' || unsafeSettings({ serviceTier: config.service_tier ?? 'default',
     fastMode: config.features?.fast_mode ?? false })) return false;
   // A provider with the built-in name can still be replaced by a custom endpoint.
   if (config.model_providers && Object.hasOwn(config.model_providers, 'openai') && config.model_providers.openai != null) return false;
+  if (config.chatgpt_base_url != null && config.chatgpt_base_url !== 'https://chatgpt.com/backend-api/') return false;
   // Native Config serializes openai_base_url:null when the override is unset.
-  return !Object.entries(config).some(([key, value]) => value != null && /^(model_providers\.openai|base_url|baseUrl|openai_base_url|chatgpt_base_url)(\.|$)/.test(key));
+  return !Object.entries(config).some(([key, value]) => value != null && /^(model_providers\.openai|base_url|baseUrl|openai_base_url)(\.|$)/.test(key));
 }
 
 /** Fresh policy-only subprocess: prompt stays on stdin, never argv, receipts or diagnostics. */
