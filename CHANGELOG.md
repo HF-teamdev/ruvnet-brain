@@ -20,6 +20,10 @@ current campaign and is finalized by the lead session before the next release cu
   divergent and unknown files. Broader reclaim and reconciliation remain unresolved.
 - The updater captures transaction-owned archive digests once per required algorithm while
   retaining signature verification and candidate/live per-store integrity checks.
+- Pending continuity notices are deduplicated per session without suppressing capture,
+  retries, degraded-state warnings or integrity checks. Concurrent deduplication is best effort.
+- Refresh failures name the first required failed stage instead of optional failures or
+  cleanup skips. Historical receipts and overall failure classification remain unchanged.
 
 4.5.6 native terminal routing and continuity (released, installation-verified):
 

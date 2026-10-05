@@ -125,6 +125,46 @@ describe('refreshRunHealth — an aborted run reports WHERE it failed and WHY', 
     expect(evidence).toMatch(/before its first phase/);
   });
 
+  it('#391: optional cleanup SKIP preserves the first required failure and its error without rewriting history', () => {
+    const f = fixture();
+    const receipt = abortedReceipt(f, { phases: [
+      { phase: 'update', required: true, status: 'PASS' },
+      { phase: 'host-convergence', required: true, status: 'FAIL', evidence: {
+        error: 'host convergence is host-restart-required: verify fresh Codex hooks\nprivate detail',
+      } },
+      { phase: 'cleanup', required: false, status: 'SKIP', evidence: { reason: 'upstream required phase failed' } },
+    ] });
+    receipt.requiredPhaseOrder = receipt.phases.map(({ phase }) => phase);
+    const original = JSON.stringify(receipt);
+    f.write(receipt);
+    const receiptPath = path.join(f.brainHome, 'refresh-runs', `${receipt.runId}.json`);
+    const bytes = fs.readFileSync(receiptPath);
+    const health = refreshRunHealth({ brainHome: f.brainHome, now: NOW });
+    expect(health.state).toBe('failed');
+    expect(health.evidence).toContain('failed at host-convergence: host convergence is host-restart-required: verify fresh Codex hooks');
+    expect(health.evidence).not.toMatch(/cleanup|private detail/);
+    expect(JSON.stringify(receipt)).toBe(original);
+    expect(fs.readFileSync(receiptPath)).toEqual(bytes);
+    expect(validateRefreshReceiptEnvelope(receipt).ok).toBe(false);
+  });
+
+  it('the first required FAIL outranks earlier optional failure and later required failure', () => {
+    const receipt = { status: 'FAILED', requiredPhaseOrder: ['advisory', 'update', 'host-convergence'], phases: [
+      { phase: 'advisory', required: false, status: 'FAIL', evidence: { reason: 'optional' } },
+      { phase: 'update', required: true, status: 'FAIL', evidence: { reason: 'original cause' } },
+      { phase: 'host-convergence', required: true, status: 'FAIL', evidence: { reason: 'later cause' } },
+    ] };
+    expect(describeFailedRefreshRun(receipt)).toBe('failed at update: original cause');
+  });
+
+  it('retains an explicit optional failure when no required phase failed', () => {
+    const receipt = { status: 'FAILED', requiredPhaseOrder: ['update', 'cleanup'], phases: [
+      { phase: 'update', required: true, status: 'PASS' },
+      { phase: 'cleanup', required: false, status: 'FAIL', evidence: { error: 'cleanup failed' } },
+    ] };
+    expect(describeFailedRefreshRun(receipt)).toBe('failed at cleanup: cleanup failed');
+  });
+
   it('a truly malformed FAILED receipt (ledger is NOT a prefix of the declared order) keeps the envelope verdict', () => {
     const f = fixture();
     const receipt = abortedReceipt(f);

@@ -95,7 +95,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       "files": [
         "tests/unit/nightly-scheduler.test.mjs",
         "tests/unit/nightly-refresh-launcher.test.mjs",
-        "tests/unit/nightly-two-run-proof.test.mjs"
+        "tests/unit/nightly-two-run-proof.test.mjs",
+        "tests/unit/nightly-refresh-run-health.test.mjs"
       ]
     },
     {
@@ -176,7 +177,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/project-progression-outbox.test.mjs",
         "tests/unit/project-progression-durability.test.mjs",
         "tests/unit/continuity-customer-regressions.test.mjs",
-        "tests/unit/progression-outbox-containment.test.mjs"
+        "tests/unit/progression-outbox-containment.test.mjs",
+        "tests/unit/transition-pending-notices.test.mjs"
       ]
     }
   ],

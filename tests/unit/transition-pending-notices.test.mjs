@@ -34,7 +34,8 @@ describe('#380 pending notices retain capture and independent warning conditions
     expect(run(dir, first === direct ? compatibility : direct, 'one', 'PostToolUse')).toBe('');
     expect(run(dir, first, 'two')).toMatch(/pending.*readback/);
     expect(fs.readdirSync(path.join(dir, '.swarm')).filter((name) => name.startsWith('.progression-capture-queue-'))).toHaveLength(4);
-    expect(fs.statSync(ledger(dir)).mode & 0o777).toBe(0o600);
+    expect(fs.lstatSync(ledger(dir)).isFile()).toBe(true);
+    if (process.platform !== 'win32') expect(fs.statSync(ledger(dir)).mode & 0o777).toBe(0o600);
     for (const problem of ['stuck-pending', 'quarantined', 'corrupt']) {
       const options = { journal: { swarm: path.join(dir, '.swarm'), now: Date.now }, session: 'one',
         status: { stuck: true, problem, pending: 4, corrupt: 1, quarantined: [{}] } };
