@@ -5,8 +5,8 @@ status: Accepted
 date: 2026-08-06
 updated: 2026-10-05
 updated_source: derived-from-git
-reviewed_digest: 75418dee4ddb
-version: 1.0.2
+reviewed_digest: 4065daa92b17
+version: 1.0.3
 authors: [Stuart Kerr, Claude Code]
 tags: [corpus-qa, nightly, retrieval, near-duplicates, diagnosability, escalation]
 supersedes: []
@@ -210,6 +210,7 @@ label. Noted, not load-bearing for anything published.
   every one killed by the intended test; sources restored and re-verified byte-identical.
 
 ## Currency log
+| 2026-10-05 | Reviewed current source and recorded remaining limitations; no verification or implementation-status promotion. | reviewed_digest 4065daa92b17; inspected `scripts/corpus-qa.mjs` and all expanded governs against source 5d9ea4df. Independent review preserved incident dates, Proposed/expired states and historical evidence; notification and oldest-runtime limits are explicit. |
 | 2026-09-27 | Currency review: decision unchanged. Motion: self-update.mjs restricted Cognitum ruOS to curated capabilities -- unrelated to corpus-QA's machinery-vs-ranking distinction, which is untouched. | Reviewed `scripts/corpus-qa.mjs`, `scripts/self-update.mjs`, `scripts/nightly-wrapper.sh`, `tests/unit/corpus-qa.test.mjs`, `tests/unit/self-update-failure-reason.test.mjs` against the commits listed above; reviewed_digest 75418dee4ddb. |
 | 2026-09-11 | Currency review at commit 2eef2024: decision unchanged. Both drift commits (`7cf26dea`, `9b3e1d3f`) only reworded explanatory comment text in `scripts/nightly-wrapper.sh` describing the release-publication authority boundary ("It does NOT publish or dispatch a publisher..."); zero executable lines changed in either diff, and neither touches `scripts/corpus-qa.mjs`, `scripts/self-update.mjs`, or either test file. | Reviewed `scripts/nightly-wrapper.sh` (the only governed path that moved: `7cf26dea`, `9b3e1d3f`), `scripts/corpus-qa.mjs`, `scripts/self-update.mjs`; read both diffs in full, both comment-only. reviewed_digest 7d8b119122a9. |
 | 2026-08-31 | Reconciled the remaining #193 reader asymmetry: `learn-flush.mjs` now explicitly uses the same containment-checked `projectDirectory({ env: process.env })` fallback as the capture writer. | `plugin/scripts/learn-flush.mjs`; `plugin/scripts/learn-capture.sh`; issue #193. |
