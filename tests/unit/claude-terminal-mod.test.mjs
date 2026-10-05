@@ -97,7 +97,7 @@ describe('native terminal policy bridge',()=>{
     const dest=path.join(dir,'mod');const prepared=prepareClaudeTerminalMod({destination:dest});
     expect(prepared.pluginDir).toBe(dest);
     expect(fs.readFileSync(prepared.policyPath,'utf8')).toBe(fs.readFileSync(path.join(root,'config/model-router/policy.default.mjs'),'utf8'));
-    const runtime=fs.readFileSync(path.join(dest,'hooks/runtime.js'),'utf8');expect(runtime).toContain(process.execPath);
+    const runtime=fs.readFileSync(path.join(dest,'hooks/runtime.js'),'utf8');expect(runtime).toContain(JSON.stringify(process.execPath));
     const code=fs.readFileSync(path.join(dest,'hooks/register.js'),'utf8');expect(code).not.toMatch(/node:|process\.env/);
   });
   test('nonce readiness is atomic, private and explicitly bounded to hook activation',()=>{
@@ -105,7 +105,10 @@ describe('native terminal policy bridge',()=>{
     const pluginRoot=path.join(dir,'mod');prepareClaudeTerminalMod({destination:pluginRoot});
     const result=writeReadinessReceipt({nonce,receiptPath,pluginRoot,version:'2.1.289',sessionId:'fixture'});
     expect(JSON.parse(fs.readFileSync(receiptPath,'utf8'))).toMatchObject({nonce,status:'ready',nativeVersion:'2.1.289'});
-    expect(result.scope).toContain('worker crash');expect(fs.statSync(receiptPath).mode&0o777).toBe(0o600);
+    expect(result.scope).toContain('worker crash');
+    // The standalone helper remains portable; private terminal launch is POSIX-only.
+    if(process.platform !== 'win32') expect(fs.statSync(receiptPath).mode&0o777).toBe(0o600);
+    expect(fs.readdirSync(dir).filter(name=>name.startsWith('ready.json.'))).toEqual([]);
     expect(()=>writeReadinessReceipt({nonce:'wrong',receiptPath,pluginRoot,version:'2.1.289',sessionId:'fixture'})).toThrow();
   });
 });

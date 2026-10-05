@@ -63,11 +63,14 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
       "files": [
         "tests/unit/model-routing-gateway.test.mjs",
         "tests/unit/model-routing-gateway-boundaries.test.mjs",
-        "tests/unit/model-terminal-gateway.test.mjs",
-        "tests/unit/model-terminal-launchers.test.mjs",
         "tests/unit/claude-terminal-mod.test.mjs",
         "tests/unit/model-routing-launchers.test.mjs"
-      ]
+      ],
+      "platformFiles": {
+        "linux": ["tests/unit/model-terminal-gateway.test.mjs", "tests/unit/model-terminal-launchers.test.mjs"],
+        "macos": ["tests/unit/model-terminal-gateway.test.mjs", "tests/unit/model-terminal-launchers.test.mjs"],
+        "windows": ["tests/unit/windows-terminal-boundary.test.mjs"]
+      }
     },
     {
       "id": "weekly-routing-evidence",

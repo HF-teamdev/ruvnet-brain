@@ -120,15 +120,26 @@ describe('customer terminal evidence regression #386', () => {
     expect(receipt.terminal.error).not.toContain('super-private'); expect(receipt.terminal.error.length).toBeLessThanOrEqual(4096);
     expect(readLiveSurfaceReceipts({ file })).toEqual([receipt]);
   });
-  it.skipIf(process.platform === 'win32').each(['timeout', 'exit', 'signal', 'fatal', 'failed-fatal', 'success'])('actual managed subprocess returns output together with terminal diagnosis: %s', async (mode) => {
-    const home = tmp('terminal-cli-'); const bin = path.join(home, '.npm-global/bin/ruflo'); fs.mkdirSync(path.dirname(bin), { recursive: true });
+  it.each(['timeout', 'exit', 'signal', 'fatal', 'failed-fatal', 'success'])('actual managed subprocess returns output together with terminal diagnosis: %s', async (mode) => {
+    const home = tmp('terminal-cli-'); const binDir = path.join(home, 'bin'); fs.mkdirSync(binDir);
+    // Launch the actual Node executable through a managed name, with no shebang or shell shim.
+    fs.symlinkSync(process.execPath, path.join(binDir, process.platform === 'win32' ? 'ruvector.exe' : 'ruvector'), 'file');
+    const env = { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`, HOME: home,
+      RUVNET_BRAIN_HOME: home, RUVNET_BRAIN_PROJECT_DIR: home, RUVNET_BRAIN_MANAGED_CLI_TIMEOUT_MS: '1000' };
+    const help = await callManagedCli('ruvnet_cli_help', { executable: 'ruvector', argv: [] }, env);
+    expect(help.isError).toBe(false);
     const source = mode === 'timeout' ? 'setInterval(() => {}, 1000)' : mode === 'signal' ? "process.kill(process.pid, 'SIGTERM')" : `process.exit(${['exit', 'failed-fatal'].includes(mode) ? 7 : 0})`;
-    fs.writeFileSync(bin, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(['fatal', 'failed-fatal'].includes(mode) ? '[ERROR] refused\n' : 'partial output\n')}); process.stderr.write('startup banner\\n'); ${source}\n`); fs.chmodSync(bin, 0o755);
-    const result = await callManagedCli('ruvnet_cli_help', { executable: 'ruflo', argv: ['status'] }, { ...process.env, HOME: home, RUVNET_BRAIN_HOME: home, RUVNET_BRAIN_MANAGED_CLI_TIMEOUT_MS: '1000' });
+    const script = path.join(home, 'fixture.cjs');
+    fs.writeFileSync(script, `process.stdout.write(${JSON.stringify(['fatal', 'failed-fatal'].includes(mode) ? '[ERROR] refused\n' : 'partial output\n')}); process.stderr.write('startup banner\\n'); ${source}\n`);
+    const result = await callManagedCli('ruvnet_cli_run', { executable: 'ruvector', argv: [script] }, env);
     expect(result.isError).toBe(mode !== 'success'); expect(result.structuredContent.stdout).toContain(['fatal', 'failed-fatal'].includes(mode) ? '[ERROR]' : 'partial output'); expect(result.structuredContent.stderr).toBe('startup banner\n');
     if (mode === 'timeout') { expect(result.content[0].text).toContain('timed out after 1000ms'); expect(result.structuredContent).toMatchObject({ code: null, signal: null, error: 'timed out after 1000ms', outcome: 'failure' }); }
     if (['exit', 'failed-fatal'].includes(mode)) expect(result.content[0].text).toContain('exit 7');
-    if (mode === 'signal') expect(result.content[0].text).toContain('signal SIGTERM');
+    if (mode === 'signal') {
+      // Windows TerminateProcess exposes a failure exit code rather than a POSIX signal.
+      if (process.platform === 'win32') expect(result.structuredContent).toMatchObject({ code: 1, signal: null, outcome: 'failure' });
+      else expect(result.content[0].text).toContain('signal SIGTERM');
+    }
     if (mode === 'fatal') expect(result.content[0].text).toContain('fatal output');
   });
 });
