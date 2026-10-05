@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-05
-version: 0.1.2
+version: 0.1.3
 reviewed_digest: 6f995f7a7215
 impl: built
 authors: [Stuart Kerr, Codex]
@@ -53,6 +53,7 @@ governs:
   - plugin/scripts/session-start-core.mjs
   - tests/unit/model-terminal-launchers.test.mjs
   - tests/unit/npm-tarball-codex.test.mjs
+  - tests/qe/release/packed-clean-install.test.mjs
   - tests/unit/session-start-core-parity.test.mjs
   - plugin/scripts/continuity-journal.mjs
   - config/model-router/weekly-analyst-instruction.md
@@ -126,7 +127,7 @@ substitute for release qualification, exact-candidate receipts or published veri
 | Dispatch and owner policy | model-router-engine, model-router-dispatch, policy.default, model-router-setup, model-router-outcome | Managed service/controller tests; model-router-outcome and model-router-update-convergence tests |
 | Native subscription and catalog | subscription-hosts, native-subscription-usage, model-native-catalog, model-native-qualification, model-router-catalog | Corresponding native/catalog tests and installer convergence tests |
 | Weekly assessment and promotion | model-weekly-cycle, model-weekly-analyst, model-weekly-assessment, model-weekly-qualification, model-routing-policy-promotion, weekly-analyst-instruction | Corresponding weekly and promotion unit files |
-| Installation seam | bin/install.mjs, model-routing-operation.md, codex-console-alias and SessionStart core/budget | model-router-update-convergence, session-start-core-parity, model-terminal-launchers and npm-tarball-codex; bounded routing and console-alias installation, not an all-installer review |
+| Installation seam | bin/install.mjs, model-routing-operation.md, codex-console-alias and SessionStart core/budget | model-router-update-convergence, session-start-core-parity, model-terminal-launchers and npm-tarball-codex; bounded routing and console-alias installation, not an all-installer review; packed-clean-install and npm-tarball-codex retain sealed archive metadata reads with basename and controlled cwd, rejecting the Windows GNU-tar remote drive-letter seam |
 | Qualification and release guard | architecture-review-lock, doc-currency, release-qualification-contract, source-scope-receipt, release-transaction, release-transaction-provider; candidate/CI/protected workflows | architecture-review-lock refusal fixtures and doc-currency-review; release-evidence-dag, protected-release-workflow and agentic-qe-early-public bind the outer candidate-preflight dependency and same-run receipts; existing release contract chooses execution evidence |
 
 The exact files are enumerated in frontmatter. This mapping identifies test responsibilities; it

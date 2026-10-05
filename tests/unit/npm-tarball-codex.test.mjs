@@ -43,7 +43,7 @@ beforeAll(() => {
   if (sealed) {
     packed = {
       filename: path.basename(sealed),
-      files: execFileSync('tar', ['-tzf', sealed], { encoding: 'utf8' })
+      files: execFileSync('tar', ['-tzf', path.basename(sealed)], { cwd: path.dirname(sealed), encoding: 'utf8' })
         .trim().split('\n').map((entry) => ({ path: entry.replace(/^package\//, '').replace(/\/$/, '') })),
     };
     extractTarball(sealed, dest);

@@ -104,3 +104,24 @@ describe('early public artifact QE', () => {
     expect(workflow).toContain('needs: [candidate-preflight, ci, integration, ux, stranger, early-public-linux, early-public-macos, early-public-windows, macos-candidate-search]');
   });
 });
+
+
+it('executes sealed archive metadata reads without GNU-tar remote drive-letter arguments', () => {
+  const sealed = 'D:\\a\\ruvnet-brain\\release-evidence\\candidate.tgz';
+  const calls = ['tests/qe/release/packed-clean-install.test.mjs', 'tests/unit/npm-tarball-codex.test.mjs'].flatMap(file =>
+    fs.readFileSync(path.join(ROOT, file), 'utf8').match(/execFileSync\('tar',\s*\[\s*'-(?:xOf|tzf)'[\s\S]*?\{[^}]+\}\)/g) || []);
+  expect(calls).toHaveLength(3);
+  for (const expression of calls) {
+    const invoked = [];
+    const execFileSync = (binary, args, options) => {
+      // GNU tar's actual failure seam: a colon-bearing archive is interpreted as a remote host.
+      if (args[1].includes(':')) throw new Error('GNU tar remote archive interpretation');
+      invoked.push({ binary, archive: args[1], cwd: options.cwd });
+      return 'sealed metadata';
+    };
+    vm.runInNewContext(expression, { sealed, path: path.win32, execFileSync });
+    expect(invoked).toEqual([{ binary: 'tar', archive: 'candidate.tgz', cwd: path.win32.dirname(sealed) }]);
+    expect(() => vm.runInNewContext(expression.replace('path.basename(sealed)', 'sealed'),
+      { sealed, path: path.win32, execFileSync })).toThrow('remote archive');
+  }
+});
