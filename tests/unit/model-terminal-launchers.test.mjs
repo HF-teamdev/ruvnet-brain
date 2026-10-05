@@ -6,7 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { terminalTempRoot } from '../../scripts/model-terminal-gateway.mjs';
 import { installTerminalLaunchers, terminalShellPlan, terminalInvocation, resolveTerminalUpstream,
   runClaudeTerminal, validateClaudeReadiness, validateClaudeTerminalSettings, validateClaudeTerminalArguments,
   verifyNativeWorkerAncestry } from '../../scripts/model-terminal-launchers.mjs';
@@ -72,6 +73,15 @@ describe('known native daemon locator', () => {
     const locator = path.join(control, 'app-server-control.sock'); fs.symlinkSync(actual, locator);
     return { base, codexHome, actual, locator, daemon };
   }
+  it('resolves a private daemon locator using the platform root by default', async () => {
+    const f = await fixture(), realpath = fs.realpathSync;
+    const lookup = vi.spyOn(fs, 'realpathSync').mockImplementation((file, ...args) =>
+      file === terminalTempRoot() ? f.base : realpath(file, ...args));
+    try {
+      expect(resolveTerminalUpstream({ codexHome: f.codexHome })).toBe(f.actual);
+      expect(lookup).toHaveBeenCalledWith(terminalTempRoot());
+    } finally { lookup.mockRestore(); }
+  });
   it('resolves only known owned private hash-named endpoints and refuses foreign/misplaced targets', async () => {
     const f = await fixture(); expect(resolveTerminalUpstream({ codexHome: f.codexHome, daemonRoot: f.base })).toBe(f.actual);
     expect(() => resolveTerminalUpstream({ codexHome: f.codexHome, daemonRoot: f.base, uid: process.getuid() + 1 })).toThrow();

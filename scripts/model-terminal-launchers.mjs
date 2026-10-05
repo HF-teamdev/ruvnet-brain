@@ -6,7 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { classifyTerminalArguments, validateUpstreamSocket } from './model-terminal-gateway.mjs';
+import { classifyTerminalArguments, validateUpstreamSocket, terminalTempRoot } from './model-terminal-gateway.mjs';
 import { nativeGatewayLaunch } from './model-routing-gateway.mjs';
 import { subscriptionEnvironment, assertSubscriptionAuth } from './model-router-dispatch.mjs';
 
@@ -49,7 +49,7 @@ function backup(file) {
 
 /** Follow only the native daemon's known user-owned locator, then validate the actual private endpoint. */
 export function resolveTerminalUpstream({ codexHome = path.join(os.homedir(), '.codex'), uid = process.getuid?.(),
-  daemonRoot = '/private/tmp' } = {}) {
+  daemonRoot = terminalTempRoot() } = {}) {
   if (!path.isAbsolute(codexHome) || !path.isAbsolute(daemonRoot) || uid == null) throw new Error('Absolute owned socket locator required');
   const home = fs.realpathSync(codexHome);
   const directory = path.join(home, 'app-server-control');

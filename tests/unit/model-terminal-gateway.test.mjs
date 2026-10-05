@@ -8,7 +8,7 @@ import { PassThrough } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { describe, it, expect, afterEach } from 'vitest';
 import { createTerminalTransport, classifyTerminalArguments, validateUpstreamSocket, connectProxyWebSocket,
-  parseTerminalInvocation, runTerminalGateway, MAX_TERMINAL_BYTES } from '../../scripts/model-terminal-gateway.mjs';
+  parseTerminalInvocation, runTerminalGateway, terminalTempRoot, MAX_TERMINAL_BYTES } from '../../scripts/model-terminal-gateway.mjs';
 
 const cleanups = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -27,7 +27,7 @@ function backend() {
       if (packet.method === 'initialize') child.stdout.write(JSON.stringify({ id: packet.id, result: { userAgent: 'fixture' } }) + '\n');
       if (packet.method === 'account/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { account: { type: 'chatgpt' } } }) + '\n');
       if (packet.method === 'config/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { config: { model_provider: 'openai', service_tier: 'default', features: { fast_mode: false } } } }) + '\n');
-      if (packet.method === 'thread/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { thread: { id: packet.params.threadId, modelProvider: 'openai', cwd: '/private/tmp' } } }) + '\n');
+      if (packet.method === 'thread/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { thread: { id: packet.params.threadId, modelProvider: 'openai', cwd: fs.realpathSync(os.tmpdir()) } } }) + '\n');
       if (packet.method === 'account/rateLimits/read') child.stdout.write(JSON.stringify({ id: packet.id, result: { ordinaryUsageAllowed: true } }) + '\n');
       if (packet.method === 'turn/start') child.stdout.write(JSON.stringify({ id: packet.id, result: { turn: { id: 'turn' } } }) + '\n');
     }
@@ -175,6 +175,34 @@ describe('native terminal Unix WebSocket transport', () => {
 });
 
 describe('terminal launch boundaries', () => {
+  it('selects short platform roots without trusting a potentially long TMPDIR', () => {
+    expect(terminalTempRoot('darwin')).toBe('/private/tmp');
+    expect(terminalTempRoot('linux')).toBe('/tmp');
+    expect(() => terminalTempRoot('win32')).toThrow(/requires macOS or Linux/);
+  });
+  it('uses the platform default for an actual private Unix socket and removes only its owned directory', async () => {
+    const f = await fixture();
+    expect(path.dirname(f.transport.directory)).toBe(fs.realpathSync(terminalTempRoot()));
+    expect(Buffer.byteLength(f.transport.socketPath)).toBeLessThanOrEqual(100);
+    expect(fs.statSync(f.transport.directory).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(f.transport.socketPath).mode & 0o777).toBe(0o600);
+    f.transport.close(); expect(fs.existsSync(f.transport.directory)).toBe(false);
+    expect(fs.existsSync(terminalTempRoot())).toBe(true);
+  });
+  it('fails closed on Windows even with an explicit root while preserving admin passthrough', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const native = backend(), calls = [];
+    Object.defineProperty(process, 'platform', { ...descriptor, value: 'win32' });
+    try {
+      await expect(createTerminalTransport({ child: native.child, tempRoot: '/nonexistent' })).rejects.toThrow(/requires macOS or Linux/);
+      await expect(runTerminalGateway({ realBinary: process.execPath, tempRoot: '/nonexistent', spawnNative: () => { calls.push('interactive'); } })).rejects.toThrow(/requires macOS or Linux/);
+      expect(native.child.kills).toEqual([]); expect(calls).toEqual([]);
+      const result = await runTerminalGateway({ realBinary: process.execPath, args: ['--version'], spawnNative: (_command, args) => {
+        calls.push(args); const child = new EventEmitter(); setImmediate(() => child.emit('exit', 0, null)); return child;
+      } });
+      expect(result).toEqual({ code: 0, signal: null }); expect(calls).toEqual([['--version']]);
+    } finally { Object.defineProperty(process, 'platform', descriptor); }
+  });
   it('validates owned actual sockets and rejects files, symlinks and accessible sockets/directories', async () => {
     const { file, directory } = await socketFixture(); expect(validateUpstreamSocket(file)).toBe(file);
     const link = path.join(directory, 'link'); fs.symlinkSync(file, link); expect(() => validateUpstreamSocket(link)).toThrow(/Symlink/);

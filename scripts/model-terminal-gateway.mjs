@@ -21,6 +21,12 @@ const ADMIN = new Set(['login', 'logout', 'mcp', 'plugin', 'completion', 'update
 const VALUES = new Set(['-c', '--config', '--enable', '--disable', '-i', '--image', '-m', '--model',
   '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval']);
 
+/** Short Unix roots avoid long environment-provided temp paths; Windows has no qualified transport. */
+export function terminalTempRoot(platform = process.platform) {
+  if (!['darwin', 'linux'].includes(platform)) throw new Error('Native Unix terminal routing requires macOS or Linux');
+  return platform === 'darwin' ? '/private/tmp' : '/tmp';
+}
+
 /** Keep native arguments verbatim; only proved interactive paths may enter the routed transport. */
 export function classifyTerminalArguments(args = []) {
   if (args.some((arg) => /^--(?:remote(?:-auth-token-env)?|no-daemon)(?:=|$)/.test(arg))) {
@@ -138,11 +144,12 @@ export async function connectProxyWebSocket(proxy, { startupMs = 10000, maxBytes
 
 /** Real HTTP/WebSocket framing over one private Unix socket, converted to native JSONL streams. */
 export async function createTerminalTransport({ child, diagnostics = process.stderr, gatewayOptions = {},
-  tempRoot = '/private/tmp', maxBytes = MAX_TERMINAL_BYTES, startupMs = 10000, onFailure = () => {} } = {}) {
+  tempRoot, maxBytes = MAX_TERMINAL_BYTES, startupMs = 10000, onFailure = () => {} } = {}) {
+  const defaultTempRoot = terminalTempRoot();
   const { WebSocketServer, WebSocket } = await import('ws');
   if (!child?.stdin || !child?.stdout) throw new Error('Native proxy child required');
   if (!(maxBytes > 0 && maxBytes <= MAX_TERMINAL_BYTES)) throw new Error('Invalid transport byte bound');
-  const directory = fs.mkdtempSync(path.join(fs.realpathSync(tempRoot), 'crt-'));
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(tempRoot ?? defaultTempRoot), 'crt-'));
   fs.chmodSync(directory, 0o700);
   const socketPath = path.join(directory, 'r.sock');
   if (Buffer.byteLength(socketPath) > 100) { fs.rmSync(directory, { recursive: true }); throw new Error('Unix socket path too long'); }
@@ -247,7 +254,7 @@ export function parseTerminalInvocation(argv, env = process.env) {
 }
 
 export async function runTerminalGateway({ realBinary, upstreamSocket, args = [], env = process.env,
-  spawnNative = spawn, adaptProxy = connectProxyWebSocket, gatewayOptions = {}, startupMs = 10000, tempRoot = '/private/tmp',
+  spawnNative = spawn, adaptProxy = connectProxyWebSocket, gatewayOptions = {}, startupMs = 10000, tempRoot,
   signalSource = process, diagnostics = process.stderr } = {}) {
   if (!path.isAbsolute(realBinary || '')) throw new Error('Explicit absolute native executable required');
   const binary = fs.realpathSync(realBinary), clean = subscriptionEnvironment(env);
@@ -257,6 +264,8 @@ export async function runTerminalGateway({ realBinary, upstreamSocket, args = []
     const child = spawnNative(binary, args, { env: clean, shell: false, stdio: 'inherit' });
     return await exitOf(child);
   }
+  const defaultTempRoot = terminalTempRoot();
+  tempRoot ??= defaultTempRoot;
   // Reuse the established provider/config guards; this does not spawn app-server.
   const normalized = nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: ['app-server', ...args], env: clean });
   // Native global options precede the original subcommand/prompt, including a literal '--'.
