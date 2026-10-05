@@ -38,7 +38,8 @@ function sandbox() {
 }
 
 /** Run the script against an isolated project dir with a controllable fake `ruflo` on disk. */
-function run(args, { rufloBody = null } = {}) {
+function run(args, { rufloBody = null, windowsShim = false } = {}) {
+  const nodeArgs = [];
   const dir = tmp || sandbox();
   let ruflo = '/nonexistent/ruflo';
   if (rufloBody) {
@@ -66,15 +67,26 @@ if (op === 'store') {
 } else if (op === 'distill') console.log('Episodes | 1');
 else if (op === 'search') console.log('lesson-probe');
 `);
-    if (process.platform === 'win32') {
-      ruflo = path.join(dir, 'fake-ruflo.cmd');
-      fs.writeFileSync(ruflo, '@echo off\r\nnode "%~dp0fake-ruflo.mjs" %*\r\n');
+    if (process.platform === 'win32' || windowsShim) {
+      const prefix = path.join(dir, 'managed npm global');
+      const pkg = path.join(prefix, 'node_modules', 'ruflo');
+      fs.mkdirSync(pkg, { recursive: true });
+      fs.renameSync(entry, path.join(pkg, 'cli.mjs'));
+      fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ruflo', bin: { ruflo: 'cli.mjs' } }));
+      ruflo = path.join(prefix, 'ruflo.cmd');
+      // The adapter must bypass this shim and call its package entry directly.
+      fs.writeFileSync(ruflo, '@echo off\r\nexit /b 99\r\n');
+      if (windowsShim && process.platform !== 'win32') {
+        const preload = path.join(dir, 'windows-platform.mjs');
+        fs.writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'win32' });");
+        nodeArgs.push('--import', preload);
+      }
     } else {
       ruflo = entry;
       fs.chmodSync(entry, 0o755);
     }
   }
-  return spawnSync(process.execPath, [SCRIPT, '--dir', dir, ...args], {
+  return spawnSync(process.execPath, [...nodeArgs, SCRIPT, '--dir', dir, ...args], {
     encoding: 'utf8',
     timeout: 30_000,
     env: { ...process.env, RUFLO_BIN: ruflo },
@@ -166,6 +178,21 @@ describe('record-lesson — a lesson is not "stored" until it round-trips', () =
     expect(second.status).toBe(0);
     expect(value1).toMatch(/TASK: probe task OUTCOME: success RECORDING: [0-9a-f-]{36}$/);
     expect(value2).not.toBe(value1);
+  });
+
+  it('preserves literal lesson text through the managed Windows npm shim adapter', () => {
+    sandbox();
+    const task = 'spaces "quotes" & | < > ^ %PATH% !value! $(touch SHOULD_NOT_EXIST) `echo nope`';
+    const tried = "single 'quote' and more words";
+    const r = run(['--task', task, '--tried', tried, '--slug', 'probe'], {
+      rufloBody: HEALTHY_RUFLO, windowsShim: true,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/round-trip verified/);
+    const value = JSON.parse(fs.readFileSync(path.join(tmp, 'fake-value.json'), 'utf8'));
+    expect(value).toMatch(/ RECORDING: [0-9a-f-]{36}$/);
+    expect(value.slice(0, value.lastIndexOf(' RECORDING: '))).toBe(`TASK: ${task} TRIED(failed): ${tried} OUTCOME: success`);
+    expect(fs.existsSync(path.join(tmp, 'SHOULD_NOT_EXIST'))).toBe(false);
   });
 
   it('fails loudly, not silently, when the resolved ruflo binary does not exist', () => {

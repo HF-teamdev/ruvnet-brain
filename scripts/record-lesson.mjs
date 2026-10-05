@@ -20,7 +20,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { resolveRuflo, RUFLO_MISSING } from '../plugin/scripts/ruflo-bin.mjs';
+import { resolveRuflo, rufloInvocation, RUFLO_MISSING } from '../plugin/scripts/ruflo-bin.mjs';
 
 const arg = (name, def = '') => {
   const i = process.argv.indexOf(`--${name}`);
@@ -67,9 +67,13 @@ const value = [
 // Every `ruflo` invocation auto-starts a project background daemon unless this is set (verified
 // live: ~/.npm-global/lib/node_modules/ruflo/node_modules/@claude-flow/cli/dist/src/services/
 // daemon-autostart.js:85) — recording a lesson has no business leaving one running.
-const ruflo = (args) =>
-  execFileSync(RUFLO, args, { cwd: dir, encoding: 'utf8', timeout: 60000,
-    shell: process.platform === 'win32', env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' } });
+const ruflo = (args) => {
+  const invocation = rufloInvocation(RUFLO, args);
+  return execFileSync(invocation.executable, invocation.args, {
+    cwd: dir, encoding: 'utf8', timeout: 60000, shell: false,
+    env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' },
+  });
+};
 
 console.log(`\nRecording lesson into ${path.basename(dir)}/.swarm/memory.db  (namespace: ${ns})`);
 console.log(`  key: ${key}`);
