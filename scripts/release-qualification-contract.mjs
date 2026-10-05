@@ -2,6 +2,15 @@
 export const RELEASE_REQUIREMENTS = Object.freeze({
   "source": [
     {
+      "id": "customer-scope-and-session-ownership",
+      "reason": "Captured assistant commitments retain their actual session owner and honest noncompleted states; scoped grounding retains strict conservative evidence under contention; legacy guidance never suppresses a tool call",
+      "files": ["tests/unit/continuation-commitment-ownership.test.mjs"],
+      "platformFiles": {
+        "linux": ["tests/unit/grounding-scope.test.mjs", "tests/unit/hijack-no-defer.test.mjs"],
+        "macos": ["tests/unit/grounding-scope.test.mjs", "tests/unit/hijack-no-defer.test.mjs"]
+      }
+    },
+    {
       "id": "bounded-advocacy-and-write-grounding",
       "reason": "Explicit document meaning requests retain corroboration; literal searches stay silent; POSIX complete-write exemptions preserve executable and managed-store grounding",
       "files": ["tests/unit/advocacy-route.test.mjs", "tests/unit/advocacy-catalog.test.mjs", "tests/unit/card-lane.test.mjs"],
