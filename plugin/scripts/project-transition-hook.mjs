@@ -9,6 +9,7 @@ import { automaticProgressionSuspensionResult } from './project-progression-susp
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { redactText } from './continuity-events.mjs';
+import { conditionNotice } from './continuity-journal.mjs';
 import { normalizeHostEvent } from './hook-input.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { withProgressionReader } from './project-progression-reader.mjs';
@@ -211,10 +212,21 @@ export function runProjectTransitionHook(projectDir, event, { payload = {}, host
   return { state: result?.progressionCaptured && result.receipt ? 'committed' : 'pending', eventId: observation.id, result };
 }
 
+/** One pending-readback condition across prompt/tool boundaries and both CLI entrypoints. */
+export function transitionPendingNotice(projectDir, payload, message) {
+  const { projectRoot } = resolveProjectStore({ projectDir, gitTimeoutMs: 500 });
+  return conditionNotice({ swarm: path.join(projectRoot, '.swarm'),
+    session: normalizeHostEvent(payload)?.session_id, condition: 'project-transition-pending-readback', message });
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
-    const result = runProjectTransitionHook(payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(), process.argv[2], { payload });
-    if (result.state === 'pending') process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: process.argv[2], additionalContext: 'Project memory transition is pending; exact AgentDB readback was not verified at this boundary.' } }));
+    const projectDir = payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const result = runProjectTransitionHook(projectDir, process.argv[2], { payload });
+    if (result.state === 'pending') {
+      const message = transitionPendingNotice(projectDir, payload, 'Project memory transition is pending; exact AgentDB readback was not verified at this boundary.');
+      if (message) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: process.argv[2], additionalContext: message } }));
+    }
   } catch { process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition capture degraded; exact readback was not verified.' })); }
 }

@@ -300,10 +300,14 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-
   // Finish evaluating this module before importing its transition consumer.
   void (async () => {
   try {
-    const { runProjectTransitionHook } = await import('./project-transition-hook.mjs');
+    const { runProjectTransitionHook, transitionPendingNotice } = await import('./project-transition-hook.mjs');
     const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
-    const result = runProjectTransitionHook(payload.cwd || projectDirectory(), process.argv[2], { payload });
-    if (result.state === 'pending') process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition remains pending; exact readback was not verified.' }));
+    const projectDir = payload.cwd || projectDirectory();
+    const result = runProjectTransitionHook(projectDir, process.argv[2], { payload });
+    if (result.state === 'pending') {
+      const message = transitionPendingNotice(projectDir, payload, 'Project memory transition remains pending; exact readback was not verified.');
+      if (message) process.stdout.write(JSON.stringify({ systemMessage: message }));
+    }
   } catch { process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition capture degraded; exact readback was not verified.' })); }
   })();
 } else if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-hook.mjs')) {
