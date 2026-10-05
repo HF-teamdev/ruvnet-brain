@@ -73,7 +73,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/install-activation-rollback.test.mjs",
         "tests/unit/forge-update-apply-rollback.test.mjs",
         "tests/unit/forge-update-archive-digest.test.mjs",
-        "tests/unit/kb-copy-proof-legacy-sidecars.test.mjs"
+        "tests/unit/kb-copy-proof-legacy-sidecars.test.mjs",
+        "tests/unit/kb-copy-proof-unknown-content.test.mjs"
       ]
     },
     {
@@ -256,10 +257,14 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     },
     {
       "id": "owned-uninstall",
-      "reason": "Actual offline uninstall preserves unrelated files and user guidance",
+      "reason": "Actual offline uninstall and POSIX copy-cleanup callers preserve unrelated files, changed unknown bytes and private state",
       "files": [
         "tests/integration/uninstall-footprint.test.mjs"
-      ]
+      ],
+      "platformFiles": {
+        "linux": ["tests/unit/brain-footprint.test.mjs"],
+        "macos": ["tests/unit/brain-footprint.test.mjs"]
+      }
     },
     {
       "id": "canonical-memory-native-boundary",

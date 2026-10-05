@@ -1,4 +1,4 @@
-Updated: 2026-10-05 06:05:27 UTC | Version 1.0.0
+Updated: 2026-10-05 07:42:14 UTC | Version 1.0.1
 Created: 2026-10-05 06:05:27 UTC
 
 # North Star product capability rubric v1
@@ -98,3 +98,7 @@ The weighted overall grade is the sum of each category grade multiplied by its w
 The 4.5.7 assessment is stored as `north-star-product-score-current-1791177098594`, bound to source `f7ec936b5c760661d0806980a341cf781861f08d`. It records each award, deduction, confidence and limitation. Its weighted capability estimate is 54.75/100, rounded to 55. This is engineering judgment, not a measured task-success percentage or a controlled improvement over earlier incompatible scores.
 
 Subsequent improvements require a new append-only assessment under this same rubric. Do not overwrite the baseline or infer a higher score merely from a passing release.
+
+## Evidence-bound correction to the same public release
+
+Assessment `north-star-product-score-current-1791186134236` retains this exact rubric and the 4.5.7 source. A newly reproduced unsafe cleanup classifier reduces `ops-4` from 10 to 0 under the existing fundamentally-unsafe anchor: a changed unknown file can be declared disposable merely because its pathname also exists in live. The read-only counterexample did not delete a collision file or establish customer data loss. Ops becomes 55/100; the weighted overall estimate becomes 54.25, rounded to 54. All other awards remain unchanged. Private-update preservation evidence is scoped to the tested fenced stores. The pending 4.5.8 safety repair does not raise the public-release grade until delivered evidence supports a new assessment.
