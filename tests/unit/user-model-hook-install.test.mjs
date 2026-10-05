@@ -20,6 +20,9 @@ test('dry plan is inert; native registrations append preserving private settings
   write(home, '.codex/hooks.json', { hooks: { UserPromptSubmit: [verify], Stop: [] }, privateSetting: 123 });
   write(home, '.claude/settings.json', { env: { PRIVATE: 'synthetic' }, hooks: { Stop: [] } });
   fs.chmodSync(path.join(home, '.claude/settings.json'), 0o640);
+  // Windows reports its own mode; preserve the observed host value rather than assuming Unix bits.
+  const initialMode = fs.statSync(path.join(home, '.claude/settings.json')).mode & 0o777;
+  if (process.platform !== 'win32') assert.equal(initialMode, 0o640);
   const before = fs.readFileSync(path.join(home, '.codex/hooks.json'), 'utf8');
   const plan = planUserModelHooks({ home });
   assert.equal(fs.readFileSync(path.join(home, '.codex/hooks.json'), 'utf8'), before);
@@ -33,7 +36,7 @@ test('dry plan is inert; native registrations append preserving private settings
   const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude/settings.json')));
   assert.deepEqual(claude.env, { PRIVATE: 'synthetic' });
   assert.match(claude.hooks.UserPromptSubmit[0].hooks[0].command, / --claude$/);
-  assert.equal(fs.statSync(path.join(home, '.claude/settings.json')).mode & 0o777, 0o640);
+  assert.equal(fs.statSync(path.join(home, '.claude/settings.json')).mode & 0o777, initialMode);
   assert.equal(fs.readFileSync(receipt.written[1].backup, 'utf8'), before);
   assert.equal(planUserModelHooks({ home }).changes.some(change => change.changed), false);
 }));
