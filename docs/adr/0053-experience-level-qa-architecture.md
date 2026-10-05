@@ -3,9 +3,9 @@ id: ADR-053
 title: Experience-level QA — test the journey a user actually has, on every host, OS, and install path
 status: Accepted
 date: 2026-07-26
-updated: 2026-10-01
+updated: 2026-10-05
 updated_source: derived-from-git
-version: 1.1.1
+version: 1.1.2
 reviewed_digest: 959c358e8ce4
 authors: [Stuart Kerr, Claude Code]
 tags: [qa, testing, experience, cross-platform, codex, agentic-qe, ci]
@@ -19,6 +19,34 @@ governs:
   - scripts/qe/*.mjs
   - tests/ux/*.mjs
 ---
+
+
+## Current source review — 2026-10-05
+
+Reviewed candidate source `1ccc1e633772c549e4a23596a1ce3c743e797315`. The scenario-list
+architecture remains accepted; built declarations and locally available fixtures are not a
+blanket statement that every journey passed on the current public package.
+
+`tests/experience/report.mjs` now resolves an explicit producer suite through
+`qualification-invocation.mjs` and `scripts/release-qualification.mjs::qualificationPlan`.
+This binds a declared scenario to the executable files selected by a literal workflow run
+command. The adapter rejects comments, echo text, embedded fixtures, unknown/omitted suites,
+and ambiguous shell declarations. It proves declared invocation coverage, **not execution,
+reachability of arbitrary shell, a successful workflow, or installed user behavior**.
+`tests/experience/scenarios.json` remains the scenario inventory, and the report retains
+classification, owner, and invocation requirements rather than manufacturing coverage from
+job names. Governed report tests were read alongside the producer adapter.
+
+`.github/workflows/ci.yml` retains the sealed-candidate capability battery;
+`.github/workflows/ux-qe.yml` is now a reusable, exact-candidate workflow with Linux/macOS/Windows
+jobs and real UX driver commands. `scripts/qe` and `tests/ux` remain component producers with
+explicit budgets. Historical July rollout numbers and individual self-check findings below
+are dated design/incident records, not a current inventory of shipped or failing hooks. In
+particular the old universal 5-second prompt-path statement is superseded by the actual
+per-event deadlines in the owned hook registry; it must not be used to diagnose current hooks.
+No new latency distribution, hostile-home sweep, cross-platform native turn, or published-byte
+matrix was run in this review. Publication remains governed by CONTRIBUTING.md and the
+protected exact-artifact verification path; source review cannot promote `install-verified`.
 
 # ADR-053: Experience-level QA
 

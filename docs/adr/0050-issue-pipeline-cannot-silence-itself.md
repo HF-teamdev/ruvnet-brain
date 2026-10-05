@@ -4,11 +4,43 @@ title: The issue pipeline may never manufacture its own acknowledgment — aware
 status: Accepted
 date: 2026-07-24
 updated: 2026-09-11
+
+## Current source review — 2026-10-05
+
+Reviewed candidate source `1ccc1e633772c549e4a23596a1ce3c743e797315`; no GitHub comments,
+pages, unattended fixer, or account configuration were executed for this review. The incident
+cutoff and its 40/100 apparatus verdict below remain historical, not a current product grade.
+
+`scripts/issue-watch.mjs::judgeIssue` still excludes owner-authored bot-marked comments from
+human acknowledgment. `scripts/issue-fix.mjs` preserves prior fields through
+`attemptStartRecord`, defaults its consecutive-failure breaker to one, and its unattended
+execution policy prohibits public comments. These are source boundaries, not evidence that a
+current scheduled watcher delivered a page. The marker convention is still weaker than a
+separate GitHub App identity; that durable identity follow-up remains open.
+
+One limit in the stated immediate-awareness contract is visible in the current watcher:
+first-sighting state can be persisted when acknowledgment succeeds even if the push fails.
+The next run then has an existing state record and does not retry the first-sighting page;
+SLA escalation is a different path. Thus the intended immediate, delivery-derived retry is
+**not fully established by the current implementation**. Do not claim that a successful public
+acknowledgment proves the maintainer was paged. Repair would require independent delivery state
+and a two-run acknowledgment-success/push-failure regression; it is outside this document-only
+change.
+
+The hook's issue pointer is independently constrained by
+`plugin/scripts/session-start-issue-alert.mjs`: a bounded cached observation, private owner-only
+repo entitlement, matching current repository, and freshness/future-time checks. It emits a
+count and pointer, not the full issue report, and has no network lookup in that stage. Windows
+entitlement currently fails closed. The source review does not prove installed provider delivery
+or privacy changes not yet integrated at this SHA. The `updated_pinned` date continues to identify
+the incident cutoff; this section records the new review date without rewriting that cutoff.
+
 # PINNED: this records the incident cutoff, not the last edit. Asserted by
 # tests/unit/fix-workstream-guidance.test.mjs. Do not let a currency stamp move it.
 updated_pinned: true
 impl: wired
 reviewed_digest: 51940a548841
+version: 1.0.1
 authors: [Stuart Kerr, Claude Code]
 tags: [issues, automation, alerting, sla, security, circuit-breaker]
 supersedes: []

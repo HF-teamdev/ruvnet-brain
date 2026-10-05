@@ -3,9 +3,10 @@ id: ADR-049
 title: The console rebuild — explain every section, scope every suggestion, and make the safe ones checkable
 status: Accepted
 date: 2026-07-24
-updated: 2026-09-27
+updated: 2026-10-05
 updated_source: derived-from-git
 reviewed_digest: 9f5c0ce4d4a0
+version: 1.0.1
 authors: [Stuart Kerr, Claude Code]
 tags: [onboarding, ux, console, advocacy, capability, cache, honesty]
 supersedes: []
@@ -18,6 +19,28 @@ governs:
   - scripts/nightly-controller.mjs
   - bin/install.mjs
 ---
+
+
+## Current source review — 2026-10-05
+
+Reviewed candidate source `1ccc1e633772c549e4a23596a1ce3c743e797315`; this is a
+source review, not a new browser, published-install, undo, or release verification.
+The original explainer, per-recommendation scope, project-cache isolation, and consent-gated
+Apply decisions remain accepted. `console/app.js` retains `infoBtn`, `jumpToRec`, and the
+server-vouched capability predicate; `scripts/onboarding-console.mjs` retains project-keyed
+`serveCached` and stamps `recId` only for recommendations built by the engine.
+`scripts/console-engine.mjs` still has `CAPABILITY_ELIGIBLE = {}`: **zero capability checkboxes
+currently qualify**, even though the bridge is built. An empty eligibility set is not proof that
+an OFF capability has an available inverse.
+
+The Complete Brain / RuVector Only install profile remains a coarse corpus-install choice.
+It is distinct from the user-scoped `groundingScope` conversational trigger setting and
+`updateSource` tool-source preference introduced in the candidate; neither setting proves a new
+capability undo or broadens retrieval eligibility. Runtime preference and nightly/installer
+wiring were checked for this boundary. The broader granular install checklist remains a design
+follow-up; this review did not validate it in a live installed Console. The historical runtime
+and browser receipts below retain their original source/date bounds. The final integration
+must separately rebind the governed-source review digest after remaining installer changes.
 
 # ADR-049: The console rebuild
 

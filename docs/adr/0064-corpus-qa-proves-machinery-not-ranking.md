@@ -3,9 +3,10 @@ id: ADR-064
 title: The corpus-QA round trip proves the machinery, not the ranking
 status: Accepted
 date: 2026-08-06
-updated: 2026-09-27
+updated: 2026-10-05
 updated_source: derived-from-git
 reviewed_digest: 75418dee4ddb
+version: 1.0.1
 authors: [Stuart Kerr, Claude Code]
 tags: [corpus-qa, nightly, retrieval, near-duplicates, diagnosability, escalation]
 supersedes: []
@@ -17,6 +18,34 @@ governs:
   - tests/unit/corpus-qa.test.mjs
   - tests/unit/self-update-failure-reason.test.mjs
 ---
+
+
+## Current source review — 2026-10-05
+
+Reviewed candidate source `1ccc1e633772c549e4a23596a1ce3c743e797315`. The accepted
+machinery-versus-answer-quality distinction remains intact. `scripts/corpus-qa.mjs` still
+checks structure, vector/read compatibility, and bounded deterministic self-retrieval; it
+reports near-duplicate/deep-crowd observations and fails absence from the wider query window.
+`tests/unit/corpus-qa.test.mjs` remains the fixture boundary for those semantics. A passing
+round trip is not evidence that real user questions retrieve the right answer.
+
+The source formula is `min(500, max(10, floor(n/2)))`. Its lower floor means that for a tiny
+corpus of at most ten rows the requested window can cover the entire corpus; the historical
+absolute “never the whole corpus” sentence below is therefore too broad. For larger stores
+the window remains a bounded subset. Whole-corpus presence alone cannot establish ranking
+quality or eliminate the need for structural/negative controls. This document-only review
+neither changes the formula nor runs a fresh real-store retrieval campaign.
+
+`scripts/self-update.mjs` captures and re-emits the verdict-bearing streams and preserves a
+bounded failure reason; it is an author-side candidate builder whose apply path refuses an
+unsafe worktree, not an installed updater or publisher. `scripts/nightly-wrapper.sh` is likewise
+an author diagnostic. Its learning step now requests the full causal portfolio through native
+Codex rather than the historical single Haiku trap; source wiring does not prove that it is
+scheduled, ran, completed, or established current learning quality. No such model run was made
+for this review. Current corpus publishing belongs to the protected workflow described in
+CONTRIBUTING.md, and installed refresh ownership remains separate. The 2026-08 real-data A/B,
+mutation campaign, and abort/stamp observations below remain historical evidence with their
+original artifact bounds, not proof of today's store generation.
 
 # ADR-064 — The corpus-QA round trip proves the machinery, not the ranking
 
