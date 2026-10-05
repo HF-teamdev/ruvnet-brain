@@ -102,6 +102,7 @@
     "kb/verify-citation.mjs",
     "kb/retrieval-result.mjs",
     "kb/forge-update.mjs",
+    "kb/download-retry.mjs",
     "kb/corpus-release-identity.mjs",
     "kb/capability-only.mjs",
     "kb/capability-summaries/",

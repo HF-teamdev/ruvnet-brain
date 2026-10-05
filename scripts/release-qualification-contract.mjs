@@ -2,6 +2,20 @@
 export const RELEASE_REQUIREMENTS = Object.freeze({
   "source": [
     {
+      "id": "honest-currency-lesson-and-metrics-evidence",
+      "reason": "Foreign KB roots remain isolated; panel currency derives from measured completion rather than checkout time; exact lesson readback binds this shell-free write; public metrics never fabricate performance or a competing product score",
+      "files": ["tests/unit/forge-currency-selected-root.test.mjs", "tests/unit/brain-score-producer.test.mjs", "tests/unit/brain-grade-groundtruth-timestamp.test.mjs", "tests/unit/record-lesson.test.mjs", "tests/unit/lesson-presentation-budget.test.mjs", "tests/unit/metrics-truth.test.mjs"]
+    },
+    {
+      "id": "automatic-update-source-and-transport",
+      "reason": "Captured owner policy never falls back on read failures; installed-only automation avoids npx; transient GET and body failures retry without weakening trust; POSIX executable aliases retain interpreter identity",
+      "files": ["tests/unit/automatic-update.test.mjs", "tests/unit/download-retry.test.mjs"],
+      "platformFiles": {
+        "linux": ["tests/unit/automatic-update-node-alias.test.mjs"],
+        "macos": ["tests/unit/automatic-update-node-alias.test.mjs"]
+      }
+    },
+    {
       "id": "customer-scope-and-session-ownership",
       "reason": "Captured assistant commitments retain their actual session owner and honest noncompleted states; scoped grounding retains strict conservative evidence under contention; legacy guidance never suppresses a tool call",
       "files": ["tests/unit/continuation-commitment-ownership.test.mjs"],
