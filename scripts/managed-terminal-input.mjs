@@ -12,6 +12,7 @@ export function createManagedTerminal({ input, output, maxPromptBytes = 64 * 102
   if (!input?.on || !output?.write || ![maxPromptBytes, maxQueuedPrompts, maxQueueBytes].every(n => Number.isSafeInteger(n) && n > 0)) {
     throw new Error('Managed terminal requires streams and positive input bounds');
   }
+  const priorFlowing = input.readableFlowing, priorRaw = input.isRaw;
   const terminal = Boolean(input.isTTY && output.isTTY), dumbEditor = process.env.TERM === 'dumb', editorInput = new PassThrough();
   editorInput.isTTY = terminal;
   editorInput.setRawMode = mode => input.setRawMode?.(mode);
@@ -34,6 +35,8 @@ export function createManagedTerminal({ input, output, maxPromptBytes = 64 * 102
     input.removeListener('data', receive); input.removeListener('end', ended); input.removeListener('error', inputError);
     editor.removeListener('line', line); editor.removeListener('SIGINT', interrupted); editor.removeListener('close', ended);
     editor.close(); editorInput.destroy();
+    if (priorFlowing !== true) input.pause?.();
+    if (terminal && typeof priorRaw === 'boolean') input.setRawMode?.(priorRaw);
     if (terminal) output.write('\x1b[?2004l');
     settle(ordinary, error || new Error('Terminal input closed')); settle(approval, error || new Error('Terminal input closed'));
     ordinary = approval = undefined;

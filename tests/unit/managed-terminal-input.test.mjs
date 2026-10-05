@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { PassThrough } from 'node:stream';
+import { spawn } from 'node:child_process';
 import { createManagedTerminal } from '../../scripts/managed-terminal-input.mjs';
 
 const START = '\x1b[200~', END = '\x1b[201~';
@@ -143,3 +144,38 @@ it('a paste frame breaks CRLF adjacency after a preceding submitted CR', async (
   const f = fixture(); expect(await queued(f, 'first\r')).toBe('first');
   expect(await queued(f, START + 'a\nb' + END + '\n')).toBe('a\nb');
 });
+
+it.each([null, false])('close pauses only the actual input flow activated by the helper (prior=%s)', prior => {
+  const input = new PassThrough(), output = new PassThrough(); if (prior === false) input.pause();
+  expect(input.readableFlowing).toBe(prior);
+  const terminal = createManagedTerminal({ input, output }); terminals.push(terminal);
+  expect(input.readableFlowing).toBe(true); terminal.close();
+  expect(input.readableFlowing).toBe(false); expect(input.destroyed).toBe(false);
+});
+it('retirement preserves input that was already externally flowing and its original raw mode', () => {
+  const input = new PassThrough(), output = new PassThrough(); const external = [];
+  input.on('data', bytes => external.push(bytes.toString())); input.isTTY = output.isTTY = true; input.isRaw = true;
+  input.setRawMode = mode => { input.isRaw = mode; }; expect(input.readableFlowing).toBe(true);
+  const terminal = createManagedTerminal({ input, output }); terminals.push(terminal); terminal.close();
+  expect(input.readableFlowing).toBe(true); expect(input.isRaw).toBe(true); expect(input.destroyed).toBe(false);
+  input.write('external owner data'); expect(external).toEqual(['external owner data']);
+});
+it('a real owned child exits naturally after close while its parent keeps stdin open', async () => {
+  const module = new URL('../../scripts/managed-terminal-input.mjs', import.meta.url).href;
+  const source = `import {createManagedTerminal} from ${JSON.stringify(module)};
+const terminal=createManagedTerminal({input:process.stdin,output:process.stdout});
+await terminal.question('INPUT_READY> '); terminal.close(); console.log('INPUT_CLOSED');`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = '', errors = '', sent = false;
+  child.stdout.on('data', bytes => { output += bytes.toString(); if (!sent && output.includes('INPUT_READY> ')) { sent = true; child.stdin.write('/exit\n'); } });
+  child.stderr.on('data', bytes => { errors += bytes.toString(); });
+  let timeout;
+  try {
+    const exit = await Promise.race([
+      new Promise((resolve, reject) => { child.once('exit', (code, signal) => resolve({ code, signal })); child.once('error', reject); }),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Owned input child did not exit with parent-held-open stdin')), 3000); }),
+    ]);
+    expect(exit).toEqual({ code: 0, signal: null }); expect(errors).toBe(''); expect(output).toContain('INPUT_CLOSED');
+    expect(sent).toBe(true); expect(child.stdin.writableEnded).toBe(false);
+  } finally { clearTimeout(timeout); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); child.stdin.destroy(); }
+}, 5000);
