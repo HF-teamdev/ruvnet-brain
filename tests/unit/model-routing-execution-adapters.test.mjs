@@ -198,3 +198,31 @@ test('allowance metadata uses the validated native executable even when PATH poi
     assert.deepEqual(seen[0][1], ['app-server']);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
+
+
+test('Claude adapter floors fractional remaining time and never extends the absolute deadline', async () => {
+  const native = vi.spyOn(controlledClaude, 'runControlledClaudeTurn').mockResolvedValue({});
+  const now = vi.spyOn(Date, 'now').mockReturnValue(100000);
+  try {
+    const { worker, claude: adapter } = fixture({ executeNative: undefined, budget: { deadline: 105000 } });
+    worker.decision = { ...worker.decision, harness: 'claude-code', provider: 'anthropic' };
+    const fractional = await adapter.prepare({ worker, timeoutMs: 4998.938959 });
+    await adapter.launch(fractional);
+    assert.equal(native.mock.calls[0][0].timeoutMs, 4998);
+    assert.equal(Number.isSafeInteger(native.mock.calls[0][0].timeoutMs), true);
+    const delayed = await adapter.prepare({ worker, timeoutMs: 4998.938959 });
+    now.mockReturnValue(104000);
+    await adapter.launch(delayed);
+    assert.equal(native.mock.calls[1][0].timeoutMs, 1000);
+    const expired = await adapter.prepare({ worker, timeoutMs: 1000 });
+    now.mockReturnValue(105001);
+    await adapter.launch(expired);
+    assert.equal(native.mock.calls.length, 2);
+    assert.match(expired.error.message, /deadline exhausted/);
+    now.mockReturnValue(100000);
+    const exhaustedFraction = await adapter.prepare({ worker, timeoutMs: 0.8 });
+    await adapter.launch(exhaustedFraction);
+    assert.equal(native.mock.calls.length, 2);
+    assert.match(exhaustedFraction.error.message, /deadline exhausted/);
+  } finally { now.mockRestore(); native.mockRestore(); }
+});

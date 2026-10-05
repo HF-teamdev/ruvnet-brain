@@ -224,6 +224,7 @@ export function createGuardedWorkflowAdapters({ request, budget, env = process.e
       },
       launch: async state => {
         try {
+          if (host === 'claude') state.timeoutMs = Math.floor(Math.min(state.timeoutMs, budget.deadline - Date.now()));
           if (state.timeoutMs <= 0) throw blocked('Shared workflow deadline exhausted');
           if (executeNative) state.observation = await executeNative({ ...state, prompt: state.worker.prompt + (state.worker.reviewContract ? '\n' + state.worker.reviewContract : ''), env });
           else if (host === 'codex') {
