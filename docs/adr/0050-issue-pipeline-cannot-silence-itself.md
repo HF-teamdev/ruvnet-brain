@@ -10,7 +10,7 @@ updated: 2026-09-11
 updated_pinned: true
 impl: wired
 reviewed_digest: 51940a548841
-version: 1.0.2
+version: 1.0.3
 authors: [Stuart Kerr, Claude Code]
 tags: [issues, automation, alerting, sla, security, circuit-breaker]
 supersedes: []
@@ -38,14 +38,13 @@ execution policy prohibits public comments. These are source boundaries, not evi
 current scheduled watcher delivered a page. The marker convention is still weaker than a
 separate GitHub App identity; that durable identity follow-up remains open.
 
-One limit in the stated immediate-awareness contract is visible in the current watcher:
-first-sighting state can be persisted when acknowledgment succeeds even if the push fails.
-The next run then has an existing state record and does not retry the first-sighting page;
-SLA escalation is a different path. Thus the intended immediate, delivery-derived retry is
-**not fully established by the current implementation**. Do not claim that a successful public
-acknowledgment proves the maintainer was paged. Repair would require independent delivery state
-and a two-run acknowledgment-success/push-failure regression; it is outside this document-only
-change.
+The previous source review reproduced a delivery-state defect: acknowledgment success could
+suppress retry of a failed first-sighting page. The later source repair, integrated as
+`2c2469c4`, now retries missing `newAlertAt` and `ackAt` independently, preserves prior state,
+and uses neutral acknowledgment wording that does not claim a page was delivered. The focused
+two-run regressions cover both failure directions, missing-topic recovery, delivered-channel
+deduplication, and dry-run behavior with mocked external calls. This repairs the source contract;
+it does not prove the owner's real notification service delivered a current scheduled page.
 
 The hook's issue pointer is independently constrained by
 `plugin/scripts/session-start-issue-alert.mjs`: a bounded cached observation, private owner-only

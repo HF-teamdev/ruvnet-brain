@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-07-26
 updated: 2026-10-05
 updated_source: derived-from-git
-version: 1.1.2
+version: 1.1.3
 reviewed_digest: 959c358e8ce4
 authors: [Stuart Kerr, Claude Code]
 tags: [qa, testing, experience, cross-platform, codex, agentic-qe, ci]
@@ -44,6 +44,9 @@ explicit budgets. Historical July rollout numbers and individual self-check find
 are dated design/incident records, not a current inventory of shipped or failing hooks. In
 particular the old universal 5-second prompt-path statement is superseded by the actual
 per-event deadlines in the owned hook registry; it must not be used to diagnose current hooks.
+The oldest-runtime coverage requirement remains unmet: package support declares Node >=18,
+but the checked-in workflow lanes use Node20/22. This review does not establish Node18 runtime
+compatibility or silently remove that requirement.
 No new latency distribution, hostile-home sweep, cross-platform native turn, or published-byte
 matrix was run in this review. Publication remains governed by CONTRIBUTING.md and the
 protected exact-artifact verification path; source review cannot promote `install-verified`.

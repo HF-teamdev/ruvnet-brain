@@ -6,7 +6,7 @@ date: 2026-07-24
 updated: 2026-10-05
 updated_source: derived-from-git
 reviewed_digest: 9f5c0ce4d4a0
-version: 1.0.1
+version: 1.0.2
 authors: [Stuart Kerr, Claude Code]
 tags: [onboarding, ux, console, advocacy, capability, cache, honesty]
 supersedes: []
@@ -136,8 +136,9 @@ project the data is about. A cross-project isolation test proves it, mutation-ch
 - The Recommendation aggregate now has a `scope` field and a fourth builder
   (`buildCapabilityRecommendations`). ADR-013's schema description is extended, not replaced.
 - The checkbox's honesty rule (present only with a server-vouched recId + proven undo) means the
-  control surface grows only as capabilities earn verified undos — one today. That is the intended
-  rate: a checkbox is a promise that the inverse exists.
+  control surface grows only as capabilities earn verified undos. The historical decision counted
+  one; the current source review above finds zero eligible capability checkboxes. A checkbox
+  remains a promise that the inverse exists.
 - **Partially resolved 2026-07-28:** the console now offers the owner-approved coarse install
   profile — **Complete Brain** or **RuVector Only** — and physically applies it to the installed RVF
   families. The broader granular install checklist (item 4 above) is still open — designed, with

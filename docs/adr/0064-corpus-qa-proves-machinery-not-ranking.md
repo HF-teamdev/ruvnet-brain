@@ -6,7 +6,7 @@ date: 2026-08-06
 updated: 2026-10-05
 updated_source: derived-from-git
 reviewed_digest: 75418dee4ddb
-version: 1.0.1
+version: 1.0.2
 authors: [Stuart Kerr, Claude Code]
 tags: [corpus-qa, nightly, retrieval, near-duplicates, diagnosability, escalation]
 supersedes: []
@@ -127,8 +127,10 @@ before returning any verdict:
   a mis-slotted vector, and a broken read path are absent at *any* k; nothing forgives them.
 
 `WIDE_K = 500` (~5.6% of metaharness), bounded by `wideKFor(n) = min(500, max(10, floor(n/2)))`.
-**Wide k may never reach the whole corpus** — a k that returns every row makes "present" vacuous and
-would silently retire the failure class this gate exists for.
+For corpora larger than the minimum window, wide k stays below the whole corpus. The current
+implementation's floor of 10 can cover every row of a corpus with at most 10 rows; the absolute
+historical "never whole corpus" claim was stronger than the implemented boundary. Whole-window
+presence alone does not establish ranking quality.
 
 ### The wide arm covers both shapes of miss, deliberately
 
