@@ -67,7 +67,8 @@ export async function executeCodexWorkflowWorker({ binary, decision, prompt, cwd
   await assertModelRoutingText(prompt);
   const clean = { ...subscriptionOnlyEnv(subscriptionEnvironment(env)), RNB_TERMINAL_LAUNCH_ACTIVE: '1' };
   assertSubscriptionAuth('codex', { env: clean });
-  const quota = await allowance({ env: clean });
+  const quota = await allowance({ env: clean,
+    spawnHost: (_command, args, options) => launch(binary, args, options) });
   if (quota.ordinaryUsageAllowed !== true) throw blocked('Native Codex included allowance not available');
   if (performance.now() >= limit || signal?.aborted) throw blocked('Native worker deadline expired during readiness');
   const spec = buildLaunch(decision, { cwd });

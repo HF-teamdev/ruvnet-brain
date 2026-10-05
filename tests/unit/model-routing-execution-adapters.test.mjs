@@ -146,3 +146,20 @@ test('native commentary cannot contaminate the final structured answer', async (
     assert.equal(result.answer,'{"tasks":[]}');assert.equal(result.modelObserved,true);
   }finally{fs.rmSync(home,{recursive:true,force:true});}
 });
+
+test('allowance metadata uses the validated native executable even when PATH points to the managed wrapper', async () => {
+  const { executeCodexWorkflowWorker } = await import('../../scripts/model-routing-execution-adapters.mjs');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-worker-native-allowance-'));
+  fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: {}, auth_mode: 'chatgpt' }));
+  const decision = { harness: 'codex', provider: 'openai', taskClass: 'medium', model: 'fixture-model', effort: 'medium', subscriptionCovered: true, selectionReviewedAt: new Date().toISOString() };
+  const seen = [];
+  try {
+    await assert.rejects(executeCodexWorkflowWorker({ binary: '/validated/native/codex', decision, prompt: 'fixture', cwd: home, readOnly: true, timeoutMs: 1000,
+      env: { CODEX_HOME: home, PATH: '/managed/wrapper' },
+      launch: (...args) => { seen.push(args); return {}; },
+      allowance: async options => { options.spawnHost('codex', ['app-server'], { env: options.env }); return { ordinaryUsageAllowed: false }; }
+    }), /allowance/);
+    assert.equal(seen.length, 1); assert.equal(seen[0][0], '/validated/native/codex');
+    assert.deepEqual(seen[0][1], ['app-server']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
