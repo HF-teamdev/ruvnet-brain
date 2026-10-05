@@ -196,7 +196,11 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     {
       "id": "canonical-progression-store",
       "reason": "Actual adopted canonical storage, exact readback, and concurrent session restoration retain consent and complete history",
-      "files": ["tests/integration/project-progression-store.test.mjs", "tests/integration/project-progression-concurrent-sessions.test.mjs"]
+      "files": ["tests/integration/project-progression-concurrent-sessions.test.mjs", "tests/integration/project-progression-reader-identity.test.mjs"],
+      "platformFiles": {
+        "linux": ["tests/integration/project-progression-store.test.mjs"],
+        "macos": ["tests/integration/project-progression-store.test.mjs"]
+      }
     },
     {
       "id": "native-explicit-interface",
