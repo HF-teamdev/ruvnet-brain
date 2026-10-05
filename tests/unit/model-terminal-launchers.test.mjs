@@ -139,6 +139,29 @@ describe('known native daemon locator', () => {
 });
 
 describe('Claude native startup guard', () => {
+  it.each([['--permission-mode', 'bypassPermissions', '--version'],
+    ['--permission-mode', 'bypassPermissions', 'auth', 'status', '--json']])('normal owner alias passes administrative argv unchanged: %j', async (...args) => {
+    controlledLaunch.mockClear();
+    const dir = directory(), log = path.join(dir, 'argv.json');
+    const native = binary(dir, `require('fs').writeFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2)));process.exit(7);`);
+    const result = await runTerminalLauncher({ host: 'claude', config: { realClaude: native }, args, env: {}, signalSource: new EventEmitter() });
+    expect(result).toEqual({ code: 7, signal: null });
+    expect(JSON.parse(fs.readFileSync(log))).toEqual(args);
+    expect(controlledLaunch).not.toHaveBeenCalled();
+  });
+  it.each([['--permission-mode', 'bypassPermissions', '--version', 'prompt'],
+    ['--permission-mode', 'bypassPermissions', '--version', '--model=opus'],
+    ['--permission-mode', 'manual', '--version'],
+    ['--permission-mode', 'bypassPermissions', '--', '--version']])('owner prefix cannot turn inference arguments into administrative passthrough: %j', async (...args) => {
+    controlledLaunch.mockClear(); controlledLaunch.mockRejectedValueOnce(new Error('controlled refusal'));
+    const dir = directory(), log = path.join(dir, 'argv.json');
+    const native = binary(dir, `require('fs').writeFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2)));`);
+    await expect(runTerminalLauncher({ host: 'claude', config: { realClaude: native }, args, env: {}, signalSource: new EventEmitter() })).rejects.toThrow('controlled refusal');
+    expect(controlledLaunch).toHaveBeenCalledOnce();
+    expect(fs.existsSync(log)).toBe(false);
+    await expect(runClaudeTerminal({ config: { realClaude: native }, args, cwd: dir, env: { CLAUDE_CODE_DISABLE_HOOKS: '1' } })).rejects.toThrow(/conflict|disables/);
+    expect(fs.existsSync(log)).toBe(false);
+  });
   it.each([['--dangerously-skip-permissions', '--version'], ['--allow-dangerously-skip-permissions', '--help'],
     ['-h', '--dangerously-skip-permissions'], ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '-v']])('passes owner permission flags with information-only checks verbatim: %j', async (...args) => {
     const dir = directory(), log = path.join(dir, 'argv.json');

@@ -226,18 +226,22 @@ export function validateClaudeTerminalArguments(args) {
   return { options, prompts };
 }
 
+function claudeAdministrativeArguments(args) {
+  const administrativeArgs = args[0] === '--permission-mode' && args[1] === 'bypassPermissions' ? args.slice(2) : args;
+  const information = new Set(['--help', '-h', '--version', '-v']);
+  const ownerPermissionFlags = new Set(['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions']);
+  return administrativeArgs.some(arg => information.has(arg)) &&
+    administrativeArgs.every(arg => information.has(arg) || ownerPermissionFlags.has(arg)) ||
+    ['auth', 'mcp', 'plugin', 'plugins', 'update', 'upgrade', 'doctor', 'install'].includes(administrativeArgs[0]);
+}
+
 /** Native plugin startup only: an unloaded/crashed native worker may skip subsequent hooks. */
 export async function runClaudeTerminal({ config, args = [], env = process.env, startupMs = 10000,
   tempRoot = os.tmpdir(), cwd = process.cwd(), signalSource = process, diagnostics = process.stderr } = {}) {
   if (env.RNB_TERMINAL_LAUNCH_ACTIVE) throw new Error('Native terminal launcher recursion refused');
   if (!Number.isFinite(startupMs) || startupMs <= 0 || startupMs > 60000) throw new Error('Bounded native hook startup deadline required');
   const binary = executable(config.realClaude), clean = subscriptionEnvironment(env);
-  const information = new Set(['--help', '-h', '--version', '-v']);
-  const ownerPermissionFlags = new Set(['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions']);
-  const administrative = args.some((arg) => information.has(arg)) &&
-    args.every((arg) => information.has(arg) || ownerPermissionFlags.has(arg)) ||
-    ['auth', 'mcp', 'plugin', 'plugins', 'update', 'upgrade', 'doctor', 'install'].includes(args[0]);
-  if (administrative) {
+  if (claudeAdministrativeArguments(args)) {
     const child = spawn(binary, args, { env: clean, cwd, stdio: 'inherit', shell: false });
     const unforward = forwardSignals(child, signalSource);
     try { return await exitOf(child); } finally { unforward(); }
@@ -282,9 +286,7 @@ export async function runClaudeTerminal({ config, args = [], env = process.env, 
 
 export async function runTerminalLauncher({ host, args = [], config, env = process.env, signalSource = process } = {}) {
   if (host === 'claude') {
-    const administrative = ['auth', 'mcp', 'plugin', 'plugins', 'update', 'upgrade', 'doctor', 'install'].includes(args[0]) ||
-      args.length > 0 && args.every(arg => ['--help', '-h', '--version', '-v'].includes(arg));
-    if (administrative) return runClaudeTerminal({ config, args, env, signalSource });
+    if (claudeAdministrativeArguments(args)) return runClaudeTerminal({ config, args, env, signalSource });
     if (env.RNB_TERMINAL_LAUNCH_ACTIVE) throw new Error('Native terminal launcher recursion refused');
     const { launchControlledClaudeTerminal } = await import('./claude-controlled-terminal.mjs');
     await launchControlledClaudeTerminal({ binary: executable(config.realClaude), args, env, cwd: process.cwd() });
