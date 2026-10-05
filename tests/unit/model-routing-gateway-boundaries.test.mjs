@@ -27,14 +27,31 @@ function autoCodex(f) {
     const m = JSON.parse(b.toString());
     if (m.method === 'account/read') f.reply(m, { account: { type: 'chatgpt' } });
     if (m.method === 'config/read') f.reply(m, { config: { model_provider: 'openai', openai_base_url: null } });
-    if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: 'openai' } });
+    if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: 'openai', cwd: '/tmp' } });
     if (m.method === 'account/rateLimits/read') f.reply(m, { ordinaryUsageAllowed: true });
   });
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 describe('native gateway shared-backend and disconnect boundaries', () => {
+  it('checks project-layer configuration at the actual thread cwd and preserves an explicit turn cwd', async () => {
+    for (const override of [undefined, '/tmp/override-project']) {
+      const f = fixture('codex');
+      f.child.stdin.on('data', (chunk) => {
+        const m = JSON.parse(chunk.toString());
+        if (m.method === 'account/read') f.reply(m, { account: { type: 'chatgpt' } });
+        if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: 'openai', cwd: '/tmp/thread-project' } });
+        if (m.method === 'config/read') f.reply(m, { config: { model_provider: 'openai', chatgpt_base_url: null } });
+        if (m.method === 'account/rateLimits/read') f.reply(m, { ordinaryUsageAllowed: true });
+      });
+      const request = turn(); if (override) request.params.cwd = override;
+      f.send(request); await f.idle();
+      expect(f.sent.find((m) => m.method === 'config/read').params.cwd).toBe(override ?? '/tmp/thread-project');
+      expect(f.sent.findIndex((m) => m.method === 'thread/read')).toBeLessThan(f.sent.findIndex((m) => m.method === 'config/read'));
+      expect(f.sent.at(-1).method).toBe('turn/start');
+    }
+  });
   it('requires actual backend canonical provider and thread provider before every new turn', async () => {
-    for (const variant of ['custom-provider', 'custom-openai-endpoint', 'flattened-endpoint', 'base-url-override', 'foreign-thread', 'unknown-provider', 'priority']) {
+    for (const variant of ['custom-provider', 'custom-openai-endpoint', 'flattened-endpoint', 'base-url-override', 'chatgpt-endpoint', 'foreign-thread', 'unknown-provider', 'priority']) {
       const f = fixture('codex');
       f.child.stdin.on('data', (chunk) => {
         const m = JSON.parse(chunk.toString());
@@ -44,9 +61,10 @@ describe('native gateway shared-backend and disconnect boundaries', () => {
           ...(variant === 'custom-openai-endpoint' ? { model_providers: { openai: { base_url: 'https://untrusted.invalid', api_key: 'PRIVATE' } } } : {}),
           ...(variant === 'flattened-endpoint' ? { 'model_providers.openai.base_url': 'https://untrusted.invalid' } : {}),
           ...(variant === 'base-url-override' ? { openai_base_url: 'https://untrusted.invalid' } : {}),
+          ...(variant === 'chatgpt-endpoint' ? { chatgpt_base_url: 'https://untrusted.invalid' } : {}),
           ...(variant === 'priority' ? { service_tier: 'priority' } : {}),
         } });
-        if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: variant === 'foreign-thread' ? 'foreign' : 'openai' } });
+        if (m.method === 'thread/read') f.reply(m, { thread: { id: m.params.threadId, modelProvider: variant === 'foreign-thread' ? 'foreign' : 'openai', cwd: '/tmp' } });
         if (m.method === 'account/rateLimits/read') f.reply(m, { ordinaryUsageAllowed: true });
       });
       f.send(turn()); await f.idle();

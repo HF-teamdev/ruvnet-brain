@@ -1,11 +1,11 @@
-Updated: 2026-10-04 16:10:00 EDT | Version 0.1.0
+Updated: 2026-10-04 16:10:00 EDT | Version 0.1.1
 Created: 2026-10-04 16:10:00 EDT
 
 # Native terminal routing prototype
 
 Tested against the installed Claude Code 2.1.289 native binary and its generated mod declarations. Mods require 2.1.287 or later. This routes the native host's own `turn.step` middleware: it passes model and effort to `yield* next(...)`, preserving the native streaming result and TUI. It does not call a separate inference API or inject slash commands.
 
-`prepareClaudeTerminalMod({ destination })` in `scripts/claude-terminal-mod.mjs` materializes a private plugin directory, generates absolute Node/helper/engine paths, and copies the approved pure classifier into the mod. The source directory is deliberately unprepared. No Node APIs run inside sandboxed mod code. `$.process.run` invokes the bridge with prompt JSON on stdin, never in arguments. The existing policy engine validates current per-user catalog, profile, reviewed model/effort allocation and subscription eligibility. This bridge additionally blocks allocations past their capped seven-day evidence age; it supplies no native/default/metered fallback.
+`prepareClaudeTerminalMod({ destination })` in `scripts/claude-terminal-mod.mjs` materializes a private plugin directory, generates absolute Node/helper/engine paths, and copies the approved pure classifier into the mod. The source directory is deliberately unprepared. No Node APIs run inside sandboxed mod code. `$.process.run` invokes the bridge with prompt JSON on stdin, never in arguments. The existing policy engine validates current per-user catalog, profile, reviewed model/effort allocation and subscription eligibility. Review age remains evidence for the weekly refresh and does not revoke the owner-approved allocation; it supplies no native/default/metered fallback.
 
 A launcher must provide `RNB_CLAUDE_MOD_NONCE` (64 lowercase hexadecimal characters) and `RNB_CLAUDE_MOD_RECEIPT` (absolute receipt filename in an already prepared private directory). `session.start` calls the bridge to write an atomic, mode-0600 activation receipt. The launcher must compare nonce, exact real plugin root, native version, source digest, timestamp and live process state before accepting startup. `prepareClaudeTerminalMod` returns `modDigest`; `terminalModDigest` recomputes it. The receipt's `pid` is the bridge parent's mod worker, not an asserted main CLI PID. `--health` supports the same bounded receipt schema; it does not invent a native crash guard.
 

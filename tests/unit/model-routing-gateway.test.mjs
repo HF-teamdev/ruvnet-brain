@@ -58,7 +58,7 @@ function autoCodex(f, allowance = true) {
       const msg = JSON.parse(line);
       if (msg.method === 'account/read') f.reply(msg, { account: { type: 'chatgpt' } });
       if (msg.method === 'config/read') f.reply(msg, { config: { model_provider: 'openai', openai_base_url: null } });
-      if (msg.method === 'thread/read') f.reply(msg, { thread: { id: msg.params.threadId, modelProvider: 'openai' } });
+      if (msg.method === 'thread/read') f.reply(msg, { thread: { id: msg.params.threadId, modelProvider: 'openai', cwd: '/tmp' } });
       if (msg.method === 'account/rateLimits/read') f.reply(msg, { ordinaryUsageAllowed: allowance });
     }
   });

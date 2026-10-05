@@ -15,7 +15,7 @@ export function inspectDecision(value, text, now, minimumClass) {
   if (value?.schemaVersion !== 1 || value.subscriptionCovered !== true ||
       !/^claude-[a-z0-9][a-z0-9.-]*$/.test(value.model || '') ||
       !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort) ||
-      !Number.isFinite(value.expiresAt) || value.expiresAt <= now ||
+      !Number.isFinite(value.expiresAt) ||
       !/^[a-f0-9]{64}$/.test(value.routeDigest || '')) throw new Error(REFUSAL);
   text = minimumClass === 'hard' ? 'final substantive review\n' + text : minimumClass === 'medium' ? 'review task\n' + text : text;
   const codeFences = Math.floor((text.match(/```/g) || []).length / 2);
@@ -38,13 +38,13 @@ export function createTurnCache() {
     bind(e, now, replacement) {
       // Never substitute the most recent prompt or the model shown in the TUI.
       const entry = pending[0];
-      if ((!entry && !replacement) || (!replacement && entry.text !== e.text) || (entry && now - entry.createdAt > 300000) || (replacement || entry?.decision)?.expiresAt <= now ||
+      if ((!entry && !replacement) || (!replacement && entry.text !== e.text) || (entry && now - entry.createdAt > 300000) ||
           active.has(e.turnId) || active.size >= 32) throw new Error(REFUSAL);
       if (entry) pending.shift(); active.set(e.turnId, replacement || entry.decision);
     },
     get(e, now) {
       const decision = active.get(e.turnId);
-      if (!decision || e.agentId || !Number.isSafeInteger(e.index) || e.index < 0 || decision.expiresAt <= now) throw new Error(REFUSAL);
+      if (!decision || e.agentId || !Number.isSafeInteger(e.index) || e.index < 0) throw new Error(REFUSAL);
       return decision;
     },
     complete(turnId) { active.delete(turnId); },

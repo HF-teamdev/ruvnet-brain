@@ -35,8 +35,8 @@ export function validateDecision(decision, now = Date.now()) {
   if (decision?.harness !== 'claude-code' || decision.provider !== 'anthropic' || decision.subscriptionCovered !== true ||
       !/^claude-[a-z0-9][a-z0-9.-]*$/.test(decision.model || '') || !['fast', 'medium', 'hard'].includes(decision.taskClass) ||
       !['low', 'medium', 'high', 'xhigh', 'max'].includes(decision.effort) ||
-      !Number.isSafeInteger(maxAge) || maxAge <= 0 || maxAge > 604800000 || !Number.isFinite(age) || age < 0 || age > maxAge ||
-      !/^[a-f0-9]{64}$/.test(decision.selectionRouteDigest || '')) throw new Error('Native terminal routing decision invalid or stale; no fallback');
+      !Number.isSafeInteger(maxAge) || maxAge <= 0 || maxAge > 604800000 || !Number.isFinite(age) || age < 0 ||
+      !/^[a-f0-9]{64}$/.test(decision.selectionRouteDigest || '')) throw new Error('Native terminal routing decision invalid; no fallback');
   return decision;
 }
 export function routeNativePrompt({ prompt, turnId, minimumClass, enginePath = path.join(ROOT, 'scripts/model-router-engine.mjs'),

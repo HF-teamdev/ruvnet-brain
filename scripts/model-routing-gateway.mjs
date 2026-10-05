@@ -26,7 +26,7 @@ function canonicalCodexConfig(config) {
   // A provider with the built-in name can still be replaced by a custom endpoint.
   if (config.model_providers && Object.hasOwn(config.model_providers, 'openai') && config.model_providers.openai != null) return false;
   // Native Config serializes openai_base_url:null when the override is unset.
-  return !Object.entries(config).some(([key, value]) => value != null && /^(model_providers\.openai|base_url|baseUrl|openai_base_url)(\.|$)/.test(key));
+  return !Object.entries(config).some(([key, value]) => value != null && /^(model_providers\.openai|base_url|baseUrl|openai_base_url|chatgpt_base_url)(\.|$)/.test(key));
 }
 
 /** Fresh policy-only subprocess: prompt stays on stdin, never argv, receipts or diagnostics. */
@@ -120,7 +120,7 @@ function unsafeSettings(value, prefix = '', routing = false) {
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, entry]) => {
     const name = prefix ? `${prefix}.${key}` : key;
-    if (/^(model_providers|apiKeyHelper|api_key|apiKey|base_url|baseUrl|auth_token|authToken|customHeaders|env|modelSettings|alwaysThinkingEnabled|maxEffortLevel)(\.|$)/.test(name)) return true;
+    if (/^(model_providers|apiKeyHelper|api_key|apiKey|base_url|baseUrl|openai_base_url|chatgpt_base_url|auth_token|authToken|customHeaders|env|modelSettings|alwaysThinkingEnabled|maxEffortLevel)(\.|$)/.test(name)) return true;
     if (/^(model_provider|modelProvider)$/.test(name) && entry !== 'openai') return true;
     if (/^(service_tier|serviceTier)$/.test(name) && entry != null && entry !== 'default') return true;
     if (/^(features\.fast_mode|fastMode)$/.test(name) && entry !== false) return true;
@@ -285,12 +285,14 @@ export function connectNativeGateway({ harness, child, input, output, diagnostic
         const account = await control({ method: 'account/read', params: { refreshToken: false } });
         assertLive();
         if (account?.account?.type !== 'chatgpt') throw new Error(REFUSED);
-        const effective = await control({ method: 'config/read', params: { includeLayers: false, ...(message.params?.cwd ? { cwd: message.params.cwd } : {}) } });
-        assertLive();
-        if (!canonicalCodexConfig(effective?.config)) throw new Error(REFUSED);
         const thread = await control({ method: 'thread/read', params: { threadId: message.params?.threadId, includeTurns: false } });
         assertLive();
         if (thread?.thread?.id !== message.params?.threadId || thread.thread.modelProvider !== 'openai') throw new Error(REFUSED);
+        const cwd = message.params?.cwd ?? thread.thread.cwd;
+        if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error(REFUSED);
+        const effective = await control({ method: 'config/read', params: { includeLayers: false, cwd } });
+        assertLive();
+        if (!canonicalCodexConfig(effective?.config)) throw new Error(REFUSED);
         const allowance = await control({ method: 'account/rateLimits/read', params: { excludeResetCreditDetails: true, supportsLunaReserve: false } });
         assertLive();
         if (allowance?.ordinaryUsageAllowed !== true) throw new Error(REFUSED);

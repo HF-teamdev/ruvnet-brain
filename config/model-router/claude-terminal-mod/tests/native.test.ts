@@ -66,10 +66,10 @@ test('coding uses high effort and final hook rewrite keeps original hard floor',
   expect(captures.filter(x=>x.turnId).map(x=>x.effort)).toEqual(['high','high']);
 });
 
-test('stale or non-subscription bridge replies drop before prompt reaches core', async ($, on) => {
+test('invalid or non-subscription bridge replies drop before prompt reaches core', async ($, on) => {
   const captures: Record<string, unknown>[]=[];
   stubs(on,[{model:'claude-sonnet-fixture',effort:'low',taskClass:'fast',subscriptionCovered:false},
-    {model:'claude-sonnet-fixture',effort:'low',taskClass:'fast',expiresAt:now-1}],captures);
+    {model:'claude-sonnet-fixture',effort:'low',taskClass:'fast',routeDigest:'invalid'}],captures);
   await $.session.start({cwd:'/tmp',surface:'terminal',isInteractive:true});
   expect('drop' in await $.prompt.submit({text:'summarize notes'})).toBe(true);
   expect('drop' in await $.prompt.submit({text:'summarize notes'})).toBe(true);

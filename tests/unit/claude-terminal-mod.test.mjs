@@ -40,9 +40,9 @@ describe('native terminal policy bridge',()=>{
   test.each([{...selection,maxAgeMs:0},{schemaVersion:9,reviewedAt:'bad'},null])('invalid policy rejects before any route',(invalid)=>{
     put('routing-policy.json',invalid);expect(()=>route('summarize notes')).toThrow(/no fallback/);
   });
-  test('stale allocation blocks even though general engine treats review age as evidence',()=>{
+  test('stale owner allocation remains authorized while evidence age is retained',()=>{
     put('routing-policy.json',{...selection,reviewedAt:new Date(now-604800001).toISOString()});
-    expect(()=>route('summarize notes')).toThrow(/stale/);
+    expect(route('summarize notes')).toMatchObject({model:'claude-sonnet-fixture',effort:'low',subscriptionCovered:true});
   });
   test('foreign provider or non-subscription engine output cannot pass receipt validation',()=>{
     expect(()=>validateDecision({harness:'claude-code',provider:'openrouter',subscriptionCovered:false})).toThrow();
@@ -70,12 +70,12 @@ describe('exact user-turn cache',()=>{
     expect(c.get({turnId:'one',index:0},now)).toEqual(d);
     expect(()=>c.get({turnId:'two',index:0},now)).toThrow();c.complete('one');expect(()=>c.get({turnId:'one',index:1},now)).toThrow();
   });
-  test('wrong settled text, expired decision and unbound/subagent steps refuse',()=>{
+  test('wrong settled text and unbound/subagent steps refuse; review age does not revoke a running turn',()=>{
     const c=createTurnCache();c.enqueue('implement module',d,now);
     expect(()=>c.bind({text:'changed',turnId:'one'},now)).toThrow();
     c.bind({text:'changed',turnId:'one'},now,{...d,taskClass:'hard'});
     expect(()=>c.get({turnId:'one',index:0,agentId:'child'},now)).toThrow();
-    expect(()=>c.get({turnId:'one',index:0},now+60001)).toThrow();
+    expect(c.get({turnId:'one',index:0},now+604800001)).toMatchObject({taskClass:'hard'});
     expect(refusal({turnId:'absent',index:9})).toMatchObject({turnId:'absent',index:9,stopReason:'refusal',toolUses:[],usage:null});
   });
   test('bounded queue refuses overflow and preserves FIFO duplicate prompts',()=>{
