@@ -190,10 +190,10 @@ describe('terminal launch boundaries', () => {
     expect(parseTerminalInvocation(['--real-binary', '/native', '--upstream-socket', '/sock', '--', 'resume', '--last'], {})).toEqual({ realBinary: '/native', upstreamSocket: '/sock', args: ['resume', '--last'], env: {} });
     expect(MAX_TERMINAL_BYTES).toBe(67108864);
   });
-  it('launches official proxy plus native remote TUI, preserves arguments and exit status', async () => {
+  it.each([['resume', '--last', '--no-alt-screen'], ['--', 'login'], ['--', 'translate yes']])('launches native standard service before all original arguments %j', async (...originalArgs) => {
     const { file, directory } = await socketFixture(); fs.writeFileSync(path.join(directory, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'fixture' } }));
     const calls = [], native = backend(), signalSource = new EventEmitter(); let client;
-    const args = ['resume', '--last', '--no-alt-screen', '-C', directory];
+    const args = [...originalArgs, '-C', directory];
     const result = await runTerminalGateway({ realBinary: process.execPath, upstreamSocket: file, args, adaptProxy: async (proxy) => proxy,
       env: { CODEX_HOME: directory, OPENAI_API_KEY: 'removed' }, signalSource, diagnostics: new PassThrough(),
       gatewayOptions: { decide: async () => decision, verifyDecision: () => {}, receipt: () => {} },
@@ -208,7 +208,8 @@ describe('terminal launch boundaries', () => {
       } });
     expect(result).toEqual({ code: 7, signal: null }); expect(calls).toHaveLength(2);
     expect(calls[0].args).toEqual(['app-server', 'proxy', '--sock', file]);
-    expect(calls[1].args.slice(2)).toEqual(args); expect(calls[1].args[1]).toMatch(/^unix:\/\//);
+    expect(calls[1].args.slice(2, 8)).toEqual(['-c', 'model_provider="openai"', '-c', 'service_tier="default"', '-c', 'features.fast_mode=false']);
+    expect(calls[1].args.slice(8)).toEqual(args); expect(calls[1].args[1]).toMatch(/^unix:\/\//);
     expect(calls[1].options.stdio).toBe('inherit'); expect(calls[1].options.env.OPENAI_API_KEY).toBeUndefined();
     expect(native.child.kills).toEqual(['SIGTERM']); expect(signalSource.listenerCount('SIGINT')).toBe(0);
   });

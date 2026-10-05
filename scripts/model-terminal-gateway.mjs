@@ -257,7 +257,9 @@ export async function runTerminalGateway({ realBinary, upstreamSocket, args = []
     return await exitOf(child);
   }
   // Reuse the established provider/config guards; this does not spawn app-server.
-  nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: ['app-server', ...args], env: clean });
+  const normalized = nativeGatewayLaunch({ harness: 'codex', realBinary: binary, args: ['app-server', ...args], env: clean });
+  // Native global options precede the original subcommand/prompt, including a literal '--'.
+  const standardOverrides = normalized.args.slice(args.length + 1);
   const socketPath = validateUpstreamSocket(upstreamSocket || path.join(clean.CODEX_HOME || path.join(os.homedir(), '.codex'), 'app-server-control', 'app-server-control.sock'));
   const auth = () => assertSubscriptionAuth('codex', { env: clean }); auth();
   clean.MODEL_ROUTER_TERMINAL_ACTIVE = '1';
@@ -271,7 +273,7 @@ export async function runTerminalGateway({ realBinary, upstreamSocket, args = []
       gatewayOptions: { ...gatewayOptions, checkAuth: auth,
         decide: gatewayOptions.decide || ((prompt, harness, metadata) => decideNativeTurn(prompt, harness, { env: clean, ...metadata })) } });
     if (transport.failed()) throw new Error(REFUSED);
-    tui = spawnNative(binary, ['--remote', transport.remote, ...args], { env: clean, shell: false, stdio: 'inherit' });
+    tui = spawnNative(binary, ['--remote', transport.remote, ...standardOverrides, ...args], { env: clean, shell: false, stdio: 'inherit' });
     for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
       const handler = () => { transport.close(); tui.kill(signal); };
       handlers.set(signal, handler); signalSource.on(signal, handler);
