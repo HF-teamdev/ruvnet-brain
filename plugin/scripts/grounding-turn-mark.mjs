@@ -51,7 +51,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readStdinBounded, isHarnessGenerated } from './hook-input.mjs';
-import { ruvnetGate1Matches } from './ruvnet-gate1-pattern.mjs';
+import { groundingScopeMatches, groundingSubjectAllowed, normalizeGroundingScope, mergeGroundingScopes } from './ruvnet-gate1-pattern.mjs';
+import { loadSettings } from './user-settings.mjs';
 import { classifyPrompt, loadVocabulary } from './grounding-turn-evidence.mjs';
 
 const HOME = os.homedir();
@@ -75,17 +76,19 @@ const eligible = (hookInput) => Boolean(hookInput && hookInput.hook_event_name =
   && !isHarnessGenerated(promptOf(hookInput)));
 
 /** Exported for the unit test: pure decision, no I/O. Gate 1 (the rUv-stack search requirement). */
-export function shouldMark(hookInput) {
-  return eligible(hookInput) && ruvnetGate1Matches(promptOf(hookInput));
+export function shouldMark(hookInput, scope = 'all') {
+  return eligible(hookInput) && groundingScopeMatches(promptOf(hookInput), scope);
 }
 
 /** Both arms for one prompt, or null when neither fires. Pure apart from the vocabulary it is given. */
-export function armFor(hookInput, vocab = []) {
+export function armFor(hookInput, vocab = [], scope = 'all') {
   if (!eligible(hookInput)) return null;
-  const gate1 = ruvnetGate1Matches(promptOf(hookInput));
+  const gate1 = groundingScopeMatches(promptOf(hookInput), scope);
   const c = classifyPrompt(promptOf(hookInput), vocab);
+  c.subjects = c.subjects.filter((subject) => groundingSubjectAllowed(subject, scope));
+  if (!c.subjects.length) c.assert = c.architecture = false;
   if (!gate1 && !c.assert) return null;
-  return { gate1, assert: c.assert, architecture: c.architecture, subjects: c.subjects };
+  return { gate1, assert: c.assert, architecture: c.architecture, subjects: c.subjects, groundingScope: normalizeGroundingScope(scope).value };
 }
 
 export const STALE_MS = 2 * 3600_000;
@@ -94,6 +97,7 @@ export function readMarker(file) {
   try {
     const m = JSON.parse(fs.readFileSync(file, 'utf8'));
     return m && typeof m === 'object' ? { gate1: m.gate1 !== false, assert: !!m.assert, architecture: !!m.architecture,
+      groundingScope: normalizeGroundingScope(m.groundingScope ?? 'all').value,
       subjects: Array.isArray(m.subjects) ? m.subjects.map(String) : [], at: m.at } : null;
   } catch { return null; }
 }
@@ -105,7 +109,7 @@ export function writeArm(file, arm, meta = {}, now = Date.now()) {
   try { st = fs.statSync(file); } catch { /* none yet */ }
   const prev = st && now - st.mtimeMs < STALE_MS ? readMarker(file) : null;
   const next = prev ? { ...meta, at: prev.at, gate1: prev.gate1 || arm.gate1, assert: prev.assert || arm.assert,
-    architecture: prev.architecture || arm.architecture, subjects: [...new Set([...prev.subjects, ...arm.subjects])].slice(0, 32) }
+    architecture: prev.architecture || arm.architecture, groundingScope: mergeGroundingScopes(prev.groundingScope, arm.groundingScope), subjects: [...new Set([...prev.subjects, ...arm.subjects])].slice(0, 32) }
     : { ...meta, at: new Date(now).toISOString(), ...arm };
   fs.writeFileSync(file, JSON.stringify(next) + '\n');
   if (prev) fs.utimesSync(file, st.atime, st.mtime);
@@ -120,7 +124,8 @@ async function main() {
   } catch { process.exit(0); }
 
   let arm = null;
-  try { arm = armFor(hookInput, loadVocabulary()); } catch { arm = shouldMark(hookInput) ? { gate1: true, assert: false, architecture: false, subjects: [] } : null; }
+  const scope = loadSettings().values.groundingScope;
+  try { arm = armFor(hookInput, loadVocabulary(), scope); } catch { arm = shouldMark(hookInput, scope) ? { gate1: true, assert: false, architecture: false, subjects: [], groundingScope: scope } : null; }
   if (!arm) process.exit(0);
 
   const file = markerPathFor(hookInput.session_id);

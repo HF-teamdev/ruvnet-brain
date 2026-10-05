@@ -88,6 +88,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { groundingSubjectAllowed } from './ruvnet-gate1-pattern.mjs';
 import { readStopHookInput } from './hook-input.mjs';
 import { markerPathFor, readMarker } from './grounding-turn-mark.mjs';
 import { readSettledTranscript } from './turn-outcome-capture.mjs';
@@ -166,7 +167,8 @@ export function decide({ hookInput, marker, markerMs, env = process.env, read = 
     if (marker.assert && message) {
       const vocab = loadVocabulary({ env });
       const audit = auditAssertions({ message, subjects: marker.subjects, vocab, sources,
-        stampTerms: sources ? [] : stampTermsSince(markerMs) });
+        stampTerms: sources ? [] : stampTermsSince(markerMs),
+        subjectAllowed: (subject) => groundingSubjectAllowed(subject, marker.groundingScope) });
       if (audit.findings.length) assertion = audit.findings;
       const shadow = [architectureShadow({ architecture: marker.architecture, message }), relayShadow({ message, sources })].filter(Boolean);
       for (const row of shadow) logShadow({ ...row, at: new Date().toISOString(), session: hookInput.session_id, host });
@@ -174,7 +176,7 @@ export function decide({ hookInput, marker, markerMs, env = process.env, read = 
 
     // Gate 1 demands a search only when the answer ASSERTS what a rUv product does (the directive's
     // own words). A status report, git/CI check or memory write on a rUv-named repo asserts nothing.
-    const ruvClaims = marker.gate1 === false ? [] : ruvCapabilityClaims(message);
+    const ruvClaims = marker.gate1 === false ? [] : ruvCapabilityClaims(message).filter((claim) => groundingSubjectAllowed(claim.subject, marker.groundingScope));
     const grounded = !ruvClaims.length
       || (sources ? searchedThisTurn(sources) : wasGroundedSince(markerMs, newestGroundingStampMs()));
     if (assertion) {
