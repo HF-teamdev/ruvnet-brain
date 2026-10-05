@@ -130,6 +130,23 @@ describe('known native daemon locator', () => {
 });
 
 describe('Claude native startup guard', () => {
+  it.each([['--dangerously-skip-permissions', '--version'], ['--allow-dangerously-skip-permissions', '--help'],
+    ['-h', '--dangerously-skip-permissions'], ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '-v']])('passes owner permission flags with information-only checks verbatim: %j', async (...args) => {
+    const dir = directory(), log = path.join(dir, 'argv.json');
+    const native = binary(dir, `require('fs').writeFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2)));process.exit(7);`);
+    const result = await runClaudeTerminal({ config: { realClaude: native }, args, cwd: dir, env: {}, signalSource: new EventEmitter() });
+    expect(result).toEqual({ code: 7, signal: null }); expect(JSON.parse(fs.readFileSync(log))).toEqual(args);
+    expect(fs.readdirSync(dir).some((name) => name.startsWith('rnb-claude-'))).toBe(false);
+  });
+  it.each([['--dangerously-skip-permissions', '--version', 'prompt'], ['--dangerously-skip-permissions', '--', '--version'],
+    ['--dangerously-skip-permissions', '--version', '--model=opus'], ['--dangerously-skip-permissions', '--version', '-p', 'prompt'],
+    ['--dangerously-skip-permissions']])('never uses information passthrough for prompt or unqualified arguments: %j', async (...args) => {
+    const dir = directory(), log = path.join(dir, 'argv.json');
+    const native = binary(dir, `require('fs').writeFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2)));process.exit(7);`);
+    await expect(runClaudeTerminal({ config: { realClaude: native }, args, cwd: dir,
+      env: { CLAUDE_CODE_DISABLE_HOOKS: '1' } })).rejects.toThrow(/conflict|disables/);
+    expect(fs.existsSync(log)).toBe(false);
+  });
   function fixture(mode) {
     const dir = directory(); const configDir = path.join(dir, 'config'); fs.mkdirSync(configDir);
     const native = binary(dir, `

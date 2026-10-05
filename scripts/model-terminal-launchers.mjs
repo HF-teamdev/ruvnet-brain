@@ -232,7 +232,10 @@ export async function runClaudeTerminal({ config, args = [], env = process.env, 
   if (env.RNB_TERMINAL_LAUNCH_ACTIVE) throw new Error('Native terminal launcher recursion refused');
   if (!Number.isFinite(startupMs) || startupMs <= 0 || startupMs > 60000) throw new Error('Bounded native hook startup deadline required');
   const binary = executable(config.realClaude), clean = subscriptionEnvironment(env);
-  const administrative = args.length === 1 && ['--help', '-h', '--version', '-v'].includes(args[0]) ||
+  const information = new Set(['--help', '-h', '--version', '-v']);
+  const ownerPermissionFlags = new Set(['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions']);
+  const administrative = args.some((arg) => information.has(arg)) &&
+    args.every((arg) => information.has(arg) || ownerPermissionFlags.has(arg)) ||
     ['auth', 'mcp', 'plugin', 'plugins', 'update', 'upgrade', 'doctor', 'install'].includes(args[0]);
   if (administrative) {
     const child = spawn(binary, args, { env: clean, cwd, stdio: 'inherit', shell: false });
