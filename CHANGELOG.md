@@ -20,6 +20,8 @@ current campaign and is finalized by the lead session before the next release cu
 - Native transport, policy overrides, source identity, disconnects and failure boundaries
   receive explicit release qualification. Unsupported or unauthenticated clients refuse
   the routed path without paid API fallback.
+- Native terminal launchers support macOS and Linux. Platform qualification keeps portable
+  routing checks active on Windows and verifies safe refusal of its unsupported Unix launch path.
 - Customer continuity repairs validate duplicate history, preserve terminal failures and
   cancellation signals, parse JSONL incrementally, and bound observation conflict handling.
 
