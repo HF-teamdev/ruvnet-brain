@@ -34,6 +34,7 @@ function verifyRefs(refs) {
 export async function captureNativeParentContext({ harness, sessionId, env = process.env,
   evidenceRoot = path.join(env.HOME || os.homedir(), '.cache/ruvnet-brain/model-routing/parent-context'),
   observeCodex } = {}) {
+  requireValue(process.platform !== 'win32', 'private native parent transcript capture unsupported on Windows; ACL proof unavailable');
   if (!sessionId) return [];
   requireValue(/^[a-f0-9-]{36}$/i.test(sessionId) && ['codex', 'claude-code'].includes(harness), 'native parent identity required');
   let source, expected;

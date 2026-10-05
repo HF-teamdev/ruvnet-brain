@@ -212,41 +212,33 @@ describe('canonical prompt memory and real transcript snapshots', () => {
     f.options.primaryTurn = async () => ({ sessionId: parent, completed: false, modelObserved: true });
     await runManagedPrompt(f.options); expect(captureOutcome).toHaveBeenCalledOnce();
   });
-  function history(harness = 'claude-code') {
-    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-context-'))); dirs.push(home);
-    const folder = path.join(home, '.claude/projects/project'); fs.mkdirSync(folder, { recursive: true });
-    const file = path.join(folder, `${parent}.jsonl`), bytes = JSON.stringify({ sessionId: parent, message: { content: 'actual prior marker' } }) + '\n';
-    fs.writeFileSync(file, bytes, { mode: 0o600 });
-    return { home, file, bytes, options: { harness, sessionId: parent, env: { HOME: home } } };
-  }
-  it.each(['claude-code', 'codex'])('copies actual %s transcript bytes into a private immutable-by-digest reference', async harness => {
-    const f = history(harness);
-    if (harness === 'codex') f.options.observeCodex = vi.fn(() => ({ sessionId: parent, evidence: { path: f.file, sha256: sha(f.bytes) } }));
-    const refs = await captureNativeParentContext(f.options);
-    expect(refs).toHaveLength(1); expect(refs[0].digest).toBe(sha(f.bytes)); expect(fs.readFileSync(refs[0].path, 'utf8')).toBe(f.bytes);
-    if (process.platform !== 'win32') {
-      expect(fs.statSync(refs[0].path).mode & 0o777).toBe(0o600);
-      expect(fs.statSync(path.dirname(refs[0].path)).mode & 0o777).toBe(0o700);
+  it.each(['claude-code', 'codex'])('Windows refuses %s native parent capture before any access or mutation', async harness => {
+    const originalPlatform = process.platform;
+    const access = ['readdirSync', 'lstatSync', 'realpathSync', 'openSync', 'readFileSync', 'mkdirSync', 'mkdtempSync', 'chmodSync'];
+    const spies = access.map(method => vi.spyOn(fs, method));
+    const observeCodex = vi.fn();
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      await expect(captureNativeParentContext({ harness, sessionId: parent, env: { HOME: 'C:\\private' }, observeCodex })).rejects.toThrow(/unsupported on Windows; ACL proof unavailable/);
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      expect(observeCodex).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      spies.forEach(spy => spy.mockRestore());
     }
-    fs.writeFileSync(f.file, 'changed original'); expect(fs.readFileSync(refs[0].path, 'utf8')).toBe(f.bytes);
   });
-  it('missing, ambiguous, symlinked or mismatched parent evidence cannot discard history', async () => {
-    const f = history(); fs.unlinkSync(f.file);
-    await expect(captureNativeParentContext(f.options)).rejects.toThrow(/missing/);
-    fs.writeFileSync(f.file, f.bytes); const other = path.join(f.home, '.claude/projects/other'); fs.mkdirSync(other); fs.writeFileSync(path.join(other, `${parent}.jsonl`), f.bytes);
-    await expect(captureNativeParentContext(f.options)).rejects.toThrow(/ambiguous/); fs.rmSync(other, { recursive: true });
-    fs.unlinkSync(f.file); const target = path.join(f.home, 'target.jsonl'); fs.writeFileSync(target, f.bytes); fs.symlinkSync(target, f.file);
-    await expect(captureNativeParentContext(f.options)).rejects.toThrow(/canonical/);
-    await expect(captureNativeParentContext({ ...f.options, harness: 'codex', observeCodex: () => ({ sessionId: parent, evidence: { path: target, sha256: '0'.repeat(64) } }) })).rejects.toThrow(/changed/);
-  });
-  it('an existing native parent is captured before planner launch, and missing capture blocks without execution', async () => {
-    const f = fixture({ contextRefs: [] }); const transcript = history();
-    f.options.captureContext = options => captureNativeParentContext({ ...options, env: { HOME: transcript.home } });
+  it('a supplied snapshot is bound before planner launch; absent capture blocks without execution on every platform', async () => {
+    const f = fixture({ contextRefs: [] });
+    const ref = { path: f.artifact, digest: sha(fs.readFileSync(f.artifact)) };
+    f.options.captureContext = vi.fn(async () => [ref]);
     await runManagedPrompt(f.options);
-    expect(f.options.planTask.mock.calls[0][0].contextRefs[0].digest).toBe(sha(transcript.bytes));
-    expect(f.options.executeWorkflow.mock.calls[0][0].contextRefs).toEqual(f.options.planTask.mock.calls[0][0].contextRefs);
+    expect(f.options.captureContext).toHaveBeenCalledOnce();
+    expect(f.options.captureContext.mock.calls[0][0]).toMatchObject({ harness: 'claude-code', sessionId: parent });
+    expect(f.options.planTask.mock.calls[0][0].contextRefs).toEqual([ref]);
+    expect(f.options.executeWorkflow.mock.calls[0][0].contextRefs).toEqual([ref]);
     const g = fixture({ contextRefs: [], captureContext: async () => [] });
-    await expect(runManagedPrompt(g.options)).rejects.toThrow(/parent transcript required/); expect(g.options.planTask).not.toHaveBeenCalled();
+    await expect(runManagedPrompt(g.options)).rejects.toThrow(/parent transcript required/);
+    expect(g.options.planTask).not.toHaveBeenCalled(); expect(g.options.executeWorkflow).not.toHaveBeenCalled();
   });
 });
 
