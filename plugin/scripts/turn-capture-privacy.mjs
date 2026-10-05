@@ -45,9 +45,22 @@ function globBody(pattern) {
 export function pathIsExcluded(file, patterns = [], projectDir) {
   if (!patterns.length || typeof file !== 'string' || !file) return false;
   const rooted = normalized(path.isAbsolute(file) || /^[A-Za-z]:[\\/]/.test(file)
-    ? file : /^[A-Za-z]:[\\/]/.test(projectDir || '') ? `${projectDir}/${file}` : path.resolve(projectDir, file));
+    ? file : `${projectDir || process.cwd()}/${file}`);
   const candidate = path.posix.normalize(rooted);
-  const physical = (value) => { try { return normalized(fs.realpathSync.native(value)); } catch { return value; } };
+  const physical = (value) => {
+    if (/^[A-Za-z]:\//.test(value) && process.platform !== 'win32') return value;
+    let ancestor = value; const suffix = [];
+    for (let depth = 0; depth < 128; depth += 1) {
+      try { return path.posix.join(normalized(fs.realpathSync.native(ancestor)), ...suffix); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw new Error('content exclusion resource resolution unavailable');
+        const parent = path.posix.dirname(ancestor);
+        if (parent === ancestor) break;
+        suffix.unshift(path.posix.basename(ancestor)); ancestor = /^[A-Za-z]:$/.test(parent) ? `${parent}/` : parent;
+      }
+    }
+    throw new Error('content exclusion resource resolution unavailable');
+  };
   const candidates = [...new Set([candidate, physical(rooted)])];
   return patterns.some((pattern) => {
     const flags = /^[A-Za-z]:\//.test(pattern) ? 'i' : '';

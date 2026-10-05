@@ -94,6 +94,32 @@ describe('bounded failure reasons and first-use disclosure', () => {
     const alias = path.join(h.projectDir, 'public-link.md'); fs.symlinkSync(file, alias);
     expect(pathIsExcluded(alias, [privateDir], h.projectDir)).toBe(true); expect(maskExcludedPaths(`Read "${alias}"`, [privateDir], h.projectDir)).not.toContain(alias);
   });
+  it('resolves existing directory aliases for missing leaf and nested suffix before Write or NotebookEdit failure capture', () => {
+    const h = fixture(); const privateDir = path.join(h.projectDir, 'private'); const publicDir = path.join(h.projectDir, 'public');
+    fs.mkdirSync(privateDir); fs.mkdirSync(publicDir); const alias = path.join(h.projectDir, 'public-alias'); const safeAlias = path.join(h.projectDir, 'safe-alias');
+    fs.symlinkSync(privateDir, alias, 'dir'); fs.symlinkSync(publicDir, safeAlias, 'dir');
+    for (const suffix of ['missing.md', 'nested/new-notebook.ipynb']) {
+      const file = `${alias}/${suffix}`; expect(pathIsExcluded(file, [privateDir], h.projectDir)).toBe(true);
+      for (const [tool, field] of [['Write', 'file_path'], ['NotebookEdit', 'notebook_path']]) {
+        const payload = { hook_event_name: 'PostToolUse', tool_name: tool, tool_input: { [field]: file }, tool_response: { error: 'PRIVATE_BODY_TOKEN', exit_code: 1 } };
+        expect(privateTransitionObservation({ id: 'same', error: 'PRIVATE_BODY_TOKEN' }, [privateDir], h.projectDir, payload).error).toBe('[REDACTED:excluded-resource-error]');
+        expect(JSON.stringify(enrichStateWithObservation({ commands: [] }, payload, { contentPathExcludes: [privateDir], projectDir: h.projectDir }))).not.toContain('PRIVATE_BODY_TOKEN');
+        const publicPayload = { ...payload, tool_input: { [field]: `${safeAlias}/${suffix}` } };
+        expect(pathIsExcluded(`${safeAlias}/${suffix}`, [privateDir], h.projectDir)).toBe(false);
+        expect(enrichStateWithObservation({ commands: [] }, publicPayload, { contentPathExcludes: [privateDir], projectDir: h.projectDir }).commands[0].error).toBe('PRIVATE_BODY_TOKEN');
+      }
+    }
+  });
+  it('preserves physical symlink-before-dotdot resolution for absolute and relative missing resources', () => {
+    const h = fixture(); const privateDir = path.join(h.projectDir, 'private'); fs.mkdirSync(path.join(privateDir, 'deep'), { recursive: true });
+    const alias = path.join(h.projectDir, 'public-alias'); fs.symlinkSync(path.join(privateDir, 'deep'), alias, 'dir');
+    expect(pathIsExcluded(`${alias}/../new.md`, [privateDir], h.projectDir)).toBe(true);
+    expect(pathIsExcluded('public-alias/../new.md', [privateDir], h.projectDir)).toBe(true);
+  });
+  it('refuses ambiguous physical resource resolution instead of treating it as public', () => {
+    const h = fixture(); const a = path.join(h.projectDir, 'cycle-a'); const b = path.join(h.projectDir, 'cycle-b'); fs.symlinkSync(b, a); fs.symlinkSync(a, b);
+    expect(() => pathIsExcluded(`${a}/missing.md`, ['/project/private'], h.projectDir)).toThrow('resource resolution unavailable');
+  });
   it('removes known relative paths and basenames from continuity summaries as well as files', () => {
     const event = { id: 'original', summary: 'Completed private/client-title.md and client-title.md', detail: { files: ['private/client-title.md', 'public.mjs'] } };
     const filtered = privateContinuityEvent(event, ['/project/private'], '/project');
