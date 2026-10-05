@@ -2,6 +2,16 @@
 export const RELEASE_REQUIREMENTS = Object.freeze({
   "source": [
     {
+      "id": "fresh-owned-host-proof",
+      "reason": "Source-bound native registry declarations reject warnings, trust changes and unretired owned processes",
+      "files": ["tests/unit/codex-fresh-host-proof.test.mjs"]
+    },
+    {
+      "id": "complete-progression-validation",
+      "reason": "Canonical digest validation retains full-history and serialization semantics",
+      "files": ["tests/unit/project-progression-contract.test.mjs"]
+    },
+    {
       "id": "signed-artifacts",
       "reason": "Signature verification and exact assembled coverage reject changed bytes",
       "files": [
@@ -183,6 +193,11 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     }
   ],
   "integration": [
+    {
+      "id": "canonical-progression-store",
+      "reason": "Actual adopted canonical storage, exact readback, and concurrent session restoration retain consent and complete history",
+      "files": ["tests/integration/project-progression-store.test.mjs", "tests/integration/project-progression-concurrent-sessions.test.mjs"]
+    },
     {
       "id": "native-explicit-interface",
       "reason": "Real MCP subprocess readiness, command policy and literal argv safety",
