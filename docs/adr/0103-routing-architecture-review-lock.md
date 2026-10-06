@@ -3,14 +3,27 @@ id: ADR-103
 title: Routing architecture qualification requires a current finite source review
 status: Accepted
 date: 2026-10-05
-updated: 2026-10-05
-version: 0.1.9
+updated: 2026-10-06
+version: 0.1.10
 reviewed_digest: 6e41d9bb1970
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
 relates: [ADR-024, ADR-069, ADR-072, ADR-100, ADR-101]
 governs:
+  - plugin/scripts/continuation-gate.mjs
+  - plugin/scripts/completion-claim-evidence.mjs
+  - plugin/scripts/continuation-objective.mjs
+  - plugin/scripts/hook-shim.mjs
+  - tests/unit/continuation-gate-completion-claims.test.mjs
+  - tests/unit/continuation-gate-objective-close.test.mjs
+  - tests/unit/continuation-objective.test.mjs
+  - tests/unit/continuation-gate.test.mjs
+  - tests/unit/continuation-gate-capability-truth.test.mjs
+  - tests/unit/hook-shim.test.mjs
+  - tests/unit/automatic-hook-retirement.test.mjs
+  - tests/unit/automatic-hook-retirement-posix.test.mjs
+  - docs/adr/0074-ruvnet-capability-claim-integrity.md
   - package-lock.json
   - scripts/model-managed-prompt.mjs
   - scripts/model-managed-workflow-service.mjs
@@ -172,3 +185,8 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-05 | Reviewed bounded history integration; reviewed_digest a7175c649296; source fc34e4b2a1b0d313b7559ffe1b1823638249959c | scripts/model-managed-prompt.mjs and scripts/model-routing-execution-adapters.mjs retain native identity, authority and existing size limits while binding streamed full-source provenance and bounded compaction context. Independent combined-source review confirms 83 resolved paths and 112 joint focused tests; authentic read-only capture and normal managed synthetic-cache resume witnesses retain their original distinct runtime identities. No full combined-native or live-user activation claim is made. |
 | 2026-10-05 | Reviewed native-home fixture correction; reviewed_digest fb295b1e3e97; source c60637ae825a3a6978b0b33b75988645bce70462 | tests/unit/model-managed-parent-context-posix.test.mjs places Codex fixtures in its native session home and retains missing, ambiguity, symlink, digest and escape refusals. Independent scoped review confirms 83 unique resolved paths and 4 focused tests; production bytes and prior component-proof limits are unchanged. The earlier source qualification remains failed; fresh exact-source qualification is required. |
 | 2026-10-05 | Reviewed native administrative doctor and platform fixture correction; reviewed_digest 6e41d9bb1970; source d6e0ddb5a18456a437c4ad497abf205df593a87e | bin/install.mjs reuses existing explicit native binary resolution for hooks/list; tests/unit/codex-fresh-host-proof.test.mjs retains overrides and bounded fallback. Six byte-identical private-history assertions moved into tests/unit/model-managed-parent-context-posix.test.mjs without changing Windows ACL/getuid refusal. Independent review confirms 84 unique paths and 100 focused checks; candidate default metadata probe registers 18 hooks with zero native model turns. The failed Windows qualification remains failed, new exact Windows qualification and installed default doctor verification remain required. |
+
+
+## Current completion safeguard scope
+
+The 4.5.15 correction uses the existing Stop path and exact hook-ownership checks. Its finite governed scope includes each changed handler, shim, installer boundary, existing regression test and the POSIX-only retirement fixture. Linux/macOS select that fixture explicitly; the shared retirement suite remains available to Windows. Source byte inventory and scoped checker evidence do not imply semantic review of an arbitrary whole task. Expanded contract/admission/service changes remain deferred and are not part of this candidate.

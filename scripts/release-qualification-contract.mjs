@@ -155,8 +155,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/model-routing-defence.test.mjs"
       ],
       "platformFiles": {
-        "linux": ["tests/unit/model-terminal-canonical-entry.test.mjs", "tests/unit/codex-managed-terminal.test.mjs", "tests/unit/grok-subscription-host.test.mjs", "tests/unit/model-managed-parent-context-posix.test.mjs"],
-        "macos": ["tests/unit/model-terminal-canonical-entry.test.mjs", "tests/unit/codex-managed-terminal.test.mjs", "tests/unit/grok-subscription-host.test.mjs", "tests/unit/model-managed-parent-context-posix.test.mjs"]
+        "linux": ["tests/unit/model-terminal-canonical-entry.test.mjs", "tests/unit/codex-managed-terminal.test.mjs", "tests/unit/grok-subscription-host.test.mjs", "tests/unit/model-managed-parent-context-posix.test.mjs", "tests/unit/automatic-hook-retirement-posix.test.mjs"],
+        "macos": ["tests/unit/model-terminal-canonical-entry.test.mjs", "tests/unit/codex-managed-terminal.test.mjs", "tests/unit/grok-subscription-host.test.mjs", "tests/unit/model-managed-parent-context-posix.test.mjs", "tests/unit/automatic-hook-retirement-posix.test.mjs"]
       }
     },
     {
