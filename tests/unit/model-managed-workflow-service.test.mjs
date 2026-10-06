@@ -102,6 +102,18 @@ test('writing planner receives host-derived exact-file syntax checker without ge
   } finally { f.cleanup(); }
 });
 
+test('terminal approval capability reaches adapter closures without entering planner JSON', async () => {
+  const f = fixture(); try {
+    const plan = await planManagedTask(f.input, { route: async () => decision, runPlanner: planner(f) });
+    const approve = async () => false, seen = [];
+    await executeManagedWorkflow(plan.request, { approve, route: async () => decision, verifyDecision: () => {},
+      createAdapters: async ctx => { seen.push(ctx.approve); assert.equal(await ctx.approve({ tool_name: 'Write' }), false); return executor([])(ctx); },
+      recordReceipt: async () => ({ durable: true }) });
+    assert.ok(seen.length > 0); assert.ok(seen.every(value => value === approve));
+    assert.equal(Object.hasOwn(plan.request, 'approve'), false);
+  } finally { f.cleanup(); }
+});
+
 test('readonly composition runs real AK scheduler, actual artifact gates and independent reviewer then aggregates original tasks', async () => {
   const f = fixture(); try {
     const plan = await planManagedTask(f.input, { route: async () => decision, runPlanner: planner(f) });

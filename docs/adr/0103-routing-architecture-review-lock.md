@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-06
-version: 0.1.11
+version: 0.1.12
 reviewed_digest: f3e9a96b6762
 impl: built
 authors: [Stuart Kerr, Codex]
@@ -67,6 +67,7 @@ governs:
   - plugin/scripts/codex-console-alias.mjs
   - plugin/scripts/session-start-budget.mjs
   - plugin/scripts/session-start-core.mjs
+  - scripts/model-terminal-launchers.mjs
   - tests/unit/model-terminal-launchers.test.mjs
   - tests/unit/npm-tarball-codex.test.mjs
   - tests/qe/release/packed-clean-install.test.mjs
@@ -195,3 +196,26 @@ finite release refusal. No paid provider call, model generation or system config
 
 The 4.5.15 correction uses the existing Stop path and exact hook-ownership checks. Its finite governed scope includes each changed handler, shim, installer boundary, existing regression test and the POSIX-only retirement fixture. Linux/macOS select that fixture explicitly; the shared retirement suite remains available to Windows. Source byte inventory and scoped checker evidence do not imply semantic review of an arbitrary whole task. Expanded contract/admission/service changes remain deferred and are not part of this candidate.
 
+
+## Current normal terminal routing repair
+
+The normal Codex and Claude terminal paths use the existing managed planner for requests that are
+not clearly informational. Whether a task needs execution, registered checks and independent
+review is distinct from its model difficulty; medium allocation does not itself permit bypassing
+that workflow. Original request, session context and declared ownership remain bound to execution.
+
+Effective authority must come from the native configuration or an existing terminal approval,
+with explicit read-only and inherited Claude plan constraints preserved. Approval policy alone
+is not a write grant. Claude invocation-scoped PreToolUse admission retains native deny rules
+and restricts tools to host-declared ownership; native initialization must actually acknowledge
+that hook admission. No owner settings, authentication, billing or personal hooks are expanded.
+
+The existing same-session-native-transport and managed-native-workflow requirements select the
+changed tests. Source/unit clearance is not native happy-path acceptance: the five-gate contract
+requires actual normal entries, model and effort observations, checks, independent review, exact
+canonical readback and protected installation proof. An absent optional Codex project layer is
+neutral, while a disabled applicable layer refuses authority; native effective sandbox and the
+most-specific configured project trust still govern. The corrected source has 278 focused cases
+passed; those results do not replace source-bound native happy-path and protected qualification
+receipts.
+This finite source inventory is not a claim that every governed file was semantically reread.

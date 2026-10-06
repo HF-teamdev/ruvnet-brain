@@ -233,7 +233,7 @@ function validateStoredRegistry(request) {
 }
 
 export async function executeManagedWorkflow(input, { route = managedRoute, createAdapters = createGuardedWorkflowAdapters,
-  check = runRegisteredChecker, recordReceipt = commitManagedReceipt, verifyDecision = validateDispatchDecision, env = process.env, signal } = {}) {
+  check = runRegisteredChecker, recordReceipt = commitManagedReceipt, verifyDecision = validateDispatchDecision, env = process.env, signal, approve } = {}) {
   const request = freeze(structuredClone(input)); validateWorkflowRequest(request); validateStoredRegistry(request);
   assert(!signal?.aborted, 'Workflow cancelled before native launch');
   assert(request.planner?.completed && request.planner.readOnly && request.planner.sessionId, 'Native planning receipt required');
@@ -304,7 +304,7 @@ export async function executeManagedWorkflow(input, { route = managedRoute, crea
   };
   const outcome = await runRoutingWorkflow(request, { route: (ctx) => route({ ...ctx, harness: request.harness }),
     createAdapters: async (ctx) => {
-      const adapters = await createAdapters({ ...ctx, env, captureObservation });
+      const adapters = await createAdapters({ ...ctx, env, captureObservation, approve });
       return Object.fromEntries(Object.entries(adapters).map(([host, adapter]) => [host, { ...adapter,
         interpret: (...args) => { const result = adapter.interpret(...args); const observed = observations.get(result.workerId);
           return observed ? { ...result, receiptRef: observed.receiptRef } : result; } }]));
