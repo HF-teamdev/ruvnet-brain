@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-10-05
 updated: 2026-10-05
 version: 0.1.6
-reviewed_digest: c591a7821ef7
+reviewed_digest: a67879ce1eb0
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -162,3 +162,4 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-05 | Reviewed final source mapping and bounded deltas; reviewed_digest 6f995f7a7215; source a596375bbf2d7b68054b0f2d8fe36187fb7fa415 | scripts/architecture-review-lock.mjs binds the current 80-file scope. Independent source review receipt rnb-astra-source-review-a596375 records actual read coverage and limits. Isolated native Claude positive business evidence and prior Codex controlled repair evidence remain scoped; public installation, owner activation and default launcher context are not established by this source review. |
 | 2026-10-05 | Reviewed Windows sealed-archive metadata setup repair; reviewed_digest 2312bba4180a; source 33b70d222d03f5c2f883a9e8fffdfb2b486b1313 | tests/unit/npm-tarball-codex.test.mjs and packed-clean-install retain the same archive assertions using basename plus controlled cwd. Independent source review confirms 81 resolved paths and bounded local regression/smoke evidence; actual Windows acceptance remains required on the new exact candidate. Prior failed setup receipt remains a failure. |
 | 2026-10-05 | Reviewed core repair/upload changes; reviewed_digest c591a7821ef7; source 0727de405570e8e44fbd1ca8ebda28737f535dcf | scripts/model-managed-workflow-service.mjs and scripts/release-transaction-provider.mjs retain original authority, identity and budget gates. Scoped independent review confirms 82 resolved paths and the existing protected-publication selector includes the upload regression. Exact native hard continuation completed with positive independent review; actual new protected upload and release/owner activation remain required. Earlier failures remain failures. |
+| 2026-10-05 | Reviewed security lock delta; reviewed_digest a67879ce1eb0; source 896fb7a78d4cf0e8ce10cfece815d04539c325ac | package-lock.json changes only compatible transitive development source-map-js 1.2.1 to patched 1.2.2. Independent scoped review confirms 83 resolved paths, current audit has zero vulnerabilities, and packed core/runtime bytes retain their existing proof. New exact source/integration qualification and protected publication remain required; the old failed audit is not relabeled. |
