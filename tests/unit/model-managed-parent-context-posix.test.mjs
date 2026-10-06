@@ -52,7 +52,7 @@ function fixture(overrides = {}) {
 describe('POSIX private native parent transcript snapshots', () => {
   function history(harness = 'claude-code') {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-context-'))); dirs.push(home);
-    const folder = path.join(home, '.claude/projects/project'); fs.mkdirSync(folder, { recursive: true });
+    const folder = path.join(home, harness === 'codex' ? '.codex/sessions/2026/10/05' : '.claude/projects/project'); fs.mkdirSync(folder, { recursive: true });
     const file = path.join(folder, `${parent}.jsonl`), bytes = JSON.stringify({ sessionId: parent, message: { content: 'actual prior marker' } }) + '\n';
     fs.writeFileSync(file, bytes, { mode: 0o600 });
     return { home, file, bytes, options: { harness, sessionId: parent, env: { HOME: home } } };
@@ -75,7 +75,9 @@ describe('POSIX private native parent transcript snapshots', () => {
     await expect(captureNativeParentContext(f.options)).rejects.toThrow(/ambiguous/); fs.rmSync(other, { recursive: true });
     fs.unlinkSync(f.file); const target = path.join(f.home, 'target.jsonl'); fs.writeFileSync(target, f.bytes); fs.symlinkSync(target, f.file);
     await expect(captureNativeParentContext(f.options)).rejects.toThrow(/canonical/);
-    await expect(captureNativeParentContext({ ...f.options, harness: 'codex', observeCodex: () => ({ sessionId: parent, evidence: { path: target, sha256: '0'.repeat(64) } }) })).rejects.toThrow(/changed/);
+    const codex = history('codex');
+    await expect(captureNativeParentContext({ ...codex.options, observeCodex: () => ({ sessionId: parent, evidence: { path: codex.file, sha256: '0'.repeat(64) } }) })).rejects.toThrow(/changed/);
+    await expect(captureNativeParentContext({ ...codex.options, observeCodex: () => ({ sessionId: parent, evidence: { path: target, sha256: sha(f.bytes) } }) })).rejects.toThrow(/escaped native session home/);
   });
   it('an existing native parent is captured before planner launch, and missing capture blocks without execution', async () => {
     const f = fixture({ contextRefs: [] }); const transcript = history();

@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-05
-version: 0.1.7
+version: 0.1.8
 reviewed_digest: a7175c649296
 impl: built
 authors: [Stuart Kerr, Codex]
@@ -23,6 +23,7 @@ governs:
   - scripts/model-routing-defence.mjs
   - config/model-router/policy.default.mjs
   - tests/unit/model-managed-prompt.test.mjs
+  - tests/unit/model-managed-parent-context-posix.test.mjs
   - tests/unit/model-managed-workflow-service.test.mjs
   - tests/unit/model-routing-controller.test.mjs
   - tests/unit/model-routing-execution-adapters.test.mjs
