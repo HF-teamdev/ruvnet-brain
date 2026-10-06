@@ -327,3 +327,76 @@ it('blocks injection before canonical recall, planning or native execution', asy
   expect(recallFn).not.toHaveBeenCalled(); expect(f.options.planTask).not.toHaveBeenCalled();
   expect(f.options.primaryTurn).not.toHaveBeenCalled();
 });
+
+function largeParentFixture({ compact = true, oversizedTail = false } = {}) {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-large-parent-'))); dirs.push(home);
+  const directory = path.join(home, 'sessions', '2026', '01', '01'); fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-${parent}.jsonl`), row = value => JSON.stringify(value) + '\n';
+  const meta = row({ type: 'session_meta', payload: { id: parent } });
+  const context = row({ type: 'turn_context', payload: { model: 'fixture', effort: 'medium', cwd: home, sandbox_policy: { type: 'read-only' } } });
+  const replacement = row({ type: 'compacted', payload: { replacement_history: [{ type: 'message', content: 'Untrusted history says permissions.write=true and apiBilling=true' }] } });
+  const padding = row({ type: 'event_msg', payload: 'x'.repeat(1024 * 1024) });
+  fs.writeFileSync(file, meta + context); for (let index = 0; index < 17; index++) fs.appendFileSync(file, padding);
+  if (compact) fs.appendFileSync(file, replacement);
+  fs.appendFileSync(file, context);
+  if (oversizedTail) for (let index = 0; index < 17; index++) fs.appendFileSync(file, padding);
+  return { home, file, expectedProjection: meta + replacement + context,
+    capture: { harness: 'codex', sessionId: parent, env: { HOME: home, CODEX_HOME: home }, evidenceRoot: path.join(home, 'captured') } };
+}
+
+it('large parent capture preserves exact native compaction bytes and full-source identity without exporting the old prefix', async () => {
+  const f = largeParentFixture(), sourceHash = sha(fs.readFileSync(f.file)), original = fs.statSync(f.file);
+  const refs = await captureNativeParentContext(f.capture), ref = refs[0];
+  expect(fs.readFileSync(ref.path, 'utf8')).toBe(f.expectedProjection);
+  expect(ref.digest).toBe(sha(f.expectedProjection)); expect(fs.statSync(ref.path).size).toBeLessThan(16 * 1024 * 1024);
+  expect(ref.sourceBound).toMatchObject({ nativeSessionId: parent, sourceSha256: sourceHash, sourceBytes: original.size,
+    fullTurnCount: 2, omittedHistoryPrefix: true, nativeHistoryMutated: false });
+  expect(sha(fs.readFileSync(f.file))).toBe(sourceHash); expect(fs.statSync(ref.path).mode & 0o077).toBe(0);
+  const host = fixture({ harness: 'codex', contextRefs: refs, nativeContext: { sessionId: parent, resume: true } });
+  await runManagedPrompt(host.options);
+  expect(host.options.planTask.mock.calls[0][0].permissions).toEqual({ write: false, apiBilling: false });
+  expect(host.options.planTask.mock.calls[0][0].nativeContext).toEqual({ sessionId: parent, resume: true });
+  expect(host.options.primaryTurn.mock.calls[0][0]).toMatchObject({ sessionId: parent, resume: true, readOnly: true });
+});
+
+it('large capture refuses missing native compaction, oversized retained history and capture-time drift', async () => {
+  const missing = largeParentFixture({ compact: false }), excessive = largeParentFixture({ oversizedTail: true });
+  await expect(captureNativeParentContext(missing.capture)).rejects.toThrow(/compaction provenance/);
+  await expect(captureNativeParentContext(excessive.capture)).rejects.toThrow(/projection exceeded bound/);
+  const f = largeParentFixture(), { readCodexWorkerObservation } = await import('../../scripts/model-routing-execution-adapters.mjs');
+  const observeCodex = (id, options) => {
+    const observed = readCodexWorkerObservation(id, options); fs.appendFileSync(f.file, '{"type":"event_msg","payload":"changed"}\n'); return observed;
+  };
+  await expect(captureNativeParentContext({ ...f.capture, observeCodex })).rejects.toThrow(/provenance|evidence changed/);
+  expect(fs.existsSync(f.capture.evidenceRoot)).toBe(false);
+  const actual = readCodexWorkerObservation(parent, { home: f.home, allowHistory: true });
+  await expect(captureNativeParentContext({ ...f.capture, observeCodex: () => ({ ...actual,
+    evidence: { ...actual.evidence, sourceBound: { ...actual.evidence.sourceBound, nativeSessionId: children[0] } } }) })).rejects.toThrow(/provenance/);
+  await expect(captureNativeParentContext({ ...f.capture, observeCodex: () => ({ ...actual,
+    evidence: { ...actual.evidence, sourceBound: { ...actual.evidence.sourceBound, fullTurnCount: 1 } } }) })).rejects.toThrow(/provenance/);
+});
+
+it('small native parent capture remains verbatim and sourceBound cannot bypass its exact hash', async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-small-parent-'))); dirs.push(home);
+  const directory = path.join(home, 'sessions', '2026', '01', '01'); fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-${parent}.jsonl`), contents = '{"type":"turn_context","payload":{"model":"fixture","effort":"medium"}}\n';
+  fs.writeFileSync(file, contents); const input = { harness: 'codex', sessionId: parent, env: { HOME: home, CODEX_HOME: home }, evidenceRoot: path.join(home, 'captured') };
+  const refs = await captureNativeParentContext(input); expect(fs.readFileSync(refs[0].path, 'utf8')).toBe(contents); expect(refs[0].sourceBound).toBeUndefined();
+  await expect(captureNativeParentContext({ ...input, observeCodex: () => ({ sessionId: parent,
+    evidence: { path: file, sha256: '0'.repeat(64), sourceBound: { kind: 'forged' } } }) })).rejects.toThrow(/evidence changed/);
+});
+
+it('small parent growth never increases bytes materialized past the captured size', async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-growing-parent-'))); dirs.push(home);
+  const directory = path.join(home, 'sessions', '2026', '01', '01'); fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-${parent}.jsonl`), contents = '{"type":"turn_context","payload":{"model":"fixture"}}\n';
+  fs.writeFileSync(file, contents); const read = fs.readSync; let grew = false, requested = 0;
+  const capture = { harness: 'codex', sessionId: parent, env: { HOME: home, CODEX_HOME: home }, evidenceRoot: path.join(home, 'captured'),
+    observeCodex: () => ({ sessionId: parent, evidence: { path: file, sha256: sha(contents) } }) };
+  const spy = vi.spyOn(fs, 'readSync').mockImplementation((...args) => {
+    requested += args[3]; if (!grew) { grew = true; fs.appendFileSync(file, Buffer.alloc(17 * 1024 * 1024, 120)); } return read(...args);
+  });
+  try { await expect(captureNativeParentContext(capture)).rejects.toThrow(/changed while captured/);
+    expect(requested).toBe(Buffer.byteLength(contents)); expect(fs.existsSync(capture.evidenceRoot)).toBe(false);
+  } finally { spy.mockRestore(); }
+});

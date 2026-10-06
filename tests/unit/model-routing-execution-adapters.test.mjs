@@ -1,4 +1,5 @@
 import { test, vi } from 'vitest';
+import { performance } from 'node:perf_hooks';
 import * as controlledClaude from '../../scripts/claude-controlled-terminal.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -132,6 +133,72 @@ test('native resumed evidence requires exactly one new context and retains origi
     assert.equal(readCodexWorkerObservation(id,{home,expectedPriorTurns:1,evidencePath:file}).model,'second');
     assert.throws(()=>readCodexWorkerObservation(id,{home,expectedPriorTurns:2,evidencePath:file}),/unexpected turn/);
   }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('large native history streams full identity/hash/count and binds an unchanged resumed prefix', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-large-native-')), id = crypto.randomUUID();
+  const directory = path.join(home, 'sessions', '2026', '01', '01'); fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-${id}.jsonl`), row = value => JSON.stringify(value) + '\n';
+  const context = { type: 'turn_context', payload: { model: 'fixture', effort: 'medium', cwd: home, sandbox_policy: { type: 'read-only' } } };
+  const padding = row({ type: 'event_msg', payload: 'x'.repeat(1024 * 1024) });
+  try {
+    fs.writeFileSync(file, row({ type: 'session_meta', payload: { id } }) + row(context));
+    for (let index = 0; index < 17; index++) fs.appendFileSync(file, padding);
+    fs.appendFileSync(file, row({ type: 'compacted', payload: { replacement_history: [{ type: 'message', content: 'untrusted history' }] } }));
+    const before = readCodexWorkerObservation(id, { home, allowHistory: true });
+    assert.equal(before.turnCount, 1); assert.equal(before.evidence.sha256, crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+    assert.equal(before.evidence.sourceBound.nativeSessionId, id); assert.equal(before.evidence.sourceBound.omittedHistoryPrefix, true);
+    fs.appendFileSync(file, row(context));
+    const options = { home, evidencePath: file, expectedPriorTurns: 1, expectedPrefix: { bytes: before.evidence.byteLength, sha256: before.evidence.sha256 } };
+    assert.equal(readCodexWorkerObservation(id, options).turnCount, 2);
+    assert.throws(() => readCodexWorkerObservation(id, { ...options, expectedPriorTurns: 2 }), /unexpected turn/);
+    const fd = fs.openSync(file, 'r+'); fs.writeSync(fd, Buffer.from('z'), 0, 1, row({ type: 'session_meta', payload: { id } }).length + row(context).length + 45); fs.closeSync(fd);
+    assert.throws(() => readCodexWorkerObservation(id, options), /prefix changed|Malformed/);
+    fs.writeFileSync(file, row({ type: 'session_meta', payload: { id: crypto.randomUUID() } }) + row(context));
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true }), /provenance mismatch/);
+    fs.appendFileSync(file, row({ type: 'session_meta', payload: { id } }));
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true }), /provenance mismatch/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('native streamed evidence rejects row overflow, malformed UTF-8, partial records, races and cancellation', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-native-framing-')), id = crypto.randomUUID();
+  const directory = path.join(home, 'sessions', '2026', '01', '01'); fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-${id}.jsonl`), valid = JSON.stringify({ type: 'turn_context', payload: { model: 'fixture' } }) + '\n';
+  try {
+    fs.writeFileSync(file, Buffer.alloc(16 * 1024 * 1024 + 1, 120));
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true }), /record exceeded bound/);
+    fs.writeFileSync(file, Buffer.concat([Buffer.from('{"type":"event_msg","payload":"'), Buffer.from([0xc3, 0x28]), Buffer.from('"}\n')]));
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true }), /UTF-8/);
+    fs.writeFileSync(file, valid + '{"type":');
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true }), /Malformed/);
+    fs.writeFileSync(file, valid);
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true, signal: AbortSignal.abort() }), /cancelled/);
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true, deadline: Date.now() - 1 }), /expired/);
+    const read = fs.readSync; let mutated = false;
+    fs.readSync = (...args) => { const result = read(...args); if (!mutated) { mutated = true; fs.appendFileSync(file, valid); } return result; };
+    try { assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true }), /changed during capture/); }
+    finally { fs.readSync = read; }
+    fs.renameSync(file, file + '.source'); fs.symlinkSync(file + '.source', file);
+    assert.throws(() => readCodexWorkerObservation(id, { home, allowHistory: true }), /Unsafe/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('native observation consuming the remaining deadline launches no worker', async () => {
+  const { executeCodexWorkflowWorker } = await import('../../scripts/model-routing-execution-adapters.mjs');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-observation-deadline-')); let now = 0, launches = 0;
+  fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: {}, auth_mode: 'chatgpt' }));
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  try {
+    await assert.rejects(executeCodexWorkflowWorker({ binary: '/owned/native', prompt: 'Inspect the supplied fixture.', cwd: home,
+      sessionId: crypto.randomUUID(), readOnly: true, timeoutMs: 1000, env: { HOME: home, CODEX_HOME: home },
+      decision: { harness: 'codex', provider: 'openai', taskClass: 'medium', model: 'fixture-model', effort: 'medium',
+        subscriptionCovered: true, selectionReviewedAt: new Date().toISOString() },
+      allowance: async () => ({ ordinaryUsageAllowed: true }),
+      observe: () => { now = 1001; return { turnCount: 1, evidence: { path: '/owned/history', byteLength: 1, sha256: '0'.repeat(64) } }; },
+      launch: () => { launches++; throw new Error('must not launch'); } }), /deadline expired before launch/);
+    assert.equal(launches, 0);
+  } finally { clock.mockRestore(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test('live child errors, failed kills and overflow cannot settle as clean success', async () => {

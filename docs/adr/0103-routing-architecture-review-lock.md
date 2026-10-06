@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-05
-version: 0.1.6
+version: 0.1.7
 reviewed_digest: a67879ce1eb0
 impl: built
 authors: [Stuart Kerr, Codex]
@@ -123,9 +123,9 @@ substitute for release qualification, exact-candidate receipts or published veri
 
 | Boundary | Actual source responsibility | Executable mapping |
 |---|---|---|
-| Input and parent context | model-managed-prompt, managed-terminal-input, claude-controlled-terminal, codex-managed-terminal | Corresponding unit files; model-managed-parent-context-posix and model-managed-checker-native integration |
+| Input and parent context | model-managed-prompt, managed-terminal-input, claude-controlled-terminal, codex-managed-terminal | Corresponding unit files; model-managed-parent-context-posix and model-managed-checker-native integration. Oversized Codex parent context uses a bounded, explicitly incomplete projection of the last native compaction and retained tail, while preserving native session identity, full-source digest and turn count. The existing 16MiB projection limit remains; text never grants host authority. |
 | Managed service and AgentDB completion | model-managed-workflow-service, model-routing-controller, continuity-journal, routing-outcome-capture | Managed service/controller and routing-outcome-capture unit files; managed native integration. Verified quality repair may continue the exact freshly approved hard harness/provider/model/effort allocation within existing scoped ownership, deadlines and attempt caps; stronger-route selection remains required otherwise, and independent negative review still blocks completion. |
-| Execution, checking and independent review | model-routing-execution-adapters, model-routing-defence, model-routing-gateway, model-routing-launchers | Corresponding unit files and gateway boundary tests |
+| Execution, checking and independent review | model-routing-execution-adapters, model-routing-defence, model-routing-gateway, model-routing-launchers | Corresponding unit files and gateway boundary tests. Streamed native observation binds actual session metadata, final model/effort/cwd/sandbox and full turn count without loading oversized rollouts; the native process retains its original full history. Small-rollout behavior, ownership, deadline and output guards remain required. |
 | Dispatch and owner policy | model-router-engine, model-router-dispatch, policy.default, model-router-setup, model-router-outcome | Managed service/controller tests; model-router-outcome and model-router-update-convergence tests |
 | Native subscription and catalog | subscription-hosts, native-subscription-usage, model-native-catalog, model-native-qualification, model-router-catalog | Corresponding native/catalog tests and installer convergence tests |
 | Weekly assessment and promotion | model-weekly-cycle, model-weekly-analyst, model-weekly-assessment, model-weekly-qualification, model-routing-policy-promotion, weekly-analyst-instruction | Corresponding weekly and promotion unit files |
@@ -138,6 +138,11 @@ The existing bounded execution, persistence and release audits are evidence for 
 not a whole-repository or live-provider certification. The final review must identify its source SHA,
 actual read coverage, unresolved limitations and architecture/test mapping findings in canonical
 project AgentDB. CI cannot verify a local AgentDB decision record merely from a cited key.
+
+The large-history candidate has a read-only capture witness on an authentic oversized source and an
+actual normal managed UUID-resume witness on an owned synthetic native-cache fixture. The latter is
+synthetic-context acceptance, not proof the live user conversation resumed or the owner activated a
+new release. Its native full-history source and projected context have distinct digests and provenance.
 
 ## Assurance limits and consequences
 
