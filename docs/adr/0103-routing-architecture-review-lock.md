@@ -4,13 +4,14 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-06
-version: 0.1.10
+version: 0.1.11
 reviewed_digest: 5a8b149111c9
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
 relates: [ADR-024, ADR-069, ADR-072, ADR-100, ADR-101]
 governs:
+  - tests/unit/continuation-commitment-ownership.test.mjs
   - plugin/scripts/continuation-gate.mjs
   - plugin/scripts/completion-claim-evidence.mjs
   - plugin/scripts/continuation-objective.mjs
