@@ -23,7 +23,6 @@ governs:
   - scripts/model-routing-defence.mjs
   - config/model-router/policy.default.mjs
   - tests/unit/model-managed-prompt.test.mjs
-  - tests/unit/model-managed-parent-context-posix.test.mjs
   - tests/unit/model-managed-workflow-service.test.mjs
   - tests/unit/model-routing-controller.test.mjs
   - tests/unit/model-routing-execution-adapters.test.mjs
