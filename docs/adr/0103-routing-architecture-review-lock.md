@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-10-05
 updated: 2026-10-05
 version: 0.1.8
-reviewed_digest: a7175c649296
+reviewed_digest: fb295b1e3e97
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -169,3 +169,4 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-05 | Reviewed core repair/upload changes; reviewed_digest c591a7821ef7; source 0727de405570e8e44fbd1ca8ebda28737f535dcf | scripts/model-managed-workflow-service.mjs and scripts/release-transaction-provider.mjs retain original authority, identity and budget gates. Scoped independent review confirms 82 resolved paths and the existing protected-publication selector includes the upload regression. Exact native hard continuation completed with positive independent review; actual new protected upload and release/owner activation remain required. Earlier failures remain failures. |
 | 2026-10-05 | Reviewed security lock delta; reviewed_digest a67879ce1eb0; source 896fb7a78d4cf0e8ce10cfece815d04539c325ac | .github/workflows/ci.yml retains the exact-candidate npm audit gate that rejected the vulnerable package; package-lock.json changes only compatible transitive development source-map-js 1.2.1 to patched 1.2.2. Independent scoped review confirms 83 resolved paths, current audit has zero vulnerabilities, and packed core/runtime bytes retain their existing proof. New exact source/integration qualification and protected publication remain required; the old failed audit is not relabeled. |
 | 2026-10-05 | Reviewed bounded history integration; reviewed_digest a7175c649296; source fc34e4b2a1b0d313b7559ffe1b1823638249959c | scripts/model-managed-prompt.mjs and scripts/model-routing-execution-adapters.mjs retain native identity, authority and existing size limits while binding streamed full-source provenance and bounded compaction context. Independent combined-source review confirms 83 resolved paths and 112 joint focused tests; authentic read-only capture and normal managed synthetic-cache resume witnesses retain their original distinct runtime identities. No full combined-native or live-user activation claim is made. |
+| 2026-10-05 | Reviewed native-home fixture correction; reviewed_digest fb295b1e3e97; source c60637ae825a3a6978b0b33b75988645bce70462 | tests/unit/model-managed-parent-context-posix.test.mjs places Codex fixtures in its native session home and retains missing, ambiguity, symlink, digest and escape refusals. Independent scoped review confirms 83 unique resolved paths and 4 focused tests; production bytes and prior component-proof limits are unchanged. The earlier source qualification remains failed; fresh exact-source qualification is required. |
