@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
 version: 0.1.16
-reviewed_digest: de355dd5acbb
+reviewed_digest: e34f347644a6
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -286,6 +286,8 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `09d465c11e67` against source `0e8e1290` and the recorded final working bytes. | Prior bounded baseline-plus-delta review remains scoped. Independent test-correction review confirms `tests/unit/hook-shim.test.mjs` copies the actual hook manifest and `tests/unit/continuation-gate-capability-truth.test.mjs` preserves unknown installation and activation claims; 23 focused checks passed. Native memory capture and protected publication remain incomplete. |
 
 | 2026-10-07 | Reviewed `de355dd5acbb` against source `b92aa838` and the recorded current bytes. | Independent bounded reviews cover the existing native administrative resolver export in `bin/install.mjs`, its discovery and installer fixtures, conservative foreign-owner recall assertions and the actual SessionStart budget-helper import. Root focused checks passed 5 native discovery, 66 ownership/startup and 7 managed-boundary tests with zero skips. Earlier failed integration receipt remains failed; fresh clean qualification, native session evidence and protected publication are required. |
+
+| 2026-10-07 | Reviewed `e34f347644a6` against source `92147327` and the recorded current bytes. | Independent bounded review covers the PreCompact-only no-op exemption in `plugin/scripts/project-progression-producer.mjs` and actual lifecycle regression through the existing canonical append/readback path. 43 integrated checks passed without skips. The prior native run remains blocked: it delivered PreCompact but intentionally suppressed an unchanged snapshot. Fresh packed native execution and publication are still required; no historical receipt is relabeled. |
 
 ## Current completion safeguard scope
 
