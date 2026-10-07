@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
 version: 0.1.14
-reviewed_digest: c30a133bd5aa
+reviewed_digest: ef6b7ed562b6
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -197,10 +197,11 @@ governs:
 # ADR-103 — Routing architecture review lock
 
 **Decision status:** Accepted: the owner requested an architecture review freeze and a future-change gate.
-**Implementation status:** Integrated, awaiting qualification. The adapter and focused refusal fixtures
-are wired before expensive release jobs. Final integrated review and runtime evidence remain required. No current review is
-stamped here; an unstamped candidate must fail this guard. This ADR does not qualify any historical
-candidate or transfer proof from one SHA to another.
+**Implementation status:** Source-reviewed, awaiting native and release qualification. The
+reviewed baseline and finite integration deltas are bound by the independent review
+chain. This is not a fresh semantic reread of all 181 governed files. Runtime acceptance
+and protected publication remain separate requirements. A stale or unstamped candidate
+must fail this guard; this ADR transfers no proof from one SHA to another.
 
 ## Decision
 
@@ -280,6 +281,8 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `c30a133bd5aa` against clean `09a8476516488f88842b041c97cee9765c2d307b`. | Reviewed `scripts/claude-controlled-terminal.mjs`, `scripts/model-managed-prompt.mjs` and the bounded routing/doc delta; 99 paths are a byte inventory, not a full semantic reread. Native acceptance and protected publication require their separate receipts. |
 
 
+| 2026-10-07 | Reviewed `ef6b7ed562b6` against source `5f2d3cde64d007c9e92743b3f223e0730e348d6d` and the recorded final working bytes. | Bounded baseline-plus-delta semantic coverage from the 25-artifact review chain and corrected transition addendum; explicit 181-path byte inventory is not 181 fresh file reads. `plugin/scripts/project-transition-hook.mjs`, shared outcome normalization, native identity, typed advisory budgets and practical-rule phase decoration were reviewed with their direct consumers. 335 shared outcome/grounding checks passed. Native event delivery, one Windows case, all-rule hard enforcement and protected publication remain separate or incomplete. |
+
 ## Current completion safeguard scope
 
 The 4.5.15 correction uses the existing Stop path and exact hook-ownership checks. Its finite governed scope includes each changed handler, shim, installer boundary, existing regression test and the POSIX-only retirement fixture. Linux/macOS select that fixture explicitly; the shared retirement suite remains available to Windows. Source byte inventory and scoped checker evidence do not imply semantic review of an arbitrary whole task. Expanded contract/admission/service changes remain deferred and are not part of this candidate.
@@ -316,6 +319,7 @@ denies unresolved requests. This serializes human decisions without adding autho
 native refusal or changing the Codex branch. Old runtime receipts retain their exact source and
 host-branch transfer limits; they are not relabeled as the final installed runtime.
 
+
 ## Hook and practical-rule extension — 2026-10-07
 
 The finite governed set now includes the shared hook contracts, host adapters,
@@ -325,6 +329,6 @@ advisory delivery; it does not assert that every listed rule is mechanically
 enforced. Existing refusal, acceptance and publication gates remain independent.
 
 Component reviews and focused checks cover their recorded source/range scopes.
-The prior reviewed_digest is deliberately retained as historical evidence and is
-stale for these changed bytes. A new integrated review and native qualification
-are required before publication. File hashes do not certify semantic reading.
+The dated integrated review identifies the baseline-plus-delta read scope, its
+source hashes, resolved findings and remaining limits. Native qualification is
+still required before publication. File hashes do not certify semantic reading.
