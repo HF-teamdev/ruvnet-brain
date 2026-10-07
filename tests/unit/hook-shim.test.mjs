@@ -33,6 +33,8 @@ function runRegistered(hookId, input) {
 function seedSpine(version, scripts) {
   const root = path.join(HOME_DIR, 'versions', version);
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  // A real immutable generation carries its declaration-derived SessionStart deadline.
+  fs.cpSync(path.join(SOURCE_PLUGIN_ROOT, 'hooks'), path.join(root, 'hooks'), { recursive: true });
   for (const [name, body] of Object.entries(scripts)) fs.writeFileSync(path.join(root, 'scripts', name), body);
   fs.writeFileSync(path.join(HOME_DIR, 'active.json'), JSON.stringify({ generation: 1, version, codeRoot: path.join('versions', version) }));
   fs.writeFileSync(path.join(HOME_DIR, '.spine-seeded'), 'yes');
