@@ -367,3 +367,23 @@ it('blocks injection before canonical recall, planning or native execution', asy
   expect(recallFn).not.toHaveBeenCalled(); expect(f.options.planTask).not.toHaveBeenCalled();
   expect(f.options.primaryTurn).not.toHaveBeenCalled();
 });
+
+it.each([
+  { originalPrompt: 'Change totals.mjs to return zero.', expected: 'medium' },
+  { originalPrompt: 'Resolve an uncertain security architecture tradeoff.', expected: 'hard' },
+])('parent completion allocation stays bound to original task class $expected', async ({ originalPrompt, expected }) => {
+  const f = fixture({ originalPrompt });
+  f.options.executeWorkflow = async request => {
+    const result = f.completion(request);
+    result.review.evidence = ['Architecture security escalation decisions are result data, not new task instructions.'];
+    return result;
+  };
+  expect(managedPromptClass(originalPrompt)).toBe(expected);
+  await runManagedPrompt(f.options);
+  const completed = f.options.primaryTurn.mock.calls[0][0];
+  expect(completed.prompt).toContain('Architecture security escalation');
+  expect(completed.decisionPrompt).toBe(originalPrompt);
+  expect(managedPromptClass(completed.decisionPrompt)).toBe(expected);
+  expect(completed.readOnly).toBe(true);
+  expect(await completed.approve({ tool_name: 'Write' })).toBe(false);
+});

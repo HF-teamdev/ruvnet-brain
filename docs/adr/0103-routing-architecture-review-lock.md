@@ -203,12 +203,16 @@ The normal Codex and Claude terminal paths use the existing managed planner for 
 not clearly informational. Whether a task needs execution, registered checks and independent
 review is distinct from its model difficulty; medium allocation does not itself permit bypassing
 that workflow. Original request, session context and declared ownership remain bound to execution.
+Result-frame vocabulary remains answer context; read-only summarization retains the original
+request as its routing input rather than promoting allocation from generated review/check text.
 
 Effective authority must come from the native configuration or an existing terminal approval,
 with explicit read-only and inherited Claude plan constraints preserved. Approval policy alone
 is not a write grant. Claude invocation-scoped PreToolUse admission retains native deny rules
 and restricts tools to host-declared ownership; native initialization must actually acknowledge
-that hook admission. No owner settings, authentication, billing or personal hooks are expanded.
+that hook admission. Only transport-correlated declared-scope denials may be retained as recovered
+negative evidence; untracked denials and user/native-policy refusal remain restrictive. Checks
+and the fresh independent review must consider those observations. No owner settings, authentication, billing or personal hooks are expanded.
 
 The existing same-session-native-transport and managed-native-workflow requirements select the
 changed tests. Source/unit clearance is not native happy-path acceptance: the five-gate contract

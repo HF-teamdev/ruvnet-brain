@@ -359,3 +359,23 @@ test('portable checker boundary fixes native readonly profile and strips startup
       } });
   assert.equal(result.passed, true);
 });
+
+test('actual planner scope-denial summary reaches canonical receipts and independent reviewer input', async () => {
+  const f = fixture(), denial = { status: 'host-scope-denied', sessionId: 'actual-planner-session', toolUseId: 'guarded-tool',
+    toolName: 'Bash', inputSha256: 'a'.repeat(64), evidence: 'invocation PreToolUse deny response', input: 'must not persist' };
+  try {
+    const plan = await planManagedTask(f.input, { route: async () => decision, runPlanner: async input => ({ ...await planner(f)(input),
+      evidence: [denial, { status: 'completed' }] }) });
+    const summary = { sessionId: denial.sessionId, toolUseId: denial.toolUseId, toolName: denial.toolName,
+      inputSha256: denial.inputSha256, evidence: denial.evidence };
+    assert.deepEqual(plan.request.planner.scopeDenials, [summary]);
+    assert.equal(JSON.stringify(plan.request.planner).includes('must not persist'), false);
+    let reviewed = false; const receipts = [];
+    const result = await executeManagedWorkflow(plan.request, { route: async () => decision, verifyDecision: () => {},
+      createAdapters: executor([], state => { if (state.worker.role === 'reviewer') {
+        assert.ok(state.worker.reviewContract.includes(JSON.stringify([summary]))); reviewed = true;
+      } }), recordReceipt: async (_request, receipt) => { receipts.push(receipt); return { durable: true }; } });
+    assert.equal(result.status, 'complete'); assert.equal(reviewed, true);
+    assert.ok(receipts.length > 0); assert.ok(receipts.every(receipt => JSON.stringify(receipt.planner.scopeDenials) === JSON.stringify([summary])));
+  } finally { f.cleanup(); }
+});

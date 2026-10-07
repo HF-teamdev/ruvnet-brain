@@ -292,7 +292,7 @@ export async function runManagedPrompt({ originalPrompt, prompt = originalPrompt
   }
   const callPrimary = async (nextPrompt, readOnly = false) => {
     const result = await bounded(() => primaryTurn({ ...primaryOptions, ...retainedContext,
-      prompt: nextPrompt, decisionPrompt: nextPrompt === originalWithRecall ? original : nextPrompt, signal: combined, timeoutMs: Math.max(1, Math.floor(remaining())),
+      prompt: nextPrompt, decisionPrompt: original, signal: combined, timeoutMs: Math.max(1, Math.floor(remaining())),
       ...(readOnly ? { readOnly: true, approve: async () => false } : {}) }));
     const expected = retainedContext.sessionId ?? retainedContext.threadId;
     requireValue(!expected || (result?.sessionId ?? result?.threadId) === expected, 'native parent identity changed or unproven');

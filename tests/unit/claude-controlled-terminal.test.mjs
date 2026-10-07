@@ -162,7 +162,7 @@ describe('controlled Claude native turn boundary', () => {
     expect(f.launches[0].args).toContain('manual'); expect(f.launches[0].args.join(' ')).not.toMatch(/skip-permissions|bypassPermissions/);
     expect(f.launches[0].args).toContain('Agent,Task');
     expect(f.launches[0].args).toContain('--permission-prompt-tool'); expect(f.launches[0].args).toContain('stdio');
-    const g = fixture({ tool: true }); await runControlledClaudeTurn(g.options);
+    const g = fixture({ tool: true }); await expect(runControlledClaudeTurn(g.options)).rejects.toThrow(/refused/);
     expect(g.sent.find(m => m.type === 'control_response').response.response.behavior).toBe('deny');
   });
 
@@ -457,5 +457,59 @@ describe('inherited Claude plan is a conservative preplanner restriction', () =>
     const f = fixture({ sources: [{ source: 'uninspectedSettings', settings: {} }] });
     await expect(runControlledClaudeTurn(f.options)).rejects.toThrow(/refused/);
     expect(f.sent.some(row => row.type === 'user')).toBe(false);
+  });
+});
+
+describe('recovered native denials must match emitted host scope refusals', () => {
+  const input = { command: 'pwd', description: 'owned fixture' };
+  const known = { tool_name: 'Bash', tool_use_id: 'guarded-use', tool_input: input };
+  function recovering(denials, { userDenial = false, fixtureOptions = {}, ...options } = {}) {
+    const f = fixture({ ...fixtureOptions, denials, options: { scopeTool: async () => false, ...options } });
+    const write = f.child.stdin._write;
+    f.child.stdin._write = (chunk, encoding, callback) => {
+      const row = JSON.parse(chunk.toString());
+      if (row.type === 'user') {
+        f.sent.push(row); callback();
+        queueMicrotask(() => f.child.stdout.write(JSON.stringify({ type: 'control_request', request_id: 'scope-recovery', request: {
+          subtype: 'hook_callback', callback_id: 'owned-scope', tool_use_id: 'guarded-use',
+          input: { hook_event_name: 'PreToolUse', session_id: sessionId, tool_name: 'Bash', tool_input: input } } }) + '\n'));
+      } else if (userDenial && row.type === 'control_response' && row.response.request_id === 'scope-recovery') {
+        f.sent.push(row); callback();
+        queueMicrotask(() => f.child.stdout.write(JSON.stringify({ type: 'control_request', request_id: 'user-refused', request: {
+          subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: 'owned.mjs' } } }) + '\n'));
+      } else write(chunk, encoding, callback);
+    };
+    return f;
+  }
+  it('admits recovery only from exact scope denial and keeps redacted receipt evidence', async () => {
+    const f = recovering([{ ...known, tool_input: { description: 'owned fixture', command: 'pwd' } }], {
+      fixtureOptions: { structuredOutput: { tasks: [{ id: 'work' }] } },
+      responseSchema: { type: 'object', properties: { tasks: { type: 'array' } } }, validateStructuredOutput: value => Array.isArray(value.tasks) });
+    const result = await runControlledClaudeTurn(f.options);
+    expect(result.modelObserved).toBe(true);
+    expect(result.structuredOutput).toBe(true);
+    expect(JSON.parse(result.finalAnswer)).toEqual({ tasks: [{ id: 'work' }] });
+    expect(result.scopeDenials).toHaveLength(1);
+    const denial = f.receipts.find(row => row.status === 'host-scope-denied');
+    expect(denial).toMatchObject({ sessionId, toolUseId: 'guarded-use', toolName: 'Bash', inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(denial).not.toHaveProperty('input'); expect(denial).not.toHaveProperty('tool_input');
+    expect(JSON.stringify(denial)).not.toContain('owned fixture');
+    expect(f.receipts.at(-1).status).toBe('completed');
+  });
+  it.each([
+    [{ ...known, tool_use_id: 'untracked' }], [{ ...known, tool_name: 'Write' }],
+    [{ ...known, tool_input: { command: 'different' } }], [known, known], [{ ...known, tool_input: [] }],
+    [{ tool_use_id: 'guarded-use' }], { not: 'a native denial list' },
+  ].map(denials => ({ denials })))('refuses malformed, untracked, mismatched or duplicate denial records %#', async ({ denials }) => {
+    const f = recovering(denials);
+    await expect(runControlledClaudeTurn(f.options)).rejects.toThrow(/refused/);
+    expect(f.receipts.some(row => row.status === 'completed')).toBe(false);
+  });
+  it('a separate user approval refusal cannot be hidden by known or empty native denial lists', async () => {
+    for (const denials of [[known], []]) {
+      const f = recovering(denials, { userDenial: true, approve: async () => false });
+      await expect(runControlledClaudeTurn(f.options)).rejects.toThrow(/refused/);
+      expect(f.receipts.some(row => row.status === 'completed')).toBe(false);
+    }
   });
 });

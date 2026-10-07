@@ -9,6 +9,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createManagedTerminal } from './managed-terminal-input.mjs';
 import { pathToFileURL } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
+import { isDeepStrictEqual } from 'node:util';
 import { decideNativeTurn, appendGatewayReceipt } from './model-routing-gateway.mjs';
 import { subscriptionEnvironment, assertSubscriptionAuth, validateDispatchDecision } from './model-router-dispatch.mjs';
 import { validateClaudeTerminalSettings } from './model-terminal-launchers.mjs';
@@ -152,7 +153,8 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
     let done = false, phase = 'initialize', buffer = '', bytes = 0, result, observed = false, permissions = false;
     const assistantText = [];
     let structuredAnswer;
-    const scopeCallback = 'owned-scope', hookRequests = new Set();
+    const scopeCallback = 'owned-scope', hookRequests = new Set(), scopeDenials = new Map();
+    let hostApprovalDenied = false;
     const decoder = new StringDecoder('utf8');
     const ids = { initialize: crypto.randomUUID(), before: crypto.randomUUID(), after: crypto.randomUUID() };
     let handshake;
@@ -203,8 +205,9 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
         if (phase !== 'turn' || request.callback_id !== scopeCallback || typeof message.request_id !== 'string'
           || hookRequests.has(message.request_id) || hookRequests.size >= 1024
           || input?.hook_event_name !== 'PreToolUse' || input.session_id !== sessionId
-          || typeof input.tool_name !== 'string' || !input.tool_name || typeof toolId !== 'string' || !toolId
-          || !input.tool_input || typeof input.tool_input !== 'object' || Array.isArray(input.tool_input)) return fail();
+          || typeof input.tool_name !== 'string' || !input.tool_name || input.tool_name.length > 256 || typeof toolId !== 'string' || !toolId || toolId.length > 256
+          || !input.tool_input || typeof input.tool_input !== 'object' || Array.isArray(input.tool_input)
+          || Buffer.byteLength(JSON.stringify(input.tool_input)) > 1024 * 1024) return fail();
         hookRequests.add(message.request_id);
         const permission = { tool_name: input.tool_name, input: input.tool_input };
         let withinScope = false;
@@ -213,9 +216,17 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
           await assertModelRoutingText(JSON.stringify(permission.input)); withinScope = true;
         } else if (!['Agent', 'Task'].includes(permission.tool_name)) withinScope = await scopeTool(permission) === true;
         if (expired()) return fail();
+        if (!withinScope && scopeDenials.has(toolId)) return fail();
         send({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id,
           response: withinScope ? {} : { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
             permissionDecisionReason: 'Outside the host declared tool scope' } } } });
+        if (!withinScope && !done) {
+          const inputSha256 = crypto.createHash('sha256').update(JSON.stringify(permission.input)).digest('hex');
+          const summary = { status: 'host-scope-denied', sessionId, toolUseId: toolId, toolName: permission.tool_name, inputSha256,
+            evidence: 'invocation PreToolUse deny response' };
+          scopeDenials.set(toolId, { summary, input: structuredClone(permission.input) });
+          receipt({ ts: new Date().toISOString(), harness: 'claude-code', ...summary }, { env: clean });
+        }
         return;
       }
       if (message.type === 'control_request') {
@@ -234,6 +245,7 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
             }
           } else allowed = await approve(message.request) === true;
         } catch { allowed = false; }
+        if (!allowed) hostApprovalDenied = true;
         permissions = false;
         send({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id,
           response: allowed ? { behavior: 'allow', updatedInput: message.request.input } :
@@ -248,7 +260,20 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
       }
       if (message.type === 'result') {
         if (phase !== 'turn' || permissions || !observed || message.session_id !== sessionId || message.subtype !== 'success' ||
-            message.is_error !== false || message.permission_denials?.length || message.errors?.length) return fail();
+            message.is_error !== false || hostApprovalDenied || message.errors?.length) return fail();
+        if (message.permission_denials !== undefined) {
+          if (!Array.isArray(message.permission_denials)) return fail();
+          const seen = new Set();
+          for (const denial of message.permission_denials) {
+            const owned = scopeDenials.get(denial?.tool_use_id);
+            if (!denial || typeof denial !== 'object' || Array.isArray(denial) || typeof denial.tool_use_id !== 'string' || !denial.tool_use_id
+              || seen.has(denial.tool_use_id) || typeof denial.tool_name !== 'string' || !denial.tool_name
+              || !denial.tool_input || typeof denial.tool_input !== 'object' || Array.isArray(denial.tool_input)
+              || !owned || owned.summary.sessionId !== sessionId || owned.summary.toolName !== denial.tool_name
+              || !isDeepStrictEqual(owned.input, denial.tool_input)) return fail();
+            seen.add(denial.tool_use_id);
+          }
+        }
         if (responseSchema) {
           try {
             const value = message.structured_output;
@@ -286,6 +311,7 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
           nativeSchemaRetries: responseSchema ? 'not-observed' : undefined,
           evidence: 'assistant model observed; get_settings applied effort matched before and after turn; per-request effort not exposed' }, { env: clean });
         done = true; clear(); resolve({ sessionId, decision, finalAnswer: responseSchema ? structuredAnswer : result.result, structuredOutput: Boolean(responseSchema),
+          scopeDenials: [...scopeDenials.values()].map(value => value.summary),
           nativeSchemaRetries: responseSchema ? 'not-observed' : undefined, modelObserved: true, effortSettingsObserved: true, perRequestEffortObserved: false });
       } catch { fail(); }
     });
