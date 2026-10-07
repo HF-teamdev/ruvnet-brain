@@ -97,6 +97,7 @@
     "LICENSE",
     "console/",
     "config/model-router/",
+    "config/practical-rule-catalog.json",
     "tri-smart-skill/",
     "data/model-catalog.json",
     "scripts/",

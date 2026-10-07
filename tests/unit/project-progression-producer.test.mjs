@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   DERIVED_TEXT_LIMIT,
@@ -16,6 +16,24 @@ import {
 import { PROVENANCE_SOURCES, buildProjectProgression } from '../../plugin/scripts/project-progression-producer.mjs';
 
 const roots = [];
+it('an expired or cancelled producer cannot forge a source identity from an unread checkout', () => {
+  const controller = new AbortController(); controller.abort();
+  expect(() => readSourceIdentity({ checkoutRoot: '/unread-checkout', deadlineAt: Date.now() - 1 })).toThrow(/deadline exceeded/);
+  expect(() => readSourceIdentity({ checkoutRoot: '/unread-checkout', signal: controller.signal })).toThrow(/deadline exceeded/);
+});
+it.skipIf(process.platform === 'win32')('bounds the actual six-Git identity path by one epoch rather than six reset timeouts', () => {
+  // POSIX executable fixture only; portable cancellation/reader/wrapper cases remain selected on Windows.
+  const root = temporaryRoot(); const bin = path.join(root, 'bin'); fs.mkdirSync(bin); const calls = path.join(root, 'calls');
+  fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}\nconst fs=require('node:fs');fs.appendFileSync(${JSON.stringify(calls)},'git\\n');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,90);process.exit(1);`); fs.chmodSync(path.join(bin, 'git'), 0o700);
+  const source = `import {readSourceIdentity} from ${JSON.stringify(new URL('../../plugin/scripts/project-progression-sources.mjs', import.meta.url).href)};
+    const start=Date.now();try{readSourceIdentity({checkoutRoot:process.cwd(),deadlineAt:start+350});console.log(JSON.stringify({unexpectedSuccess:true}));}
+    catch(error){console.log(JSON.stringify({elapsedMs:Date.now()-start,error:error.message}));}`;
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, encoding: 'utf8', timeout: 2000,
+    env: { ...process.env, HOME: root, USERPROFILE: root, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+  expect(run.status, run.stderr).toBe(0); const result = JSON.parse(run.stdout);
+  expect(result.error).toMatch(/deadline exceeded/); expect(result.elapsedMs).toBeLessThan(1000);
+  expect(fs.readFileSync(calls, 'utf8').trim().split('\n').length).toBeLessThan(6);
+});
 function temporaryRoot(prefix = 'producer-') {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   roots.push(root);

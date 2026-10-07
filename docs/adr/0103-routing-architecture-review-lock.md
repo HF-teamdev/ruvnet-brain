@@ -3,14 +3,96 @@ id: ADR-103
 title: Routing architecture qualification requires a current finite source review
 status: Accepted
 date: 2026-10-05
-updated: 2026-10-06
-version: 0.1.13
+updated: 2026-10-07
+version: 0.1.14
 reviewed_digest: c30a133bd5aa
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
 relates: [ADR-024, ADR-069, ADR-072, ADR-100, ADR-101]
 governs:
+  - config/practical-rule-catalog.json
+  - plugin/hooks/codex-hooks.json
+  - plugin/hooks/hook-contracts.json
+  - plugin/scripts/adr-currency-gate.mjs
+  - plugin/scripts/advocacy-outcomes.mjs
+  - plugin/scripts/agentdb-recall.mjs
+  - plugin/scripts/capability-inventory-receipt.mjs
+  - plugin/scripts/capability-registry.mjs
+  - plugin/scripts/capacity-aware-parallel-work.mjs
+  - plugin/scripts/codex-hook-adapter.mjs
+  - plugin/scripts/codex-hook-wrapper.mjs
+  - plugin/scripts/continuity-brief.mjs
+  - plugin/scripts/continuity-events.mjs
+  - plugin/scripts/continuity-hook-policy.mjs
+  - plugin/scripts/decision-gate.mjs
+  - plugin/scripts/decision-outcomes.mjs
+  - plugin/scripts/detach.mjs
+  - plugin/scripts/doc-currency.mjs
+  - plugin/scripts/ground-ruvnet.sh
+  - plugin/scripts/grounding-answer.mjs
+  - plugin/scripts/grounding-stamp.sh
+  - plugin/scripts/grounding-turn-evidence.mjs
+  - plugin/scripts/grounding-turn-gate.mjs
+  - plugin/scripts/grounding-turn-mark.mjs
+  - plugin/scripts/hook-context-budget.mjs
+  - plugin/scripts/hook-registry.mjs
+  - plugin/scripts/lesson-gate.mjs
+  - plugin/scripts/project-capture-queue.mjs
+  - plugin/scripts/project-progression-producer.mjs
+  - plugin/scripts/project-progression-reader.mjs
+  - plugin/scripts/project-progression-session-start.mjs
+  - plugin/scripts/project-progression-sources.mjs
+  - plugin/scripts/project-progression-store.mjs
+  - plugin/scripts/project-store-resolver.mjs
+  - plugin/scripts/project-transition-hook.mjs
+  - plugin/scripts/session-snapshot-hook.mjs
+  - plugin/scripts/session-start-trace.mjs
+  - plugin/scripts/turn-outcome-capture.mjs
+  - plugin/scripts/unprompted-runtime.mjs
+  - plugin/scripts/user-settings.mjs
+  - scripts/hook-qualify-core.mjs
+  - scripts/practical-rule-selector.mjs
+  - scripts/product-integrity-contract.mjs
+  - tests/integration/continuity-journal.test.mjs
+  - tests/integration/project-progression-session-start.test.mjs
+  - tests/integration/unprompted-speech-registry.test.mjs
+  - tests/unit/adr-currency-gate-parity.test.mjs
+  - tests/unit/adr-currency-gate.test.mjs
+  - tests/unit/advocacy-outcomes.test.mjs
+  - tests/unit/agentdb-recall.test.mjs
+  - tests/unit/capability-inventory-receipt.test.mjs
+  - tests/unit/capability-registry.test.mjs
+  - tests/unit/codex-claude-hook-parity.test.mjs
+  - tests/unit/continuity-brief-host-hint.test.mjs
+  - tests/unit/continuity-events.test.mjs
+  - tests/unit/continuity-journal-bounds.test.mjs
+  - tests/unit/decision-gate.test.mjs
+  - tests/unit/decision-outcomes.test.mjs
+  - tests/unit/doc-currency.test.mjs
+  - tests/unit/entrypoint-symlink.test.mjs
+  - tests/unit/grounding-scope.test.mjs
+  - tests/unit/grounding-session-isolation.test.mjs
+  - tests/unit/grounding-stamp-forgery.test.mjs
+  - tests/unit/grounding-stamp-terms.test.mjs
+  - tests/unit/grounding-success-shapes.test.mjs
+  - tests/unit/grounding-turn-assertion.test.mjs
+  - tests/unit/grounding-turn-false-alarm.test.mjs
+  - tests/unit/grounding-turn-gate.test.mjs
+  - tests/unit/hook-context-budget.test.mjs
+  - tests/unit/hook-hardening.test.mjs
+  - tests/unit/hook-registry-lint.test.mjs
+  - tests/unit/injection-budget.test.mjs
+  - tests/unit/lesson-gate.test.mjs
+  - tests/unit/practical-rule-selector.test.mjs
+  - tests/unit/product-integrity-contract.test.mjs
+  - tests/unit/project-progression-producer.test.mjs
+  - tests/unit/project-progression-reader.test.mjs
+  - tests/unit/project-transition-hook.test.mjs
+  - tests/unit/session-snapshot-budget.test.mjs
+  - tests/unit/session-start-budget.test.mjs
+  - tests/unit/session-start-trace.test.mjs
+  - tests/unit/source-scope-receipt.test.mjs
   - tests/unit/continuation-commitment-ownership.test.mjs
   - plugin/scripts/continuation-gate.mjs
   - plugin/scripts/completion-claim-evidence.mjs
@@ -148,6 +230,11 @@ substitute for release qualification, exact-candidate receipts or published veri
 | Installation seam | model-terminal-launchers.mjs returns only already-validated Claude settings source paths for restrictive inherited-plan inspection; it does not evaluate native precedence or grant authority. bin/install.mjs (native administrative hooks probe uses explicit caller/CODEX_BIN or configured realCodex, leaving managed app-server refusal intact), model-routing-operation.md, codex-console-alias and SessionStart core/budget | codex-fresh-host-proof native resolution/override/fallback regression; model-router-update-convergence, session-start-core-parity, model-terminal-launchers and npm-tarball-codex; bounded routing and console-alias installation, not an all-installer review; packed-clean-install and npm-tarball-codex retain sealed archive metadata reads with basename and controlled cwd, rejecting the Windows GNU-tar remote drive-letter seam |
 | Qualification and release guard | architecture-review-lock, doc-currency, release-qualification-contract, source-scope-receipt, release-transaction, release-transaction-provider, package-lock.json; candidate/CI/protected workflows | architecture-review-lock refusal fixtures and doc-currency-review; release-evidence-dag, protected-release-workflow and agentic-qe-early-public bind the outer candidate-preflight dependency and same-run receipts; existing release contract chooses execution evidence. release-transaction-provider-buffer executes the actual payload upload path with size-based 30s–600s per-file deadlines while metadata and small sidecars retain 30s; the separate download budget and immutable asset checks remain. The npm audit at the exact-candidate seal rejects high-severity dependency advisories; a compatible transitive development patch still requires source-bound qualification, not reuse of an old candidate's receipt. This does not prove transfer throughput or a hard process-tree retirement bound. |
 
+| Shared hook intent and ownership | hook-contracts, continuity-hook-policy, hook-registry, shim and native adapters; foreign capture registrations are collision candidates, not current-turn proof | hook-registry-lint, codex-claude-hook-parity, continuity-journal and hook-hardening; native event delivery is separately qualified |
+| Native grounding identity and outcome truth | grounding marker/evidence/gate/answer, continuity-events and project-transition-hook share failure/incomplete precedence; Claude prompt_id differs from Codex turn_id | grounding-session-isolation, grounding-success-shapes, grounding-turn-assertion, continuity-events and project-transition-hook; missing IDs remain UNKNOWN |
+| Relevant rules and advisory context | practical-rule-catalog/selector, existing managed phase caller, hook-context-budget, owned producers and final Codex merge | practical-rule-selector, model-managed-workflow-service, injection-budget, hook-context-budget and unprompted-speech-registry; selection is advisory, typed quotas exclude critical/unknown/foreign output |
+| Canonical recall and recovery | project store resolver, AgentDB recall, continuity journal and progression reader/producer/session-start | agentdb-recall, project-progression-reader/producer, continuity-journal-bounds and session-start-budget; source checks do not imply all-history or all-host recovery |
+
 The exact files are enumerated in frontmatter. This mapping identifies test responsibilities; it
 claims neither that every listed test passed on this candidate nor that any reviewer read all files.
 The existing bounded execution, persistence and release audits are evidence for their stated scopes,
@@ -228,3 +315,16 @@ Claude permission questions use the existing terminal boundary in FIFO order; EO
 denies unresolved requests. This serializes human decisions without adding authority, bypassing
 native refusal or changing the Codex branch. Old runtime receipts retain their exact source and
 host-branch transfer limits; they are not relabeled as the final installed runtime.
+
+## Hook and practical-rule extension — 2026-10-07
+
+The finite governed set now includes the shared hook contracts, host adapters,
+canonical-memory capture and recall, source-grounding identity, typed advisory
+budgets and the approved practical-rule catalog/selector. Selection is bounded
+advisory delivery; it does not assert that every listed rule is mechanically
+enforced. Existing refusal, acceptance and publication gates remain independent.
+
+Component reviews and focused checks cover their recorded source/range scopes.
+The prior reviewed_digest is deliberately retained as historical evidence and is
+stale for these changed bytes. A new integrated review and native qualification
+are required before publication. File hashes do not certify semantic reading.

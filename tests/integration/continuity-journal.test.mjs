@@ -245,7 +245,7 @@ describe('3. two sessions: session 2 comes up to speed on session 1', () => {
     // A heuristically detected owner sentence is reported as DETECTED, UNCONFIRMED — never as a standing rule.
     expect(ctx).toMatch(/DETECTED, UNCONFIRMED.*:\n• From now on never merge without the full suite green\. \[cevt-[^\]]+ detected\]/);
     expect(ctx).not.toMatch(/STANDING RULES/);
-    expect(ctx).toMatch(/GATES \(latest outcomes\):\n• PASS npx vitest run tests\/unit — Tests 140 passed \[cevt-/);
+    expect(ctx).toMatch(/GATES \(latest outcomes\):\n• UNKNOWN npx vitest run tests\/unit — Tests 140 passed \[cevt-/);
     expect(ctx).toMatch(/AgentDB: recording ✓ \(last write \d+s ago, 4 event\(s\) today, outbox 0 pending\)/);
     expect(Buffer.byteLength(ctx.split('\n[RuvNet Brain — PROJECT CONTINUITY RESTORED]')[0])).toBeLessThanOrEqual(3072);
   });
@@ -367,10 +367,11 @@ describe('4. Codex SessionEnd budget (3s cap, 2200ms handed down)', () => {
 
 describe('5. one writer per turn', () => {
   const OUTCOME = 'Concluded the fixture refactor: the journal now commits through one drainer and every write is read back by its exact key before the commit line is written, so a refused store leaves a durable outbox copy that the next boundary retries.';
-  const fireTurn = (home, env = {}, { adopted = true } = {}) => {
+  const fireTurn = (home, env = {}, { adopted = true, configure = () => {} } = {}) => {
     // One-writer behavior applies only after the project has adopted its canonical store.
     // A bare directory now correctly fails closed instead of falling back to global memory (G-002).
     const project = adopted ? adoptedProject({ home }).dir : tmp('cont-turn-proj-');
+    configure(project);
     const launches = [];
     const r = captureTurnOutcome({ projectDir: project, event: 'Stop', payload: { session_id: 't1', last_assistant_message: OUTCOME },
       host: 'claude', env, home, brainHome: tmp('cont-brain-'), ruflo: '/fake/ruflo', launch: (steps) => { launches.push(steps); return { launched: true }; } });
@@ -395,18 +396,32 @@ describe('5. one writer per turn', () => {
   });
 
   // RED before ADR-100: both writers recorded every Claude turn (624 rows / 323 outcomes measured).
-  it('defers to the owner user-level agentdb-turn-capture hook; RUVNET_TURN_CAPTURE=force keeps both', () => {
+  it.skipIf(!process.getuid)('a static canonical Stop key/value cannot suppress capture of this current turn; force remains authoritative', () => {
     const home = tmp('cont-home-');
+    const root = path.join(home, '.npm-global/lib/node_modules/ruflo'); const entry = path.join(root, 'bin/ruflo.js');
+    fs.mkdirSync(path.dirname(entry), { recursive: true }); fs.writeFileSync(entry, '#!/usr/bin/env node\n'); fs.chmodSync(entry, 0o700);
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'ruflo', bin: { ruflo: 'bin/ruflo.js' } }));
+    const bin = path.join(home, '.npm-global/bin/ruflo'); fs.mkdirSync(path.dirname(bin), { recursive: true }); fs.symlinkSync(entry, bin);
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: 'node "${HOME}/.claude/hooks/agentdb-turn-capture.mjs" || true' }] }] } }));
-    const deferred = fireTurn(home);
-    expect(deferred.stores).toHaveLength(0);
-    expect(deferred.r).toMatchObject({ recorded: false, deferredToUserLevel: true });
-    const forced = fireTurn(home, { RUVNET_TURN_CAPTURE: 'force' });
+    const configure = project => fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command',
+      command: `${JSON.stringify(bin)} memory store --namespace turns --key fixture --value "fixture turn" --path ${JSON.stringify(path.join(project, '.swarm/memory.db'))}` }] }] } }));
+    const captured = fireTurn(home, {}, { configure });
+    expect(captured.stores).toHaveLength(1);
+    expect(captured.r.deferredToUserLevel).not.toBe(true);
+    const capturedArgs = captured.stores[0].args;
+    expect(capturedArgs[capturedArgs.indexOf('--value') + 1]).toContain(OUTCOME);
+    const forced = fireTurn(home, { RUVNET_TURN_CAPTURE: 'force' }, { configure });
     expect(forced.stores).toHaveLength(1);
     expect(forced.r).toMatchObject({ queued: true, recorded: false, scope: 'project' });
     const args = forced.stores[0].args;
     expect(args[args.indexOf('--path') + 1]).toBe(path.join(forced.project, '.swarm', 'memory.db'));
+  });
+  it('does not silently suppress Brain turn capture for a foreign same-name user handler', () => {
+    const home = tmp('cont-home-'); fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const settings = path.join(home, '.claude/settings.json');
+    const body = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node "/foreign/agentdb-turn-capture.mjs"' }] }] } });
+    fs.writeFileSync(settings, body); const captured = fireTurn(home);
+    expect(captured.stores).toHaveLength(1); expect(captured.r.deferredToUserLevel).not.toBe(true); expect(fs.readFileSync(settings, 'utf8')).toBe(body);
   });
 });
 
