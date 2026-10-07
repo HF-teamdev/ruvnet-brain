@@ -4,8 +4,8 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
-version: 0.1.14
-reviewed_digest: 09d465c11e67
+version: 0.1.15
+reviewed_digest: de355dd5acbb
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -284,6 +284,8 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `ef6b7ed562b6` against source `5f2d3cde64d007c9e92743b3f223e0730e348d6d` and the recorded final working bytes. | Bounded baseline-plus-delta semantic coverage from the 25-artifact review chain and corrected transition addendum; explicit 181-path byte inventory is not 181 fresh file reads. `plugin/scripts/project-transition-hook.mjs`, shared outcome normalization, native identity, typed advisory budgets and practical-rule phase decoration were reviewed with their direct consumers. 335 shared outcome/grounding checks passed. Native event delivery, one Windows case, all-rule hard enforcement and protected publication remain separate or incomplete. |
 
 | 2026-10-07 | Reviewed `09d465c11e67` against source `0e8e1290` and the recorded final working bytes. | Prior bounded baseline-plus-delta review remains scoped. Independent test-correction review confirms `tests/unit/hook-shim.test.mjs` copies the actual hook manifest and `tests/unit/continuation-gate-capability-truth.test.mjs` preserves unknown installation and activation claims; 23 focused checks passed. Native memory capture and protected publication remain incomplete. |
+
+| 2026-10-07 | Reviewed `de355dd5acbb` against source `b92aa838` and the recorded current bytes. | Independent bounded reviews cover the existing native administrative resolver export in `bin/install.mjs`, its discovery and installer fixtures, conservative foreign-owner recall assertions and the actual SessionStart budget-helper import. Root focused checks passed 5 native discovery, 66 ownership/startup and 7 managed-boundary tests with zero skips. Earlier failed integration receipt remains failed; fresh clean qualification, native session evidence and protected publication are required. |
 
 ## Current completion safeguard scope
 
