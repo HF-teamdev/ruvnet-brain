@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
 version: 0.1.17
-reviewed_digest: e34f347644a6
+reviewed_digest: c694f81d5ae3
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -288,6 +288,8 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `de355dd5acbb` against source `b92aa838` and the recorded current bytes. | Independent bounded reviews cover the existing native administrative resolver export in `bin/install.mjs`, its discovery and installer fixtures, conservative foreign-owner recall assertions and the actual SessionStart budget-helper import. Root focused checks passed 5 native discovery, 66 ownership/startup and 7 managed-boundary tests with zero skips. Earlier failed integration receipt remains failed; fresh clean qualification, native session evidence and protected publication are required. |
 
 | 2026-10-07 | Reviewed `e34f347644a6` against source `92147327` and the recorded current bytes. | Independent bounded review covers the PreCompact-only no-op exemption in `plugin/scripts/project-progression-producer.mjs` and actual lifecycle regression through the existing canonical append/readback path. 43 integrated checks passed without skips. The prior native run remains blocked: it delivered PreCompact but intentionally suppressed an unchanged snapshot. Fresh packed native execution and publication are still required; no historical receipt is relabeled. |
+
+| 2026-10-07 | Reviewed `c694f81d5ae3` against source `6808039e` and recorded current bytes. | Bounded independent review and 17 integrated checks cover the three grounding dispatches joining the existing matching-root, undefined-only Claude fallback in `plugin/scripts/hook-shim.mjs`. Explicit Codex and unknown-host safeguards remain. Prior same-source native Claude tool/restore/capture succeeded but grounding was blocked; this new dispatcher requires fresh packed native proof. The reviewed subprocess cases are qualified on macOS/Linux only by the existing platform contract, not asserted on Windows. |
 
 ## Current completion safeguard scope
 
