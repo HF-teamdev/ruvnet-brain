@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-06
-version: 0.1.12
+version: 0.1.13
 reviewed_digest: f3e9a96b6762
 impl: built
 authors: [Stuart Kerr, Codex]
@@ -219,7 +219,11 @@ changed tests. Source/unit clearance is not native happy-path acceptance: the fi
 requires actual normal entries, model and effort observations, checks, independent review, exact
 canonical readback and protected installation proof. An absent optional Codex project layer is
 neutral, while a disabled applicable layer refuses authority; native effective sandbox and the
-most-specific configured project trust still govern. The corrected source has 278 focused cases
-passed; those results do not replace source-bound native happy-path and protected qualification
-receipts.
+most-specific configured project trust still govern. The final source-bound focused report covers the corrected modules;
+those results do not replace native happy-path and protected qualification receipts.
 This finite source inventory is not a claim that every governed file was semantically reread.
+
+Claude permission questions use the existing terminal boundary in FIFO order; EOF or cancellation
+denies unresolved requests. This serializes human decisions without adding authority, bypassing
+native refusal or changing the Codex branch. Old runtime receipts retain their exact source and
+host-branch transfer limits; they are not relabeled as the final installed runtime.

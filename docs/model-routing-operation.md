@@ -1,4 +1,4 @@
-Updated: 2026-10-06 19:36:10 EDT | Version 1.0.1
+Updated: 2026-10-06 20:12:39 EDT | Version 1.0.2
 Created: 2026-10-05 EDT
 
 # Managed terminal routing
@@ -24,3 +24,5 @@ Effective Codex authority is read through native config/read for the canonical w
 Claude conservatively scans the validated user/project/settings source paths for inherited plan restrictions and refuses unreadable, malformed or unknown-mode sources. This is a restrictive scan, not a replacement for the native effective-settings precedence engine. Native permission deny rules and terminal approval remain authoritative. Invocation-scoped PreToolUse denies tools outside declared ownership even where native allow rules would otherwise bypass can_use_tool; native initialize must acknowledge hooks_applied before any prompt is sent.
 
 A source review and focused tests do not establish native execution or installation. The five-gate acceptance contract separately requires actual normal Codex and Claude entry behavior, observed model and effort, context continuity, checks, independent review, canonical workflow readback and exact-source protected shipping.
+
+Concurrent Claude permission questions are serialized in FIFO order at the existing terminal input boundary. Cancellation and EOF deny unresolved approvals; ownership restrictions and native policy are retained, and approval answers are not reused for later requests.

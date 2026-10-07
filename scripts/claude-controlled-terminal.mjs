@@ -150,10 +150,12 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
   if (expired()) throw new Error(REFUSED);
   const child = spawnNative(binary, args, { cwd, env: clean, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
   return new Promise((resolve, reject) => {
-    let done = false, phase = 'initialize', buffer = '', bytes = 0, result, observed = false, permissions = false;
+    let done = false, phase = 'initialize', buffer = '', bytes = 0, result, observed = false, pendingPermissions = 0;
+    let permissionTail = Promise.resolve();
     const assistantText = [];
     let structuredAnswer;
     const scopeCallback = 'owned-scope', hookRequests = new Set(), scopeDenials = new Map();
+    const permissionRequests = new Set();
     let hostApprovalDenied = false;
     const decoder = new StringDecoder('utf8');
     const ids = { initialize: crypto.randomUUID(), before: crypto.randomUUID(), after: crypto.randomUUID() };
@@ -203,7 +205,7 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
         const request = message.request, input = request.input;
         const toolId = request.tool_use_id ?? input?.tool_use_id;
         if (phase !== 'turn' || request.callback_id !== scopeCallback || typeof message.request_id !== 'string'
-          || hookRequests.has(message.request_id) || hookRequests.size >= 1024
+          || hookRequests.has(message.request_id) || permissionRequests.has(message.request_id) || hookRequests.size >= 1024
           || input?.hook_event_name !== 'PreToolUse' || input.session_id !== sessionId
           || typeof input.tool_name !== 'string' || !input.tool_name || input.tool_name.length > 256 || typeof toolId !== 'string' || !toolId || toolId.length > 256
           || !input.tool_input || typeof input.tool_input !== 'object' || Array.isArray(input.tool_input)
@@ -230,26 +232,36 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
         return;
       }
       if (message.type === 'control_request') {
-        if (phase !== 'turn' || permissions || message.request?.subtype !== 'can_use_tool' || typeof message.request_id !== 'string') return fail();
+        if (phase !== 'turn' || message.request?.subtype !== 'can_use_tool' || typeof message.request_id !== 'string' || !message.request_id
+          || permissionRequests.has(message.request_id) || hookRequests.has(message.request_id)
+          || permissionRequests.size >= 1024 || pendingPermissions >= 32) return fail();
         if (['Agent', 'Task'].includes(message.request.tool_name)) return fail();
-        permissions = true;
-        let allowed = false;
-        try {
-          if (message.request.tool_name === 'StructuredOutput') {
-            const value = message.request.input;
-            const serialized = JSON.stringify(value);
-            if (responseSchema && value && typeof value === 'object' && !Array.isArray(value)
-              && Buffer.byteLength(serialized) <= 1024 * 1024 && validateStructuredOutput(value) === true) {
-              await assertModelRoutingText(serialized);
-              allowed = !expired();
-            }
-          } else allowed = await approve(message.request) === true;
-        } catch { allowed = false; }
-        if (!allowed) hostApprovalDenied = true;
-        permissions = false;
-        send({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id,
-          response: allowed ? { behavior: 'allow', updatedInput: message.request.input } :
-            { behavior: 'deny', message: 'The host did not approve this tool request.' } } });
+        permissionRequests.add(message.request_id); pendingPermissions++;
+        const requestId = message.request_id, request = structuredClone(message.request), originalInput = structuredClone(request.input);
+        permissionTail = permissionTail.then(async () => {
+          if (done) return;
+          if (expired()) return fail();
+          let allowed = false;
+          try {
+            if (request.tool_name === 'StructuredOutput') {
+              const value = originalInput;
+              const serialized = JSON.stringify(value);
+              if (responseSchema && value && typeof value === 'object' && !Array.isArray(value)
+                && Buffer.byteLength(serialized) <= 1024 * 1024 && validateStructuredOutput(value) === true) {
+                await assertModelRoutingText(serialized);
+                allowed = !expired();
+              }
+            } else allowed = await approve(request) === true;
+          } catch { allowed = false; }
+          if (done) return;
+          if (expired()) return fail();
+          if (!allowed) hostApprovalDenied = true;
+          pendingPermissions--;
+          send({ type: 'control_response', response: { subtype: 'success', request_id: requestId,
+            response: allowed ? { behavior: 'allow', updatedInput: originalInput } :
+              { behavior: 'deny', message: 'The host did not approve this tool request.' } } });
+          if (!allowed) fail();
+        }).catch(fail);
         return;
       }
       if (message.session_id && message.session_id !== sessionId) return fail();
@@ -259,7 +271,7 @@ export async function runControlledClaudeTurn({ binary, prompt, decisionPrompt =
         for (const block of message.message.content || []) if (block.type === 'text') assistantText.push(cleanText(block.text));
       }
       if (message.type === 'result') {
-        if (phase !== 'turn' || permissions || !observed || message.session_id !== sessionId || message.subtype !== 'success' ||
+        if (phase !== 'turn' || pendingPermissions !== 0 || !observed || message.session_id !== sessionId || message.subtype !== 'success' ||
             message.is_error !== false || hostApprovalDenied || message.errors?.length) return fail();
         if (message.permission_denials !== undefined) {
           if (!Array.isArray(message.permission_denials)) return fail();

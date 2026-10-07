@@ -193,12 +193,13 @@ describe('controlled Claude native turn boundary', () => {
     expect(child.listenerCount('close')).toBe(0);
   });
 
-  it('ignores a late permission answer after overlapping native requests force retirement', async () => {
+  it('cancellation drops queued requests and ignores a late permission answer', async () => {
     let approve;
     const f = fixture({ tool: true, options: { approve: () => new Promise(resolve => { approve = resolve; }) } });
-    const pending = runControlledClaudeTurn(f.options); await tick();
+    const controller = new AbortController();
+    const pending = runControlledClaudeTurn({ ...f.options, signal: controller.signal }); await tick();
     f.child.stdout.write(JSON.stringify({ type: 'control_request', request_id: 'second', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } }) + '\n');
-    await expect(pending).rejects.toThrow(/refused/); approve(true); await tick();
+    controller.abort(); await expect(pending).rejects.toThrow(/refused/); approve(true); await tick();
     expect(f.sent.some(m => m.type === 'control_response')).toBe(false);
     expect(f.receipts.some(r => r.status === 'completed')).toBe(false);
   });
@@ -372,7 +373,7 @@ describe('native PreToolUse ownership enforcement before native autoallows', () 
     expect(f.sent.some(row => row.type === 'user')).toBe(false);
   });
   function guarded(overrides = {}) {
-    const f = fixture({ tool: true, toolName: 'Write', options: { approve: async () => false, ...overrides } });
+    const f = fixture({ tool: true, toolName: 'Write', options: { approve: async () => true, ...overrides } });
     // Hold the model fixture at its permission callback while injecting a native guard packet.
     const write = f.child.stdin._write.bind(f.child.stdin);
     f.child.stdin._write = (chunk, encoding, callback) => {
@@ -511,5 +512,74 @@ describe('recovered native denials must match emitted host scope refusals', () =
       await expect(runControlledClaudeTurn(f.options)).rejects.toThrow(/refused/);
       expect(f.receipts.some(row => row.status === 'completed')).toBe(false);
     }
+  });
+});
+
+describe('bounded FIFO native approval handling', () => {
+  const requests = [
+    { request_id: 'read-first', request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: 'first.json' } } },
+    { request_id: 'read-second', request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: 'second.json' } } },
+  ];
+  function parallel(approve, packets = requests) {
+    const f = fixture({ options: { approve } }), write = f.child.stdin._write;
+    let answered = 0;
+    f.child.stdin._write = (chunk, encoding, callback) => {
+      const row = JSON.parse(chunk.toString());
+      if (row.type === 'user') {
+        f.sent.push(row); callback();
+        queueMicrotask(() => f.child.stdout.write(packets.map(packet => JSON.stringify({ type: 'control_request', ...packet })).join('\n') + '\n'));
+      } else if (row.type === 'control_response') {
+        answered++;
+        if (answered === packets.length) write(chunk, encoding, callback);
+        else { f.sent.push(row); callback(); }
+      } else write(chunk, encoding, callback);
+    };
+    return f;
+  }
+  it('two native parallel Reads display/approve/reply in FIFO order with original IDs and inputs', async () => {
+    const calls = []; let release;
+    const f = parallel(async request => {
+      calls.push(request.input.file_path);
+      if (calls.length === 1) await new Promise(resolve => { release = resolve; });
+      request.input.file_path = 'callback mutation must not change native input';
+      return true;
+    });
+    const pending = runControlledClaudeTurn(f.options); await tick();
+    expect(calls).toEqual(['first.json']);
+    expect(f.sent.filter(row => row.type === 'control_response')).toEqual([]);
+    release(); await pending;
+    expect(calls).toEqual(['first.json', 'second.json']);
+    expect(f.sent.filter(row => row.type === 'control_response').map(row => [row.response.request_id, row.response.response.updatedInput])).toEqual([
+      ['read-first', { file_path: 'first.json' }], ['read-second', { file_path: 'second.json' }],
+    ]);
+  });
+  it.each([
+    { packets: [requests[0], requests[0]] },
+    { packets: Array.from({ length: 33 }, (_, i) => ({ ...requests[0], request_id: `overflow-${i}` })) },
+  ])('duplicate IDs and pending overflow refuse before any queued approval %#', async ({ packets }) => {
+    const calls = [], f = parallel(async request => { calls.push(request); return true; }, packets);
+    await expect(runControlledClaudeTurn(f.options)).rejects.toThrow(/refused/);
+    expect(calls).toEqual([]); expect(f.sent.some(row => row.type === 'control_response')).toBe(false);
+  });
+  it('a native success result while approval is pending cannot complete the turn', async () => {
+    let release; const calls = [], f = parallel(request => { calls.push(request); return new Promise(resolve => { release = resolve; }); });
+    const pending = runControlledClaudeTurn(f.options); const rejected = expect(pending).rejects.toThrow(/refused/); await tick();
+    f.child.stdout.write(JSON.stringify({ type: 'assistant', session_id: sessionId, message: { model: decision.model, content: [] } }) + '\n'
+      + JSON.stringify({ type: 'result', session_id: sessionId, subtype: 'success', is_error: false, result: 'premature result', permission_denials: [] }) + '\n');
+    await rejected; release(true); await tick();
+    expect(calls).toHaveLength(1); expect(f.receipts.some(row => row.status === 'completed')).toBe(false);
+    expect(f.sent.some(row => row.type === 'control_response')).toBe(false);
+  });
+  it('user refusal retires the turn and never displays the next queued request', async () => {
+    const calls = [], f = parallel(async request => { calls.push(request.input.file_path); return false; });
+    await expect(runControlledClaudeTurn(f.options)).rejects.toThrow(/refused/);
+    expect(calls).toEqual(['first.json']);
+    expect(f.sent.filter(row => row.type === 'control_response').map(row => [row.response.request_id, row.response.response.behavior])).toEqual([['read-first', 'deny']]);
+  });
+  it('cancellation drops queued prompts and late responses', async () => {
+    let release; const calls = [], f = parallel(request => { calls.push(request); return new Promise(resolve => { release = resolve; }); });
+    const controller = new AbortController(), pending = runControlledClaudeTurn({ ...f.options, signal: controller.signal });
+    const rejected = expect(pending).rejects.toThrow(/refused/); await tick(); controller.abort(); await rejected; release(true); await tick();
+    expect(calls).toHaveLength(1); expect(f.sent.some(row => row.type === 'control_response')).toBe(false);
   });
 });
