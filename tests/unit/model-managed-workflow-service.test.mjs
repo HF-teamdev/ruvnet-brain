@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { spawnSync } from 'node:child_process';
 import { managedRoute, planManagedTask as actualPlanManagedTask, executeManagedWorkflow as actualExecuteManagedWorkflow, captureCheckerRegistry, runRegisteredChecker,
   commitManagedReceipt } from '../../scripts/model-managed-workflow-service.mjs';
 import { selectDecision } from '../../scripts/model-router-engine.mjs';
@@ -410,14 +411,23 @@ test('read-only history failure stays disclosed while context and bounded read w
 });
 
 test('write, independent review and commit each receive a new bound recall; no caller snapshot bypasses it', async () => {
-  const f = fixture(true), phases = [], captured = [];
+  const f = fixture(true), phases = [], captured = [], syntaxChecks = [];
   try {
     const recallMemory = async args => { phases.push(args.binding.phase); return phaseMemory(f.input)(args); };
     const plan = await planManagedTask(f.input, { route: async () => decision, runPlanner: planner(f), recallMemory });
     const result = await executeManagedWorkflow(plan.request, { route: async () => decision,
       createAdapters: executor([], state => { assert.match(state.worker.prompt, /Fresh phase history.*UNTRUSTED DATA/); }),
+      check: async checker => {
+        assert.equal(checker.kind, 'command'); assert.equal(checker.command, process.execPath);
+        assert.deepEqual(checker.args, ['--check', path.join(f.root, 'work.mjs')]); assert.equal(checker.cwd, f.root);
+        syntaxChecks.push(checker.id);
+        // This unit fixture injects native workers; its fixed syntax check is also source-only.
+        const checked = spawnSync(checker.command, checker.args, { cwd: checker.cwd, encoding: 'utf8', timeout: 5000, shell: false });
+        return { passed: checked.status === 0 && !checked.error && !checked.signal, exitCode: checked.status };
+      },
       recallMemory, verifyDecision: () => {}, recordReceipt: async (_req, receipt) => { captured.push(receipt); return { durable: true }; } });
-    assert.equal(result.status, 'complete'); assert.deepEqual(phases, ['planner', 'write', 'review', 'commit-decision']);
+    assert.equal(result.status, 'complete', result.failure); assert.equal(syntaxChecks.length, 1);
+    assert.deepEqual(phases, ['planner', 'write', 'review', 'commit-decision']);
     const receipt = captured.find(x => x.status === 'complete');
     assert.deepEqual(receipt.recallEvidence.phases.map(x => x.phase), ['write', 'review', 'commit-decision']);
     assert.ok(receipt.recallEvidence.phases.every(x => x.receipt.binding.requestDigest === digest(f.input.originalPrompt)));

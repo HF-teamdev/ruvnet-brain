@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
-version: 0.1.17
+version: 0.1.18
 reviewed_digest: c694f81d5ae3
 impl: built
 authors: [Stuart Kerr, Codex]
