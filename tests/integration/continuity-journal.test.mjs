@@ -259,17 +259,22 @@ describe('3. two sessions: session 2 comes up to speed on session 1', () => {
     expect(context).toMatch(/OPEN ITEMS:\n• Rotate the fixture signing key \[owner: release agent\] \[cevt-/);
   });
 
-  it('defers owner lesson-* keys to the user-level ensure hook when it is registered, and reads them otherwise', () => {
+  it('keeps lesson-* keys as fenced data when a same-name user ensure registration has no delivery proof', () => {
     const p = adoptedProject();
     const ruflo = fakeRuflo();
     spawnSync(ruflo.bin, ['memory', 'store', '--key', 'lesson-fixture-rule', '--value', 'Fixture owner rule: prove before claiming.', '--namespace', 'default', '--path', path.join(p.dir, '.swarm', 'memory.db')]);
     const without = buildBrief({ projectDir: p.dir, env: p.env, home: p.home, persistState: false }).context;
     expect(without).toContain('Fixture owner rule: prove before claiming. [default/lesson-fixture-rule]');
     fs.mkdirSync(path.join(p.home, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(p.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ command: 'bash ~/.claude/hooks/agentdb-ensure.sh' }] }] } }));
-    const deferred = buildBrief({ projectDir: p.dir, env: p.env, home: p.home, persistState: false }).context;
-    expect(deferred).not.toContain('Fixture owner rule');
-    expect(deferred).toContain('printed by your user-level agentdb-ensure hook');
+    const settingsFile = path.join(p.home, '.claude', 'settings.json');
+    const registered = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ command: 'bash ~/.claude/hooks/agentdb-ensure.sh' }] }] } });
+    fs.writeFileSync(settingsFile, registered);
+    const retained = buildBrief({ projectDir: p.dir, env: p.env, home: p.home, persistState: false }).context;
+    const lessonAt = retained.indexOf('Fixture owner rule: prove before claiming. [default/lesson-fixture-rule]');
+    expect(lessonAt).toBeGreaterThan(retained.indexOf(FENCE_OPEN));
+    expect(lessonAt).toBeLessThan(retained.indexOf(FENCE_CLOSE));
+    expect(retained).not.toContain('printed by your user-level agentdb-ensure hook');
+    expect(fs.readFileSync(settingsFile, 'utf8')).toBe(registered);
   });
 });
 
