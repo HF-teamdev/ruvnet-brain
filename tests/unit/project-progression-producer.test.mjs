@@ -257,3 +257,37 @@ describe('progression producer', () => {
       .toBe(buildProjectProgression({ ...options, trigger: 'PreCompact' }).meaningDigest);
   });
 });
+
+
+it('PreCompact records a fresh canonical lifecycle boundary after identical Stop while other events still deduplicate', async () => {
+  const { adoptedProject, fakeRuflo, rows, cleanup } = await import('../helpers/continuity-fixture.mjs');
+  const { runSessionSnapshotHook } = await import('../../plugin/scripts/session-snapshot-hook.mjs');
+  const { ProjectProgressionStore } = await import('../../plugin/scripts/project-progression-store.mjs');
+  const f = adoptedProject();
+  const cli = fakeRuflo(f.home);
+  const env = { ...f.env, RUVNET_BRAIN_HOME: path.join(f.home, 'brain'), RUVNET_RUFLO_CWD_ROOT: path.join(f.home, 'scratch') };
+  const db = path.join(f.dir, '.swarm', 'memory.db');
+  const run = event => runSessionSnapshotHook(f.dir, event, { env, host: 'codex', budgetMs: 8000,
+    rawInput: JSON.stringify({ session_id: 'native-lifecycle', hook_event_name: event, cwd: f.dir }),
+    makeStoreFactory: () => options => new ProjectProgressionStore({ ...options, rufloBinary: cli.bin }),
+  });
+  try {
+    const stop = run('Stop');
+    expect(stop.progressionCaptured, JSON.stringify(stop)).toBe(true);
+    const first = JSON.parse(rows(db, 'project-progression')[0].content);
+    const repeatedStop = run('Stop');
+    expect(repeatedStop.progressionCaptured).toBe(false);
+    expect(repeatedStop.skipped).toMatch(/no-op capture/);
+    expect(rows(db, 'project-progression')).toHaveLength(1);
+    const compact = run('PreCompact');
+    expect(compact.progressionCaptured, JSON.stringify(compact)).toBe(true);
+    const snapshots = rows(db, 'project-progression').map(row => JSON.parse(row.content)).sort((a,b) => a.sequence-b.sequence);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[1]).toMatchObject({ trigger: 'PreCompact', sessionIdentity: 'native-lifecycle', sequence: first.sequence + 1, parentEventKeys: [first.eventKey] });
+    expect(snapshots[1].eventKey).not.toBe(first.eventKey);
+    expect(compact.receipt.readbackDigest).toBe(snapshots[1].payloadDigest);
+    expect(cli.calls().some(call => call.argv.includes('store') && call.key === compact.receipt.eventKey)).toBe(true);
+    expect(run('SessionEnd').skipped).toMatch(/no-op capture/);
+    expect(rows(db, 'project-progression')).toHaveLength(2);
+  } finally { cleanup(); }
+});
