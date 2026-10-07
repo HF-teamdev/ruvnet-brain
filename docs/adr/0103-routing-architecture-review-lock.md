@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
 version: 0.1.18
-reviewed_digest: c694f81d5ae3
+reviewed_digest: 7ba26e9903fa
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -290,6 +290,8 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `e34f347644a6` against source `92147327` and the recorded current bytes. | Independent bounded review covers the PreCompact-only no-op exemption in `plugin/scripts/project-progression-producer.mjs` and actual lifecycle regression through the existing canonical append/readback path. 43 integrated checks passed without skips. The prior native run remains blocked: it delivered PreCompact but intentionally suppressed an unchanged snapshot. Fresh packed native execution and publication are still required; no historical receipt is relabeled. |
 
 | 2026-10-07 | Reviewed `c694f81d5ae3` against source `6808039e` and recorded current bytes. | Bounded independent review and 17 integrated checks cover the three grounding dispatches joining the existing matching-root, undefined-only Claude fallback in `plugin/scripts/hook-shim.mjs`. Explicit Codex and unknown-host safeguards remain. Prior same-source native Claude tool/restore/capture succeeded but grounding was blocked; this new dispatcher requires fresh packed native proof. The reviewed subprocess cases are qualified on macOS/Linux only by the existing platform contract, not asserted on Windows. |
+
+| 2026-10-07 | Reviewed `7ba26e9903fa` against source `439d94d1` and recorded current bytes. | Independent review covers the test-local fixed Node syntax checker in `tests/unit/model-managed-workflow-service.test.mjs`: original hosted source-only refusal was reproduced, all fresh-recall and receipt assertions retained, and the full 27-case integrated file passed. No production runtime code changed. Prior native proof stays bound to its original source and artifact; exact new qualification and hosted gates remain required. Failed preflight 37606672323 remains failed and main was not promoted. |
 
 ## Current completion safeguard scope
 
