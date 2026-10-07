@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
-version: 0.1.15
+version: 0.1.16
 reviewed_digest: de355dd5acbb
 impl: built
 authors: [Stuart Kerr, Codex]
@@ -288,6 +288,9 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `de355dd5acbb` against source `b92aa838` and the recorded current bytes. | Independent bounded reviews cover the existing native administrative resolver export in `bin/install.mjs`, its discovery and installer fixtures, conservative foreign-owner recall assertions and the actual SessionStart budget-helper import. Root focused checks passed 5 native discovery, 66 ownership/startup and 7 managed-boundary tests with zero skips. Earlier failed integration receipt remains failed; fresh clean qualification, native session evidence and protected publication are required. |
 
 ## Current completion safeguard scope
+
+Pre-compaction is an explicit canonical checkpoint boundary. `plugin/scripts/project-progression-producer.mjs` must produce a fresh `PreCompact` snapshot even when state and source meaning match the preceding Stop. It uses the existing consent, native session identity, append-only sequence/parent and exact readback path; ordinary unchanged Stop and SessionEnd suppression remains. This is a source contract requiring fresh packed native evidence, not a claim that the current live session has passed.
+
 
 The 4.5.15 correction uses the existing Stop path and exact hook-ownership checks. Its finite governed scope includes each changed handler, shim, installer boundary, existing regression test and the POSIX-only retirement fixture. Linux/macOS select that fixture explicitly; the shared retirement suite remains available to Windows. Source byte inventory and scoped checker evidence do not imply semantic review of an arbitrary whole task. Expanded contract/admission/service changes remain deferred and are not part of this candidate.
 

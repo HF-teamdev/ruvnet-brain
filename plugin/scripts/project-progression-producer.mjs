@@ -296,7 +296,8 @@ export function buildProjectProgression({
     projectProgression,
     provenance,
     meaningDigest: meaning,
-    ...(priorMeaning === meaning
+    // Compaction requires a fresh durable boundary even when application state is unchanged.
+    ...(trigger !== 'PreCompact' && priorMeaning === meaning
       ? { skipped: { reason: 'no-op capture: project state and source identity are identical to the current head' } }
       : {}),
   };
