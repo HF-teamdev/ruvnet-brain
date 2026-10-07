@@ -4,7 +4,7 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-07
-version: 0.1.16
+version: 0.1.17
 reviewed_digest: e34f347644a6
 impl: built
 authors: [Stuart Kerr, Codex]
@@ -290,6 +290,9 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `e34f347644a6` against source `92147327` and the recorded current bytes. | Independent bounded review covers the PreCompact-only no-op exemption in `plugin/scripts/project-progression-producer.mjs` and actual lifecycle regression through the existing canonical append/readback path. 43 integrated checks passed without skips. The prior native run remains blocked: it delivered PreCompact but intentionally suppressed an unchanged snapshot. Fresh packed native execution and publication are still required; no historical receipt is relabeled. |
 
 ## Current completion safeguard scope
+
+The three grounding identity dispatches (`grounding-turn-mark`, `grounding-stamp`, `grounding-turn-gate`) share the existing trusted Claude host fallback in `plugin/scripts/hook-shim.mjs`. Inference is allowed only when the host variable is undefined and the native plugin-root realpath matches the executing owned shim. Explicit Codex, invalid or empty host values and missing or mismatched roots remain unchanged. This repairs native Claude identity transport without treating a global stamp as current-turn proof; fresh packed native receipts are required.
+
 
 Pre-compaction is an explicit canonical checkpoint boundary. `plugin/scripts/project-progression-producer.mjs` must produce a fresh `PreCompact` snapshot even when state and source meaning match the preceding Stop. It uses the existing consent, native session identity, append-only sequence/parent and exact readback path; ordinary unchanged Stop and SessionEnd suppression remains. This is a source contract requiring fresh packed native evidence, not a claim that the current live session has passed.
 

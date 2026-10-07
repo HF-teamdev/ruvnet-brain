@@ -188,7 +188,7 @@ const TABLE = {
 
 const hookId = process.argv[2];
 // Native Claude supplies this exact registered plugin root; do not guess a host from absence.
-if (['session-snapshot', 'continuation-gate'].includes(hookId)
+if (['session-snapshot', 'continuation-gate', 'grounding-turn-mark', 'grounding-stamp', 'grounding-turn-gate'].includes(hookId)
     && process.env.RUVNET_HOOK_HOST === undefined && process.env.CLAUDE_PLUGIN_ROOT) {
   try {
     const ownPluginRoot = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
