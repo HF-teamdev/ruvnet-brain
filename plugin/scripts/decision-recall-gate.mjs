@@ -30,7 +30,10 @@ const ALLOW = 0;
 const REFUSE = 2;
 const STATUS_LINE = /^\s*(?:status:\s*\S.*|\*\*Status\*\*\s*:.*)$/im;
 /** The document's status line, ignoring fenced code (a YAML example is not the ADR's status). */
-export const statusOf = (text) => (STATUS_LINE.exec(String(text || '').replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, '')) || [''])[0].trim();
+const STATUS_LINES = new RegExp(STATUS_LINE.source, 'gim');
+/** Every status line of the document (frontmatter AND body), ignoring fenced code. */
+export const statusOf = (text) => [...String(text || '').replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, '').matchAll(STATUS_LINES)]
+  .map((m) => m[0].trim()).join('\n');
 
 function readText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } }
 
@@ -61,8 +64,17 @@ export function adrDecisionIn(payload, { read = readText } = {}) {
   }
   if (tool === 'apply_patch') {
     const text = typeof input === 'string' ? input : JSON.stringify(input);
-    const added = [...text.matchAll(/\*\*\* Add File: ([^\n\\"]+)/g)].map((m) => m[1].trim()).find(isAdrPath);
+    const patch = typeof input === 'string' ? input : String(input.input ?? input.patch ?? input.command ?? text);
+    const added = [...patch.matchAll(/\*\*\* Add File: ([^\n\\"]+)/g)].map((m) => m[1].trim()).find(isAdrPath);
     if (added) return { path: added, kind: 'new ADR' };
+    // An Update File hunk on an ADR: compare the status lines it removes with the ones it adds.
+    for (const section of patch.split(/^\*\*\* (?=Update File: )/m).slice(1)) {
+      const file = /^Update File: ([^\n]+)/.exec(section)?.[1]?.trim();
+      if (!isAdrPath(file)) continue;
+      const lines = section.split('\n');
+      const side = (sign) => lines.filter((l) => l.startsWith(sign) && !l.startsWith(sign.repeat(3))).map((l) => l.slice(1)).join('\n');
+      if (statusOf(side('+')) !== statusOf(side('-'))) return { path: file, kind: 'ADR status change' };
+    }
   }
   return null;
 }

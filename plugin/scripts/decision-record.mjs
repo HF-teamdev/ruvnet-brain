@@ -80,6 +80,8 @@ export function validateDecisionRecord(r) {
   }
   const sup = r.supersedes ?? [];
   if (!Array.isArray(sup) || sup.length > BOUNDS.supersedes || sup.some((k) => !KEY_RE.test(k))) errors.push('supersedes must be ≤8 exact decision keys');
+  // A detected record is evidence, never authority: it may not retire a decision (append-only, no undo).
+  if (Array.isArray(sup) && sup.length && r.status !== 'ratified') errors.push('only a ratified decision may supersede');
   return errors;
 }
 
@@ -332,7 +334,13 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ou
   let ok = true;
   for (const oldKey of built.record.supersedes) {
     const value = JSON.stringify({ schema: SUPERSESSION_SCHEMA, schemaVersion: 1, project: target.projectRoot, superseded: oldKey, by: built.key, at: built.record.at });
-    const t = storeDecision({ ruflo, db: target.db, namespace, key: tombstoneKey(oldKey), value, ...(store ? { store } : {}), ...(readBack ? { readBack } : {}) });
+    let t = storeDecision({ ruflo, db: target.db, namespace, key: tombstoneKey(oldKey), value, ...(store ? { store } : {}), ...(readBack ? { readBack } : {}) });
+    if (t.state === 'quarantined') {
+      // A tombstone from an EARLIER superseder of the same decision already retires it: not a conflict.
+      let prior = null;
+      try { prior = JSON.parse((readBack || defaultReadBack)({ ruflo, db: target.db, namespace, key: t.key }).content || 'null'); } catch { /* conflict stands */ }
+      if (prior?.schema === SUPERSESSION_SCHEMA && prior.superseded === oldKey && prior.project === target.projectRoot) t = { state: 'already-stored', key: t.key };
+    }
     out.write(`decision-record: tombstone ${t.state} ${t.key}${t.reason ? ` — ${t.reason}` : ''}\n`);
     ok &&= ['committed', 'already-stored'].includes(t.state);
   }

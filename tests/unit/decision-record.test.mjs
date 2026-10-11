@@ -198,6 +198,19 @@ describe('decision-recall policy, through the real decision-gate process', () =>
     cleanup();
   }, 90_000);
 
+  it('sees a Codex apply_patch status update and a body **Status** change (re-review R4)', () => {
+    const dir = tmp('decision-r4-'); const adr = path.join(dir, 'docs', 'adr', '0003-x.md');
+    fs.mkdirSync(path.dirname(adr), { recursive: true });
+    fs.writeFileSync(adr, '---\nstatus: Accepted\n---\n# X\n\n**Status**: Accepted\n');
+    const patch = '*** Begin Patch\n*** Update File: docs/adr/0003-x.md\n@@\n-status: Accepted\n+status: Superseded\n*** End Patch\n';
+    expect(adrDecisionIn({ tool_name: 'apply_patch', cwd: dir, tool_input: { input: patch } })).toEqual({ path: 'docs/adr/0003-x.md', kind: 'ADR status change' });
+    const wording = '*** Begin Patch\n*** Update File: docs/adr/0003-x.md\n@@\n-# X\n+# X, reworded\n*** End Patch\n';
+    expect(adrDecisionIn({ tool_name: 'apply_patch', cwd: dir, tool_input: { input: wording } })).toBeNull();
+    const body = { tool_name: 'Edit', cwd: dir, tool_input: { file_path: adr, old_string: '**Status**: Accepted', new_string: '**Status**: Rejected' } };
+    expect(adrDecisionIn(body)).toEqual({ path: adr, kind: 'ADR status change' });
+    cleanup();
+  });
+
   it('recognizes a Codex apply_patch that adds an ADR', () => {
     expect(adrDecisionIn({ tool_name: 'apply_patch', cwd: '/p', tool_input: { input: '*** Begin Patch\n*** Add File: docs/adr/0002-x.md\n+# x\n' } }))
       .toEqual({ path: 'docs/adr/0002-x.md', kind: 'new ADR' });
@@ -252,6 +265,38 @@ describe('supersession survives ranking and refuses unknown keys (review finding
     const r = await recall({ prompt: 'store layout alpha decision', projectDir: p.dir, env, consequential: true, deadlineMs: 1900, enumerateKeys: hiding });
     expect(r.outcome, JSON.stringify(r.categories)).not.toMatch(/unavailable|timed-out/);
     expect((r.picks || []).map((x) => x.key)).not.toContain(oldKey);
+    expect(r.block).toMatch(/1 superseded decision\(s\) withheld/); // R3: never silent
+    cleanup();
+  }, 240_000);
+
+  (ruflo ? it : it.skip)('a detected record cannot supersede: refused, no tombstone, the ratified decision is still recalled (re-review R1)', async () => {
+    const p = adoptedProject();
+    const env = { ...p.env, RUFLO_BIN: ruflo, RUVNET_BRAIN_HOME: tmp('decision-bh-') };
+    const out = []; const err = [];
+    expect(await main(['--project', p.dir, '--record', '--what', 'Adopt the store layout beta', '--why', 'w', '--shape', 's', '--evidence', 'adr:a.md'], io(env, out, err)), err.join('')).toBe(0);
+    const oldKey = /committed (decision-\S+)/.exec(out.join(''))[1];
+    const code = await main(['--project', p.dir, '--record', '--status', 'detected-unconfirmed', '--what', 'Maybe drop beta', '--supersedes', oldKey], io(env, out, err));
+    expect(code).toBe(2);
+    expect(err.join('')).toMatch(/only a ratified decision may supersede/);
+    const all = rows(path.join(p.dir, '.swarm', 'memory.db'), path.basename(p.dir)).map((r) => r.key);
+    expect(all).toEqual([oldKey]);
+    const { recall } = await import('../../plugin/scripts/agentdb-recall.mjs');
+    const r = await recall({ prompt: 'store layout beta decision', projectDir: p.dir, env, consequential: true, deadlineMs: 1900 });
+    expect((r.picks || []).map((x) => x.key)).toContain(oldKey);
+    cleanup();
+  }, 240_000);
+
+  (ruflo ? it : it.skip)('a second superseder of the same decision is not a conflict (re-review R2)', async () => {
+    const p = adoptedProject();
+    const env = { ...p.env, RUFLO_BIN: ruflo, RUVNET_BRAIN_HOME: tmp('decision-bh-') };
+    const out = []; const err = [];
+    const rec = (what, extra = []) => main(['--project', p.dir, '--record', '--what', what, '--why', 'w', '--shape', 's', '--evidence', 'adr:x.md', ...extra], io(env, out, err));
+    expect(await rec('Adopt gamma')).toBe(0);
+    const oldKey = /committed (decision-\S+)/.exec(out.join(''))[1];
+    expect(await rec('Replace gamma one way', ['--supersedes', oldKey]), err.join('')).toBe(0);
+    out.length = 0;
+    expect(await rec('Replace gamma another way', ['--supersedes', oldKey]), err.join('')).toBe(0);
+    expect(out.join('')).toMatch(/tombstone already-stored supersession-/);
     cleanup();
   }, 240_000);
 
@@ -266,4 +311,12 @@ describe('supersession survives ranking and refuses unknown keys (review finding
     expect(rows(path.join(p.dir, '.swarm', 'memory.db'), path.basename(p.dir))).toEqual([]);
     cleanup();
   }, 240_000);
+});
+
+describe('prompt-path recall block names withheld decisions (re-review R3)', () => {
+  it('prints the count even when nothing else is delivered', async () => {
+    const { formatBlock } = await import('../../plugin/scripts/agentdb-recall.mjs');
+    expect(formatBlock({ picks: [], status: 'ok', withheld: 2 })).toMatch(/2 superseded decision\(s\) withheld/);
+    expect(formatBlock({ picks: [], status: 'ok' })).toBe('');
+  });
 });

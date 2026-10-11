@@ -3,8 +3,8 @@ id: ADR-106
 title: The hook standard — one registration per role, refuse only on a fact, AgentDB before and after decisions
 status: Proposed
 date: 2026-10-11
-updated: 2026-10-11 10:45:00 EDT
-version: 0.2.0
+updated: 2026-10-11 11:30:00 EDT
+version: 0.3.0
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [hooks, agentdb, decisions, continuity, codex, claude-code]
 relates: [ADR-0012, ADR-040, ADR-043, ADR-054, ADR-067, ADR-074, ADR-075, ADR-100, ADR-103, ADR-105]
@@ -55,9 +55,11 @@ shifted entry stops on every Codex machine until it is trusted again.
      says so, so an AgentDB outage cannot wedge decisions.
      - The receipt is keyed by project, not topic. It proves a consult of this project's decisions ran
        in the last two hours. It does not prove the consult covered this decision.
-     - "Status change" compares the status of the whole document before and after the edit, ignoring
-       fenced code. This covers Edit, MultiEdit and a whole-file Write over an existing ADR. A Bash
-       redirect into an ADR is not seen; that is a known bypass.
+     - "Status change" compares every status line of the document (frontmatter `status:` and body
+       `**Status**:`) before and after the edit, ignoring fenced code. This covers Edit, MultiEdit, a
+       whole-file Write over an existing ADR, and a Codex `apply_patch` Update File hunk (its removed
+       and added status lines are compared). Known bypasses: a Bash redirect into an ADR, and a status
+       wording a patch hunk changes only through context lines it does not show.
      - The once-per-path acknowledgement is recorded when this policy refuses. When another policy
        also refuses the same call, decision-gate names this refusal in its reason, and the retry then
        passes this policy. Two simultaneous writes can lose an acknowledgement, which refuses once more.
@@ -66,14 +68,18 @@ shifted entry stops on every Codex machine until it is trusted again.
      parsed, so this check is not enforced there and nothing is claimed.
    - `decision-record.mjs` implements the §8 record: validate, redact, then bound, and key
      `decision-<slug>-<stamp>`. It writes through the §3 door, and only an exact readback commits a
-     record. A refusal stays pending on disk for `--flush`. Supersession is computed from newer
-     ratified records, and recall drops a superseded record.
+     record. A refusal stays pending on disk for `--flush`. The CLI records `host` as `cli` when
+     neither host is identified. Supersession is computed from newer ratified records, and recall
+     drops a superseded record and says how many it withheld, on both the prompt and the
+     consequential block.
+     - Only a ratified record may supersede. A `detected-unconfirmed` record with `--supersedes` is
+       refused before anything is written: a detected record is evidence, never authority.
      - `--supersedes` refuses a key unless it reads back as a decision record of this project. The
        store is append-only, so a wrong key could not be undone.
      - Each superseded key also gets a tombstone row `supersession-<old key>`. Recall reads tombstones
        from the key enumeration it already does, so a superseder that ranking or the deadline left out
-       still retires the old decision. The CLI records `host` as `cli` when
-     neither host is identified.
+       still retires the old decision. A second superseder of the same decision finds the earlier
+       tombstone and reports it as already stored, not as a conflict.
 4. **Failure is a status line.** The shim appends one bounded line per failed advisory run (nonzero
    exit, signal or spawn error). SessionStart prints one `[RuvNet Brain — HOOK FAILURES]` summary of
    new failures. Nothing is printed per fire. Limits:
@@ -142,4 +148,5 @@ shifted entry stops on every Codex machine until it is trusted again.
 ## Currency log
 
 | 2026-10-11 | Drafted with implementation on `hooks/standard-20261011`. | Author-run focused tests and mutation checks only; no independent review. |
+| 2026-10-11 | Re-review (Fable, REVISE on f65280ce): only ratified records supersede; repeat tombstones are not conflicts; withheld count printed; apply_patch updates and body status lines checked. | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Revised for an independent review (Fable, REVISE): tombstones, `--supersedes` validation, whole-document status, fenced-code status, Stop wording, honest limits. | The review is not a stamp of these bytes. The ADR-103 review stamp and the ADR-075 dual-seat review are still owed. |
