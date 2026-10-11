@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { readStdinBounded } from './hook-input.mjs';
 import { learningContext } from './runtime-preferences.mjs';
 import { learningTarget } from './learning-store.mjs';
-import { safeQueue, safeAction, writeExclusive, takeQueueLock, releaseQueueLock } from './learning-queue.mjs';
+import { safeQueue, safeAction, writeExclusive, takeQueueLock, releaseQueueLock, queueFiles } from './learning-queue.mjs';
 
 /**
  * One PostToolUse observation. Since ADR-106 it runs IN-PROCESS from session-snapshot's PostToolUse
@@ -56,7 +56,11 @@ export function captureLearning(input) {
  */
 export function scheduleLearningRecovery({ cwd = process.cwd(), env = process.env, spawnFn = spawn } = {}) {
   try {
-    if (!learningContext({ env, cwd }).enabled) return false;
+    const context = learningContext({ env, cwd });
+    if (!context.enabled) return false;
+    // Nothing queued, nothing to recover. Spawning anyway cost a process at every session boundary and,
+    // on Windows, a live worker holds the project directory as its cwd (EBUSY on delete/move).
+    if (queueFiles(context, { limit: 1, deadline: Date.now() + 100 }).length === 0) return false;
     const child = spawnFn(process.execPath, [fileURLToPath(new URL('./learn-flush.mjs', import.meta.url))], {
       cwd, detached: true, stdio: 'ignore', windowsHide: true, env });
     child.on?.('error', () => {}); child.unref?.();

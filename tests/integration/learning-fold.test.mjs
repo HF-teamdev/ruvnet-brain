@@ -57,3 +57,15 @@ test('SessionStart schedules learn-flush through the real session-start body', a
   while (Date.now() < until && f.readCalls().length === 0) await new Promise((res) => setTimeout(res, 200));
   expect(f.readCalls().length).toBeGreaterThan(0);
 }, 45_000);
+
+test('recovery spawns no worker when no learning bytes are queued (no stray process holds the project directory)', async () => {
+  const { scheduleLearningRecovery } = await import('../../plugin/scripts/learn-capture.mjs');
+  const f = setup();
+  const spawned = [];
+  const spawnFn = (...args) => { spawned.push(args); return { on() {}, unref() {} }; };
+  expect(scheduleLearningRecovery({ cwd: f.project, env: f.env, spawnFn })).toBe(false);
+  expect(spawned).toEqual([]);
+  f.write('pending', `${JSON.stringify({ tool: 'Bash', action: 'npm test' })}\n`);
+  expect(scheduleLearningRecovery({ cwd: f.project, env: f.env, spawnFn })).toBe(true);
+  expect(spawned).toHaveLength(1);
+});
