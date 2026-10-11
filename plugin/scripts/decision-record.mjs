@@ -115,6 +115,21 @@ export function supersededKeys(records) {
   return out;
 }
 
+/**
+ * Supersession tombstones (review finding 1). A newer record's `supersedes` is only visible to recall
+ * when that newer record is itself read, so a superseder that ranking or the deadline left out let the
+ * old decision be served as live. Each superseded key therefore also gets an append-only tombstone row
+ * `supersession-<old key>` in the same namespace; recall sees it in the key enumeration it already does,
+ * with no extra read. The prefix never matches recall's `^decision[-_]` decision-key test.
+ */
+export const SUPERSESSION_SCHEMA = 'ruvnet-brain.decision-supersession';
+export const TOMBSTONE_PREFIX = 'supersession-';
+export const tombstoneKey = (oldKey) => `${TOMBSTONE_PREFIX}${oldKey}`;
+export function tombstonedKeys(keys) {
+  return new Set((keys || []).filter((k) => typeof k === 'string' && k.startsWith(`${TOMBSTONE_PREFIX}decision-`))
+    .map((k) => k.slice(TOMBSTONE_PREFIX.length)));
+}
+
 function runRuflo(ruflo, db, args, { spawn = spawnSync } = {}) {
   const cwd = rufloRunDir(db);
   try {
@@ -266,7 +281,7 @@ function parseArgs(argv) {
   return o;
 }
 
-export async function main(argv = process.argv.slice(2), { env = process.env, out = process.stdout, err = process.stderr, recallFn } = {}) {
+export async function main(argv = process.argv.slice(2), { env = process.env, out = process.stdout, err = process.stderr, recallFn, store, readBack } = {}) {
   let o;
   try { o = parseArgs(argv); } catch (e) { err.write(`decision-record: ${e.message}\n`); return 2; }
   if (!o.mode) { err.write('decision-record: one of --consult "<topic>", --record, --flush is required\n'); return 2; }
@@ -300,9 +315,28 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ou
     exclusions: target.contentPathExcludes || [] });
   if (built.errors.length) { err.write(`decision-record: invalid — ${built.errors.join('; ')}\n`); return 2; }
   const namespace = path.basename(target.projectRoot);
-  const r = storeDecision({ ruflo, db: target.db, namespace, key: built.key, value: built.value });
+  // Review finding 2: the store is append-only, so a wrong --supersedes key would hide a real decision
+  // with no undo. Every key must read back as a decision record of THIS project before anything is written.
+  for (const key of built.record.supersedes) {
+    const back = (readBack || defaultReadBack)({ ruflo, db: target.db, namespace, key });
+    let row = null; try { row = back.content ? JSON.parse(back.content) : null; } catch { /* not a record */ }
+    if (row?.schema !== DECISION_SCHEMA || row.project !== target.projectRoot) {
+      err.write(`decision-record: invalid — --supersedes ${key} is not an existing decision record of this project; nothing was written\n`);
+      return 2;
+    }
+    out.write(`decision-record: supersedes ${key} — ${String(row.what).slice(0, 120)}\n`);
+  }
+  const r = storeDecision({ ruflo, db: target.db, namespace, key: built.key, value: built.value, ...(store ? { store } : {}), ...(readBack ? { readBack } : {}) });
   out.write(`decision-record: ${r.state} ${r.key} (namespace ${namespace})${r.reason ? ` — ${r.reason}` : ''}${r.pending ? ` — retained for --flush` : ''}\n`);
-  return ['committed', 'already-stored'].includes(r.state) ? 0 : 3;
+  if (!['committed', 'already-stored'].includes(r.state)) return 3;
+  let ok = true;
+  for (const oldKey of built.record.supersedes) {
+    const value = JSON.stringify({ schema: SUPERSESSION_SCHEMA, schemaVersion: 1, project: target.projectRoot, superseded: oldKey, by: built.key, at: built.record.at });
+    const t = storeDecision({ ruflo, db: target.db, namespace, key: tombstoneKey(oldKey), value, ...(store ? { store } : {}), ...(readBack ? { readBack } : {}) });
+    out.write(`decision-record: tombstone ${t.state} ${t.key}${t.reason ? ` — ${t.reason}` : ''}\n`);
+    ok &&= ['committed', 'already-stored'].includes(t.state);
+  }
+  return ok ? 0 : 3;
 }
 
 function isMain() {

@@ -180,6 +180,24 @@ describe('decision-recall policy, through the real decision-gate process', () =>
     cleanup();
   }, 90_000);
 
+  it('sees a whole-file Write that flips an existing ADR status, and ignores status: lines inside code fences (review 5, 6)', () => {
+    const p = setup();
+    const adr = path.join(p.dir, 'docs', 'adr', '0001-choice.md');
+    fs.writeFileSync(adr, '---\nstatus: Proposed\n---\n# ADR\n');
+    const write = (content, session) => ({ session_id: session, cwd: p.dir, tool_name: 'Write', tool_input: { file_path: adr, content } });
+    expect(fire(write('---\nstatus: Proposed\n---\n# ADR reworded\n', 'w1'), p.env).status).toBe(0);
+    const flip = fire(write('---\nstatus: Accepted\n---\n# ADR\n', 'w2'), p.env);
+    expect(flip.status, flip.stderr).toBe(2);
+    expect(flip.stderr).toMatch(/ADR status change/);
+    const fenced = { session_id: 'e1', cwd: p.dir, tool_name: 'Edit', tool_input: { file_path: adr, old_string: '# ADR\n', new_string: '# ADR\n```yaml\nstatus: Rejected\n```\n' } };
+    expect(fire(fenced, p.env).status).toBe(0);
+    const bare = path.join(p.dir, 'docs', 'adr', '0002-no-status.md');
+    fs.writeFileSync(bare, '# ADR without a status line\n');
+    const example = { session_id: 'e2', cwd: p.dir, tool_name: 'Edit', tool_input: { file_path: bare, old_string: 'line\n', new_string: 'line\n```yaml\nstatus: Accepted\n```\n' } };
+    expect(fire(example, p.env).status).toBe(0); // a fenced example is not the document's status
+    cleanup();
+  }, 90_000);
+
   it('recognizes a Codex apply_patch that adds an ADR', () => {
     expect(adrDecisionIn({ tool_name: 'apply_patch', cwd: '/p', tool_input: { input: '*** Begin Patch\n*** Add File: docs/adr/0002-x.md\n+# x\n' } }))
       .toEqual({ path: 'docs/adr/0002-x.md', kind: 'new ADR' });
@@ -200,16 +218,52 @@ describe('real global ruflo round trip (skipped where absent)', () => {
     const second = await main(['--project', p.dir, '--record', '--what', 'Replace the first store layout', '--why', 'measured again', '--shape', 'one path v2',
       '--evidence', 'adr:docs/adr/0002.md', '--supersedes', key1], io);
     expect(second, err.join('')).toBe(0);
-    const stored = rows(path.join(p.dir, '.swarm', 'memory.db'), path.basename(p.dir)).map((r) => JSON.parse(r.content));
+    const all = rows(path.join(p.dir, '.swarm', 'memory.db'), path.basename(p.dir));
+    expect(all.filter((r) => r.key === `supersession-${key1}`)).toHaveLength(1); // the tombstone
+    const stored = all.filter((r) => r.key.startsWith('decision-')).map((r) => JSON.parse(r.content));
     expect(stored.map((r) => r.what).sort()).toEqual(['Adopt the first store layout', 'Replace the first store layout']);
     expect([...supersededKeys(stored)]).toEqual([key1]);
     const { recall } = await import('../../plugin/scripts/agentdb-recall.mjs');
     const r = await recall({ prompt: 'what is the store layout decision', projectDir: p.dir, env, consequential: true, deadlineMs: 1900 });
     const keys = (r.picks || []).map((x) => x.key);
-    const key2 = /committed (decision-\S+)/.exec(out.join('').split('\n').filter(Boolean).at(-1))[1];
+    const key2 = [...out.join('').matchAll(/committed (decision-\S+)/g)].at(-1)[1];
     expect(r.outcome, JSON.stringify(r.categories)).toBe('ok-with-results');
     expect(keys).toContain(key2);   // not vacuous: the decision category was read and delivered
     expect(keys).not.toContain(key1);
+    cleanup();
+  }, 240_000);
+});
+
+describe('supersession survives ranking and refuses unknown keys (review findings 1, 2)', () => {
+  const ruflo = resolveRuflo();
+  const io = (env, out, err) => ({ env, out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) } });
+  (ruflo ? it : it.skip)('a superseded decision is withheld even when its superseder is NOT among the recalled rows', async () => {
+    const p = adoptedProject();
+    const env = { ...p.env, RUFLO_BIN: ruflo, RUVNET_BRAIN_HOME: tmp('decision-bh-') };
+    const out = []; const err = [];
+    expect(await main(['--project', p.dir, '--record', '--what', 'Adopt the store layout alpha', '--why', 'w', '--shape', 's', '--evidence', 'adr:a.md'], io(env, out, err)), err.join('')).toBe(0);
+    const oldKey = /committed (decision-\S+)/.exec(out.join(''))[1];
+    out.length = 0;
+    expect(await main(['--project', p.dir, '--record', '--what', 'Unrelated wording entirely', '--why', 'w', '--shape', 's', '--evidence', 'adr:b.md', '--supersedes', oldKey], io(env, out, err)), err.join('')).toBe(0);
+    const newKey = /committed (decision-\S+)/.exec(out.join(''))[1];
+    const { recall, enumerateCanonicalKeys } = await import('../../plugin/scripts/agentdb-recall.mjs');
+    // Simulate the superseder being ranked out / not retrieved: hide it from this recall entirely.
+    const hiding = async (args) => { const r = await enumerateCanonicalKeys(args); if (r?.ok) for (const ns of Object.keys(r.value)) r.value[ns] = r.value[ns].filter((k) => k !== newKey); return r; };
+    const r = await recall({ prompt: 'store layout alpha decision', projectDir: p.dir, env, consequential: true, deadlineMs: 1900, enumerateKeys: hiding });
+    expect(r.outcome, JSON.stringify(r.categories)).not.toMatch(/unavailable|timed-out/);
+    expect((r.picks || []).map((x) => x.key)).not.toContain(oldKey);
+    cleanup();
+  }, 240_000);
+
+  (ruflo ? it : it.skip)('--supersedes refuses a key that is not an existing decision record of this project, and writes nothing', async () => {
+    const p = adoptedProject();
+    const env = { ...p.env, RUFLO_BIN: ruflo, RUVNET_BRAIN_HOME: tmp('decision-bh-') };
+    const out = []; const err = [];
+    const code = await main(['--project', p.dir, '--record', '--what', 'Replace something', '--why', 'w', '--shape', 's', '--evidence', 'adr:c.md',
+      '--supersedes', 'decision-never-recorded-20261011T000000000Z'], io(env, out, err));
+    expect(code).toBe(2);
+    expect(err.join('')).toMatch(/supersedes .*not an existing decision record/);
+    expect(rows(path.join(p.dir, '.swarm', 'memory.db'), path.basename(p.dir))).toEqual([]);
     cleanup();
   }, 240_000);
 });

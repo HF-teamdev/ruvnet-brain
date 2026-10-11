@@ -29,23 +29,35 @@ import { isAdrPath, freshConsultReceipt, brainHomeOf } from './decision-record.m
 const ALLOW = 0;
 const REFUSE = 2;
 const STATUS_LINE = /^\s*(?:status:\s*\S.*|\*\*Status\*\*\s*:.*)$/im;
-const statusOf = (text) => (STATUS_LINE.exec(String(text || '')) || [''])[0].trim();
+/** The document's status line, ignoring fenced code (a YAML example is not the ADR's status). */
+export const statusOf = (text) => (STATUS_LINE.exec(String(text || '').replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, '')) || [''])[0].trim();
 
-/** Which ADR decision, if any, this tool call makes. Pure except for the existence check. */
-export function adrDecisionIn(payload, { exists = fs.existsSync } = {}) {
+function readText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } }
+
+/**
+ * Which ADR decision, if any, this tool call makes. A status change is judged on the WHOLE document:
+ * the status of the file now versus the status after this edit is applied, so a whole-file Write over
+ * an existing ADR is seen (review finding 5) and a `status:` line inside a code fence is not (finding 6).
+ */
+export function adrDecisionIn(payload, { read = readText } = {}) {
   const tool = String(payload?.tool_name || '');
   const input = payload?.tool_input || {};
   const cwd = typeof payload?.cwd === 'string' ? payload.cwd : process.cwd();
   const abs = (p) => (path.isAbsolute(p) ? p : path.resolve(cwd, p));
-  if (tool === 'Write' && isAdrPath(input.file_path) && !exists(abs(input.file_path))) return { path: input.file_path, kind: 'new ADR' };
-  if (tool === 'Edit' || tool === 'MultiEdit') {
-    if (!isAdrPath(input.file_path)) return null;
-    const edits = tool === 'Edit' ? [input] : (Array.isArray(input.edits) ? input.edits : []);
-    for (const e of edits) {
-      const after = statusOf(e.new_string);
-      if (after && after !== statusOf(e.old_string)) return { path: input.file_path, kind: 'ADR status change' };
+  if (['Write', 'Edit', 'MultiEdit'].includes(tool) && isAdrPath(input.file_path)) {
+    const before = read(abs(input.file_path));
+    if (before === null) return tool === 'Write' ? { path: input.file_path, kind: 'new ADR' } : null;
+    let after = before;
+    if (tool === 'Write') after = String(input.content ?? '');
+    else {
+      const edits = tool === 'Edit' ? [input] : (Array.isArray(input.edits) ? input.edits : []);
+      for (const e of edits) {
+        const from = String(e.old_string ?? ''); const to = String(e.new_string ?? '');
+        if (!from) continue;
+        after = e.replace_all ? after.split(from).join(to) : after.replace(from, () => to);
+      }
     }
-    return null;
+    return statusOf(after) !== statusOf(before) ? { path: input.file_path, kind: 'ADR status change' } : null;
   }
   if (tool === 'apply_patch') {
     const text = typeof input === 'string' ? input : JSON.stringify(input);
@@ -64,10 +76,10 @@ const ackFile = (brainHome) => path.join(brainHome, 'decision-recall-acks.json')
 function readAcks(file) { try { const o = JSON.parse(fs.readFileSync(file, 'utf8')); return o && typeof o === 'object' ? o : {}; } catch { return {}; } }
 
 /** The verdict. Returns { code, stderr?, stdout? }. */
-export function evaluate(payload, { env = process.env, now = Date.now(), exists = fs.existsSync } = {}) {
+export function evaluate(payload, { env = process.env, now = Date.now() } = {}) {
   if (['off'].includes(String(env.RUVNET_DECISION_RECALL_GATE || '').toLowerCase())
     || String(env.RUVNET_AGENTDB_FIRST || '').toLowerCase() === 'off' || brainOff(env)) return { code: ALLOW };
-  const decision = adrDecisionIn(payload, { exists });
+  const decision = adrDecisionIn(payload);
   if (!decision) return { code: ALLOW };
   let resolution;
   try { resolution = resolveProjectStore({ projectDir: payload.cwd || process.cwd(), gitTimeoutMs: 400 }); } catch { return { code: ALLOW }; }
@@ -93,7 +105,7 @@ export function evaluate(payload, { env = process.env, now = Date.now(), exists 
   try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(acks), { mode: 0o600 }); } catch { return { code: ALLOW }; }
   const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'decision-record.mjs');
   return { code: REFUSE, stderr: [
-    `⛔ BLOCKED (once) — ${decision.kind} ${decision.path} before reading this project's AgentDB decisions.`,
+    `⛔ BLOCKED (once) — ${decision.kind} ${decision.path}: run decision-record.mjs --consult "<topic>" first (AgentDB decisions unread).`,
     'Consult first (exact curated records, then ranked, one deadline; failure is reported, never empty):',
     `  node ${JSON.stringify(script)} --consult "<the decision topic>"`,
     'Then write the ADR, and record the decision after it:',

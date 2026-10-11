@@ -24,7 +24,7 @@ import { resolveTurnDb } from './turn-outcome-capture.mjs';
 import { maskExcludedPaths } from './turn-capture-privacy.mjs';
 import { searchOnce, nativeRead, exactReads, searchJsonResult } from './agentdb-recall-process.mjs';
 import { makeLesson } from './lesson-store.mjs';
-import { supersededKeys } from './decision-record.mjs';
+import { supersededKeys, tombstonedKeys } from './decision-record.mjs';
 export const STORE_FILES = Object.freeze(['memory.db']);
 export const DEFAULT_DEADLINE_MS = 1900;
 export const BLOCK_MAX_BYTES = 600;
@@ -44,7 +44,7 @@ export function recallBinding({ binding = {}, projectRoot, storePath, prompt } =
 }
 
 /** Bounded structural enumeration uses the same cancellable read-only canonical provider. */
-function enumerateCanonicalKeys({ storePath, namespaces, deadline, signal, env, scratch }) {
+export function enumerateCanonicalKeys({ storePath, namespaces, deadline, signal, env, scratch }) {
   return nativeRead({ store: { path: storePath }, namespaces, deadline, signal, env, scratch });
 }
 
@@ -265,11 +265,13 @@ async function consequentialRecall({ prompt, root, store, bin, scratch, env, dea
   const records = [];
   candidates.forEach(candidate => { candidate.storePath = store.path; });
   const exactResults = await exactReads({ candidates, bin, deadline, env, scratch, signal });
-  // ADR-105 §8: supersession is a link on the NEWER record, computed here from every decision record read.
-  const superseded = supersededKeys(candidates.filter(c => c.category === 'decisions').map(c => {
+  // ADR-105 §8: supersession is a link on the NEWER record, computed from every decision record read, plus
+  // the tombstones already in the enumeration so a superseder that was not read still retires its target.
+  const superseded = tombstonedKeys(keys[path.basename(root)]);
+  for (const k of supersededKeys(candidates.filter(c => c.category === 'decisions').map(c => {
     const exact = exactResults.get(c);
     try { return exact?.state === 'ok' ? JSON.parse(exact.value) : null; } catch { return null; }
-  }));
+  }))) superseded.add(k);
   await Promise.all(candidates.map(async candidate => {
     const exact = exactResults.get(candidate);
     if (exact.state !== 'ok' || !exact.value || exact.value.startsWith('[WARN]')) { categories[candidate.category] = /timed out/.test(exact.state) ? 'timed-out' : 'unavailable'; return; }

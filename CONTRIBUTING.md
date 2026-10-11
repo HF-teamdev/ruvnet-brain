@@ -403,7 +403,8 @@ next") in the project's work ledger until a later evidenced completion claim clo
 only; `npm run completion-claim:replay` measures both on real transcripts). It also asks ONCE when a
 Claude turn created an ADR in an adopted project and no successful `decision-record.mjs --record` ran
 after it (ADR-105 §8; `RUVNET_DECISION_RECORD_CHECK=off` disables it; Codex is not enforced). A
-decision record is committed only by an exact readback; a refusal stays pending for `--flush`.
+decision record is committed only by an exact readback; a refusal stays pending for `--flush`; `--supersedes` must name an existing decision record of the project and also writes a
+`supersession-<key>` tombstone that recall honors even when the superseding record is not retrieved.
 An advisory hook that fails (nonzero exit, signal, spawn error) still exits 0 to the host; the shim
 records it and SessionStart prints one `[RuvNet Brain — HOOK FAILURES]` summary of new failures. SessionStart prints one
 `[RuvNet Brain — KNOWLEDGE …]` line when the installed knowledge cannot be proven current (older than
