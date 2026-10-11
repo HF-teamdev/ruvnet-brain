@@ -103,6 +103,10 @@ shifted entry stops on every Codex machine until it is trusted again.
      action needing consent, evidenced outage, background work still running, an action only the
      owner can physically do, a purchase, or a choice between named options.
    The answer is not flagged when it says work is continuing or that nothing is needed from the owner.
+   Authorization is SESSION-WIDE and topic-blind: a standing phrase in any earlier owner prompt
+   authorizes the whole session (known limit, independent review finding F1; scoping it to the most
+   recent prompts is follow-up work). The blocker lists are broad by design, so an incidental word can
+   clear a deferral (finding F2); the false-negative rate is unmeasured.
    Loop safety: `stop_hook_active` limits it to one force per natural stop, and a per-prompt counter
    caps forces at 3. A deferral still present on the continued stop is recorded once in the
    hook-failures ledger ("deferral not resolved") and reported at the next SessionStart.
@@ -117,6 +121,10 @@ shifted entry stops on every Codex machine until it is trusted again.
    - This is a resubstitution estimate: the phrase and blocker lists were tuned on these same turns,
      and no unseen transcript set with standing instructions was left on this machine. The true
      false-positive rate on new transcripts is likely higher.
+   - Held-out false-positive and false-negative rates are UNMEASURED. The 15% figure is a tuning-set
+     estimate and must not be quoted as accuracy. A credible held-out check needs at least 60 flagged
+     and 60 unflagged turns from transcripts not used for tuning, a rubric written before the run,
+     frozen phrase and blocker lists, Wilson intervals, and sessions with no standing instruction.
    - The "decisions I need from you" pattern counts as a deferral because the owner named it so. Some
      of those decisions are genuinely the owner's; they still get one correction, after which the
      answer may stand.
@@ -142,6 +150,12 @@ shifted entry stops on every Codex machine until it is trusted again.
      body's children; `decision-gate`'s outer-timeout test proves the orphaning when it is added.
    - The Claude watchdog kills only the direct child, so a grandchild of a killed body can outlive it.
      Bodies that spawn children keep their own deadlines (decision-gate, session-snapshot).
+   - FAIL-OPEN, NAMED: a body killed by the watchdog exits 0, which the host reads as ALLOW. If
+     decision-gate (the one process that may refuse) is killed it therefore fails open. Its own 2 s
+     policy budget sits under the 3.5 s watchdog, so this occurs only under extreme load, and it is
+     recorded as `timed-out-internally`. A body that backgrounds a child holding its stdout would be
+     held until the watchdog and lose its whole output; every registered detached spawn uses
+     `stdio: 'ignore'`, and the unregistered `anticipate.sh` is the only known violator.
    - Measured with the same fixture (adopted store, every native write delayed 3 s, load average
      11): prompt and tool boundaries took 3,399–3,846 ms each before and 197–245 ms after (8 fires
      each). With 6 boundaries queued, the detached worker drained all 6 by exact readback
