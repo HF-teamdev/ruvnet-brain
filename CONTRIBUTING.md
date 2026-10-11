@@ -411,6 +411,13 @@ blocker class (credential, hardware-key tap, out-of-authority write, irreversibl
 outage, running background work, owner-only action, purchase, choice between named options); a
 deferral that survives the continued stop is recorded once as "deferral not resolved"
 (`npm run deferral:replay` measures it on real transcripts; `RUVNET_NO_DEFERRAL=off` disables it).
+Prompt and tool boundaries (UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure,
+SubagentStop) only fsync their observation into the capture queue and start the detached replay
+worker. They never write the store inline, and a normally queued boundary prints nothing; only an
+unwritable queue or work queued for more than 10 minutes is reported. On Claude the shim stops any
+body 1.5 s before its registered timeout and writes nothing partial. It records
+`timed-out-internally`, and SessionStart reports it once. Under Codex the stable wrapper owns the
+kill (ADR-106).
 An advisory hook that fails (nonzero exit, signal, spawn error) still exits 0 to the host; the shim
 records it and SessionStart prints one `[RuvNet Brain — HOOK FAILURES]` summary of new failures. SessionStart prints one
 `[RuvNet Brain — KNOWLEDGE …]` line when the installed knowledge cannot be proven current (older than

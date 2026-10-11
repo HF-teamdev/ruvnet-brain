@@ -3,8 +3,8 @@ id: ADR-106
 title: The hook standard — one registration per role, refuse only on a fact, AgentDB before and after decisions
 status: Proposed
 date: 2026-10-11
-updated: 2026-10-11 13:00:00 EDT
-version: 0.4.0
+updated: 2026-10-11 16:20:00 EDT
+version: 0.5.0
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [hooks, agentdb, decisions, continuity, codex, claude-code]
 relates: [ADR-0012, ADR-040, ADR-043, ADR-054, ADR-067, ADR-074, ADR-075, ADR-100, ADR-103, ADR-105]
@@ -122,7 +122,58 @@ shifted entry stops on every Codex machine until it is trusted again.
      answer may stand.
    - Not measured: false negatives (deferrals the detector misses), and how the host acts on the
      forced continuation.
-6. **Single writer.** The dead user-level deferral is removed. The product is the only writer of
+6. **Prompt and tool boundaries return in constant time; the shim stops a body before the host does.**
+   - The owner hit `UserPromptSubmit hook … timed out after 10s — output discarded` on 2026-10-11. The
+     cause: `session-snapshot` at UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure and
+     SubagentStop ran the capture-queue replay inline, with one native store write per queued item
+     and a budget of up to 6.5 s. Under load and with queued debt, every boundary spent that budget.
+   - Those boundaries now only check consent and identity, fsync the observation into the durable
+     queue, start the detached replay worker, and return. No native write runs inline.
+   - A queued, handed-off observation is the normal state and prints nothing. Only an unwritable
+     queue, or queued work older than 10 minutes, is reported. Stop, PreCompact and SessionEnd keep
+     their own bounded synchronous budgets. The worker still commits each item only by exact readback.
+   - Watchdog (Claude): the shim reads the registered timeout of the exact command from the manifest
+     it was registered from and kills the body at that timeout minus 1.5 s. It then records one
+     `timed-out-internally` line in the failure ledger, writes nothing partial (stdout is captured
+     and forwarded only on normal completion), and exits 0. SessionStart's own restore deadline is
+     aligned to the watchdog, so it now plans within 6.5 s instead of 7.75 s.
+   - Under Codex the stable wrapper already kills the process group below the host timeout, so the
+     shim adds no second watchdog. A second, shorter one would pre-empt the wrapper and orphan the
+     body's children; `decision-gate`'s outer-timeout test proves the orphaning when it is added.
+   - The Claude watchdog kills only the direct child, so a grandchild of a killed body can outlive it.
+     Bodies that spawn children keep their own deadlines (decision-gate, session-snapshot).
+   - Measured with the same fixture (adopted store, every native write delayed 3 s, load average
+     11): prompt and tool boundaries took 3,399–3,846 ms each before and 197–245 ms after (8 fires
+     each). With 6 boundaries queued, the detached worker drained all 6 by exact readback
+     (`tests/integration/hook-latency-budget.test.mjs`).
+
+   **Audit of every registered command** (Claude, slow fixture, worst of 3 fires, load average 8–10,
+   after the fix; "path bound" is the code's own deadline):
+
+   | Event | Command | Claude timeout | Watchdog | Measured max | Path bound |
+   |---|---|---|---|---|---|
+   | SessionStart | session-start | 8 s | 6.5 s | 389 ms | restore deadline aligned to the watchdog |
+   | UserPromptSubmit | session-snapshot | 10 s | 8.5 s | 236 ms | queue + detached worker only |
+   | UserPromptSubmit | unprompted-speech | 9 s | 7.5 s | 542 ms | producer budgets inside the runtime |
+   | UserPromptSubmit | ground-ruvnet | 10 s | 8.5 s | 893 ms | recall 1.9 s shared deadline |
+   | UserPromptSubmit | capacity-aware-parallel-work | 6 s | 4.5 s | 122 ms | bounded resource samples |
+   | UserPromptSubmit | grounding-turn-mark | 5 s | 3.5 s | 147 ms | marker write |
+   | PreToolUse | session-snapshot | 10 s | 8.5 s | 191 ms | queue + detached worker only |
+   | PreToolUse | decision-gate write | 5 s | 3.5 s | 460 ms | 2 s policy budget, parallel policies |
+   | PostToolUse | session-snapshot | 10 s | 8.5 s | 201 ms | queue + detached worker; learning capture is a file write |
+   | PostToolUse | grounding-stamp | 5 s | 3.5 s | 171 ms | stamp write |
+   | PostToolUseFailure, SubagentStop | session-snapshot | 10 s | 8.5 s | 216 / 319 ms | queue + detached worker only |
+   | Stop | continuation-gate | 10 s | 8.5 s | 172 ms | 2 MiB transcript tail, local ledgers |
+   | Stop | session-snapshot | 10 s | 8.5 s | 462 ms | 8 s capture budget |
+   | Stop | grounding-turn-gate | 10 s | 8.5 s | 164 ms | transcript tail |
+   | PreCompact, SessionEnd | session-snapshot | 10 s | 8.5 s | 483 / 537 ms | 8 s capture budget |
+
+   Codex: the 16 wrapper budgets sit 0.5–1.0 s under their Codex timeouts (SessionEnd 2.5 s under a
+   3 s clamp). Widening that margin to 1.5 s would edit every Codex command and force all 16 hooks to
+   be trusted again, so it is not done here.
+   - Not measured: a real loaded owner machine, a real ruflo, the Stop-side 8 s capture budget hit
+     end to end, and Codex.
+7. **Single writer.** The dead user-level deferral is removed. The product is the only writer of
    project turn history, which closes ADR-105 rule 7.
 
 ### This slice's set (17 Claude, 16 Codex; the design target is 15 and 14)
@@ -180,6 +231,7 @@ shifted entry stops on every Codex machine until it is trusted again.
 ## Currency log
 
 | 2026-10-11 | Drafted with implementation on `hooks/standard-20261011`. | Author-run focused tests and mutation checks only; no independent review. |
+| 2026-10-11 | Constant-time prompt/tool boundaries, shim watchdog, timeout audit, after the owner's live 10 s timeout. | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Added `no-deferral` on the owner's direction; replay-measured 15% resubstitution false-positive rate (55 flagged turns of 2,023). | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Re-review (Fable, REVISE on f65280ce): only ratified records supersede; repeat tombstones are not conflicts; withheld count printed; apply_patch updates and body status lines checked. | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Revised for an independent review (Fable, REVISE): tombstones, `--supersedes` validation, whole-document status, fenced-code status, Stop wording, honest limits. | The review is not a stamp of these bytes. The ADR-103 review stamp and the ADR-075 dual-seat review are still owed. |

@@ -34,7 +34,7 @@ export function failureLine(brainHome, { advance = true } = {}) {
   const byHook = new Map();
   for (const r of rows) {
     const id = String(r.hook || 'unknown').slice(0, 40);
-    const why = r.note ? String(r.note).split(':')[0].slice(0, 48) : r.signal ? String(r.signal) : r.error ? String(r.error).slice(0, 40) : `exit ${r.status}`;
+    const why = r.note ? String(r.note).split(':')[0].slice(0, 48) : r.error ? String(r.error).slice(0, 40) : r.signal ? String(r.signal) : `exit ${r.status}`;
     const e = byHook.get(id) || { n: 0, why: new Set() };
     e.n += 1; e.why.add(why); byHook.set(id, e);
   }

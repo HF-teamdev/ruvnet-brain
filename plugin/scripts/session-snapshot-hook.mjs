@@ -325,8 +325,11 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith('session-snapshot-
     const result = runProjectTransitionHook(projectDir, process.argv[2], { payload });
     // ADR-106: learning capture rides this boundary instead of a second PostToolUse registration.
     if (process.argv[2] === 'PostToolUse') { try { (await import('./learn-capture.mjs')).captureLearning(payload); } catch { /* advisory */ } }
-    if (result.state === 'pending') {
-      const message = transitionPendingNotice(projectDir, payload, 'Project memory transition remains pending; exact readback was not verified.');
+    // A queued, handed-off observation is normal and silent (ADR-106); only stuck or degraded speaks.
+    if (result.state === 'stuck' || result.state === 'degraded') {
+      const message = transitionPendingNotice(projectDir, payload, result.state === 'stuck'
+        ? `Project memory capture is stuck: queued work since ${result.oldestQueuedAt} has not been committed by exact readback.`
+        : 'Project memory capture degraded: the observation queue is unwritable.');
       if (message) process.stdout.write(JSON.stringify({ systemMessage: message }));
     }
   } catch { process.stdout.write(JSON.stringify({ systemMessage: 'Project memory transition capture degraded; exact readback was not verified.' })); }

@@ -69,3 +69,22 @@ describe('hook failures are recorded, then reported once', () => {
     expect(out).toMatch(/learn-flush ×1 \(exit 3\)/);
   }, 30_000);
 });
+
+describe('the shim watchdog stops a body before the host does (ADR-106)', () => {
+  it('kills a body that sleeps past (registered timeout - 1.5 s), emits nothing partial, exits 0 and records it', () => {
+    const bh = spine({ 'continuation-gate.mjs': "process.stdout.write('{\"decision\":\"block\",\"reason\":\"partial');\nAtomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20000);" });
+    const pluginRoot = tmp('hf-plugin-'); fs.mkdirSync(path.join(pluginRoot, 'hooks'));
+    fs.writeFileSync(path.join(pluginRoot, 'hooks', 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ matcher: '*', hooks: [
+      { type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/hook-shim.mjs" continuation-gate || true', timeout: 3 }] }] } }));
+    const t = performance.now();
+    const r = spawnSync(process.execPath, [SHIM, 'continuation-gate'], { input: '{"hook_event_name":"Stop","session_id":"s"}', encoding: 'utf8', timeout: 20_000,
+      env: { ...process.env, RUVNET_BRAIN_HOME: bh, RUVNET_BRAIN_STATE_DIR: tmp('hf-state-'), CLAUDE_PLUGIN_ROOT: pluginRoot, RUVNET_HOOK_HOST: '' } });
+    const ms = performance.now() - t;
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');                       // nothing partial reaches the host
+    expect(ms).toBeGreaterThan(1400); expect(ms).toBeLessThan(2900); // 3 s registered - 1.5 s margin, before the host's 3 s
+    const rows = fs.readFileSync(path.join(bh, FAILURE_FILE), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows).toEqual([expect.objectContaining({ hook: 'continuation-gate', error: 'timed-out-internally', limitMs: 1500 })]);
+    expect(failureLine(bh)).toMatch(/continuation-gate ×1 \(timed-out-internally\)/);
+  }, 30_000);
+});
