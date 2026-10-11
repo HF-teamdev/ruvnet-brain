@@ -312,6 +312,24 @@ function resolveCodeRoot() {
   } catch { return null; }
 }
 
+/**
+ * A FAILED ADVISORY BODY IS RECORDED, NEVER SILENT (ADR-106). Advisory bodies return 0 to the host
+ * whatever happened (below), and the host shows no stderr on exit 0 — so a crashed Stop gate used to
+ * leave no trace anywhere (measured 2026-10-11: a throwing continuation-gate body → shim exit 0,
+ * 0 bytes, nothing on disk). One bounded JSONL line per failure, read and summarized ONCE by
+ * SessionStart (hook-failures.mjs owns the reader and the file name; tests/unit/hook-failures.test.mjs
+ * holds the two copies of the name together, the same way brain-off.test.mjs holds the sentinel).
+ * Inlined, not imported, because this file is boot-frozen. Never throws, never prints.
+ */
+function recordFailure(fields) {
+  try {
+    const file = path.join(BRAIN_HOME, 'hook-failures.jsonl');
+    fs.mkdirSync(BRAIN_HOME, { recursive: true });
+    try { if (fs.statSync(file).size > 256 * 1024) fs.renameSync(file, `${file}.1`); } catch { /* absent */ }
+    fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), hook: hookId, ...fields })}\n`, { mode: 0o600 });
+  } catch { /* an unrecordable failure must not become a second one */ }
+}
+
 // Run one hook body. No shell is ever involved: spawnSync with an argument array, interpreter
 // chosen from the typed table — never from input.
 function runHook(file, activeVersion = '') {
@@ -364,8 +382,12 @@ function runHook(file, activeVersion = '') {
   const r = spawnSync(cmd, [file, ...extraArgs], { ...io, env,
     ...(sessionTimeout ? { timeout: sessionTimeout, killSignal: 'SIGKILL' } : {}) });
   if (r.error) {
+    recordFailure({ event: extraArgs[0] || '', error: String(r.error.code || r.error.message).slice(0, 120), signal: r.signal || null });
     process.stderr.write(`[hook-shim] ${entry.file}: ${r.error.message}\n`);
     return entry.mode === 'blocking' ? 1 : 0;
+  }
+  if (r.signal || (entry.mode !== 'blocking' && r.status !== 0)) {
+    recordFailure({ event: extraArgs[0] || '', status: r.status, signal: r.signal || null });
   }
   // Blocking hooks: the exit code IS the contract — ground-before-write, design-wall, protect-state,
   // and hijack-ruvnet at an opted-in managedMemoryBoundary (ADR-063). Advisory hooks: always 0.

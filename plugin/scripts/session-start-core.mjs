@@ -34,6 +34,7 @@ import {
 } from './session-start-fsutil.mjs';
 import { maintainerIssueEntitlement, surfaceIssuePointer } from './session-start-issue-alert.mjs';
 import { surfaceSignals } from './session-start-signals.mjs';
+import { failureLine, FAILURE_LINE_PREFIX } from './hook-failures.mjs';
 import { brainState, health, knowledgeCurrency, mcpReadiness, KNOWLEDGE_LINE_PREFIX } from './session-start-health.mjs';
 import { stableSpine, heartbeat, knowledgeAutoUpdate, footprintCheck } from './session-start-update-plane.mjs';
 import { FOOTPRINT_LINE_PREFIX } from './brain-confirmation.mjs';
@@ -137,7 +138,8 @@ export async function runSessionStart({
       || s.startsWith('[RuvNet Brain — PROJECT CONTINUITY UNKNOWN]')
       || s.startsWith('[RuvNet Brain — PROJECT CONTINUITY RESTORED]')
       || s.startsWith('[RuvNet Brain — COME UP TO SPEED')
-      || s.startsWith('[RuvNet Brain — MAINTAINER ONLY:');
+      || s.startsWith('[RuvNet Brain — MAINTAINER ONLY:')
+      || s.startsWith(FAILURE_LINE_PREFIX);
   };
   // An alarm's HEADER line always matches isSafeStatus on its own dedicated prefix (above); its
   // explanatory BODY lines do not, and without this they were silently dropped — a real gap this
@@ -170,6 +172,8 @@ export async function runSessionStart({
   const home = env.HOME || env.USERPROFILE || os.homedir();
   const stateDir = env.RUVNET_BRAIN_HOME || path.join(home, '.cache', 'ruvnet-brain');
   resetInjectionDedupe(stateDir, Date.now());
+  // ADR-106: advisory hooks fail open, so a failed one is reported here, once, never per fire.
+  try { const failed = failureLine(stateDir); if (failed) emit(failed); } catch { /* the summary must not cost the session */ }
   const hookDir = path.dirname(fileURLToPath(import.meta.url));
   const now = Date.now();
   const consoleInvoke = env.RUVNET_HOOK_HOST === 'codex' ? '$ruvnet-brain:rnbc' : '/rnbc';
