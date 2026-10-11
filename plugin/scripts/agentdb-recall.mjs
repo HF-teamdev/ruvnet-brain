@@ -24,6 +24,7 @@ import { resolveTurnDb } from './turn-outcome-capture.mjs';
 import { maskExcludedPaths } from './turn-capture-privacy.mjs';
 import { searchOnce, nativeRead, exactReads, searchJsonResult } from './agentdb-recall-process.mjs';
 import { makeLesson } from './lesson-store.mjs';
+import { supersededKeys } from './decision-record.mjs';
 export const STORE_FILES = Object.freeze(['memory.db']);
 export const DEFAULT_DEADLINE_MS = 1900;
 export const BLOCK_MAX_BYTES = 600;
@@ -264,13 +265,19 @@ async function consequentialRecall({ prompt, root, store, bin, scratch, env, dea
   const records = [];
   candidates.forEach(candidate => { candidate.storePath = store.path; });
   const exactResults = await exactReads({ candidates, bin, deadline, env, scratch, signal });
+  // ADR-105 §8: supersession is a link on the NEWER record, computed here from every decision record read.
+  const superseded = supersededKeys(candidates.filter(c => c.category === 'decisions').map(c => {
+    const exact = exactResults.get(c);
+    try { return exact?.state === 'ok' ? JSON.parse(exact.value) : null; } catch { return null; }
+  }));
   await Promise.all(candidates.map(async candidate => {
     const exact = exactResults.get(candidate);
     if (exact.state !== 'ok' || !exact.value || exact.value.startsWith('[WARN]')) { categories[candidate.category] = /timed out/.test(exact.state) ? 'timed-out' : 'unavailable'; return; }
     if (maskExcludedPaths(exact.value, exclusions, root) !== exact.value) return;
     let structured; try { structured = JSON.parse(exact.value); } catch { structured = null; }
     const declaredRoot = structured?.projectRoot ?? structured?.scope?.projectRoot;
-    if (declaredRoot && declaredRoot !== root || structured?.supersededBy || structured?.superseded === true) {
+    if (declaredRoot && declaredRoot !== root || structured?.supersededBy || structured?.superseded === true
+      || (candidate.category === 'decisions' && superseded.has(candidate.key))) {
       if (candidate.category === 'state') categories.state = 'unavailable';
       return;
     }

@@ -47,6 +47,7 @@ import {
   buildCapabilityInventoryReceipt,
 } from './capability-inventory-receipt.mjs';
 import { auditCurrentCapabilityEvidence } from './capability-claim-evidence.mjs';
+import { decisionRecordDebt } from './decision-record.mjs';
 import { continuationProjectIdentity, authorizedContinuationObjective, authorizedPromiseItems, assistantCommitmentOwned, setAssistantCommitmentState } from './continuation-objective.mjs';
 import {
   auditCompletionClaims, readClaudeTurn, extractCommitments, claimClosesPromise,
@@ -665,11 +666,22 @@ const completionWork = ['FAIL', 'UNKNOWN'].includes(completion.verdict) ? [{
   text: `You claimed "${completion.claims[0].text.slice(0, 160)}" is done; ${completion.problems.join('; ')}. Run the real consumer path, or restate it as UNVERIFIED.`,
   at: new Date(nowMs).toISOString(), derived: true, kind: 'completion-claim-integrity',
 }] : [];
+// DECISION RECORDS (ADR-105 §8, ADR-106): a turn that CREATED an ADR in an adopted project must also
+// append its AgentDB decision record. Claude transcript only (Write result `create`); on Codex the
+// rollout is not parsed, so this is not enforced there and nothing is claimed. Fails open.
+const decisionWork = (() => {
+  if (HOST !== 'claude') return [];
+  try {
+    const debt = decisionRecordDebt({ transcriptPath: hookInput.transcript_path, cwd: hookInput.cwd });
+    return debt ? [{ text: `you created ${debt.created.join(', ')} this turn but recorded no AgentDB decision record. Run: ${debt.command} — or say why this ADR records no decision.`,
+      at: new Date(nowMs).toISOString(), derived: true, kind: 'decision-record-integrity' }] : [];
+  } catch { return []; }
+})();
 const promiseWork = HOST === 'claude'
   ? authorizedPromiseItems(led.items, hookInput, projectIdentity)
     .map((i) => ({ text: `you said you would: ${i.text}`, at: i.at, kind: PROMISE_KIND }))
   : [];
-const open = [...capabilityClaimWork(), ...completionWork,
+const open = [...capabilityClaimWork(), ...completionWork, ...decisionWork,
   ...(objective ? [{ text: objective.text, at: objective.at }] : []), ...promiseWork];
 if (!open.length) process.exit(EXIT_ALLOW);   // nothing outstanding: silence is correct
 
@@ -760,6 +772,7 @@ const committed = forceable.filter((i) => !i.derived);
 const observed = forceable.filter((i) => i.derived);
 const capabilityClaims = forceable.filter((i) => i.kind === 'capability-claim-integrity');
 const completionClaims = forceable.filter((i) => i.kind === 'completion-claim-integrity');
+const decisionRecords = forceable.filter((i) => i.kind === 'decision-record-integrity');
 const promises = forceable.filter((i) => i.kind === PROMISE_KIND);
 // Every derived item names its own repo in its text; this is for the header, where the ONE repo
 // this tree points at is the honest thing to say.
@@ -771,6 +784,9 @@ const header = capabilityClaims.length
   : completionClaims.length
   ? ['Your proposed final answer claims completion beyond the available verified scope.',
      'Correct only that claim: report the observed check scope and what remains UNVERIFIED.']
+  : decisionRecords.length
+  ? ['This turn created an Architecture Decision Record without appending its AgentDB decision record.',
+     'Record the decision now (what, why, shape, evidence), or state why it records no decision.']
   : committed.length && observed.length
   ? [`You have unfinished work you committed to, and ${repoLabel} has open work of its own.`,
      'Do NOT end the turn — continue now.']
@@ -803,6 +819,8 @@ const lines = [
        'unresolved absence claim with UNKNOWN until a complete live inventory proves it.']
     : completionClaims.length
     ? ['Name the check you ran (a "Verified:" line with the command or artifact) and say what is NOT verified.']
+    : decisionRecords.length
+    ? ['A decision record is committed only by an exact readback; if the command reports pending, say so.']
     : promises.length
     ? ['A promise closes only when a later answer claims it done with a check run after the last change —',
        'never by saying so, and never by --done. For blocked, deferred, superseded or disputed assistant',

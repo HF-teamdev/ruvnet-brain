@@ -170,6 +170,10 @@ const REFUSAL_POLICIES = [
   // shape the work; it can only penalise it, and it trains running at the wall. This one refuses
   // DEBT, not change: you may edit governed code freely, but not while a document governing it is
   // still unreconciled from the last round.
+  // decision-recall (ADR-106): a new ADR or an ADR status change must follow an AgentDB consult of this
+  // project's prior decisions (ADR-105 §8). Refuses at most once per path per session; a consult
+  // receipt, even one reporting history unavailable, allows.
+  POLICY('decision-recall', 'decision-recall-gate.mjs', 'node'),
   POLICY('adr-currency', 'adr-currency-gate.mjs', 'node'),
   // duplicate-code (2026-09-30, owner: "is it the simplest version of the code that works, that doesn't
   // create duplicates or replication across the project?"). Last: it is a question about craft, not a
@@ -181,7 +185,7 @@ const SPEECH = { id: 'unprompted-speech', file: 'unprompted-runtime.mjs', interp
 
 /** Which policies apply to which PreToolUse sub-event, mirroring the matchers they replaced. */
 const REGISTRY = {
-  'write': ['protect-state', 'hijack-ruvnet', 'ground-before-write', 'adr-currency', 'duplicate-code'],
+  'write': ['protect-state', 'hijack-ruvnet', 'ground-before-write', 'decision-recall', 'adr-currency', 'duplicate-code'],
 };
 
 export function policiesFor(event, registry = REGISTRY, all = REFUSAL_POLICIES) {
