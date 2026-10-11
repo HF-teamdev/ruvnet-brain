@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "ruvnet-brain-convergence-manifest",
   "version": "4.6.3",
-  "sourceIdentity": "95d2c903f16e2672016521d16c7e9ae868e1a90f5ba8efed491b197738010f42",
+  "sourceIdentity": "2073b7850fa80269cb22d5c312561f30c9c363dcd074848d5f7fc1f3b8ab74ba",
   "versionSurfaces": {
     "package.json": "4.6.3",
     "plugin/.claude-plugin/plugin.json": "4.6.3",
@@ -112,10 +112,11 @@
     "0103-routing-architecture-review-lock.md",
     "0104-unified-developer-update-owner.md",
     "0105-one-agentdb-integration-standard.md",
+    "0106-hook-standard.md",
     "README.md"
   ],
-  "trackedFileCount": 1992,
-  "trackedFilesSha256": "ead947fee40d63daeaa49c761c6c5f37ed245abd5f7620a25a9ad9f7b263f3df",
+  "trackedFileCount": 1994,
+  "trackedFilesSha256": "9f4176d73eaa89003afec5db2ad271ef5e4cf9a10e4e1a0ee9112fb4fa32737a",
   "ownershipChecks": [
     "version:check",
     "doc:currency",

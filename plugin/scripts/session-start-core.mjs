@@ -99,6 +99,7 @@ export async function runSessionStart({
   probeConsoleAlias = probeCodexConsoleAlias,
   startedAt = Date.now(),
   deadlineAt = Infinity,
+  scheduleRecovery = true,
 } = {}) {
   const hookDeadlineAt = Math.min(deadlineAt, sessionStartDeadlineAt({ host: env.RUVNET_HOOK_HOST || 'claude', env, startedAt }));
   const lines = [];
@@ -453,6 +454,9 @@ export async function runSessionStart({
   stdout.write(output);
   trace('body-finished');
   recordProof({ stages: tracer.table(), restore: restoreProof, bodyFailed, bannerFallback: !bannerEmitted });
+  // ADR-106: learning recovery rides SessionStart instead of a second SessionStart registration.
+  // learningContext() inside owns consent and brain-off; the detached worker is never awaited.
+  if (scheduleRecovery) { try { (await import('./learn-capture.mjs')).scheduleLearningRecovery({ cwd, env }); } catch { /* advisory */ } }
   return { ok: true, outputBytes: Buffer.byteLength(output, 'utf8'), platform };
 }
 

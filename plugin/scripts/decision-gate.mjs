@@ -162,7 +162,7 @@ const POLICY = (id, file, interpreter = 'bash') => ({ id, file, interpreter });
 const REFUSAL_POLICIES = [
   POLICY('protect-state', 'protect-brain-state.sh'),
   POLICY('hijack-ruvnet', 'hijack-ruvnet.sh'),
-  POLICY('ground-before-write', 'ground-before-write.sh'),
+  POLICY('ground-before-write', 'ground-before-write.sh'), POLICY('decision-recall', 'decision-recall-gate.mjs', 'node'), // ADR-106
   // adr-currency-gate fires on the EDIT, where the pre-push gate fires on the push. Same rule, same
   // machinery (it calls doc-currency.mjs, never a second copy of the logic) — moved to the earliest
   // moment it has enough information. On 2026-08-13 four ADRs went stale together and were caught
@@ -170,10 +170,6 @@ const REFUSAL_POLICIES = [
   // shape the work; it can only penalise it, and it trains running at the wall. This one refuses
   // DEBT, not change: you may edit governed code freely, but not while a document governing it is
   // still unreconciled from the last round.
-  // decision-recall (ADR-106): a new ADR or an ADR status change must follow an AgentDB consult of this
-  // project's prior decisions (ADR-105 §8). Refuses at most once per path per session; a consult
-  // receipt, even one reporting history unavailable, allows.
-  POLICY('decision-recall', 'decision-recall-gate.mjs', 'node'),
   POLICY('adr-currency', 'adr-currency-gate.mjs', 'node'),
   // duplicate-code (2026-09-30, owner: "is it the simplest version of the code that works, that doesn't
   // create duplicates or replication across the project?"). Last: it is a question about craft, not a
