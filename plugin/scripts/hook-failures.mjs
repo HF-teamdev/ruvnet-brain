@@ -34,12 +34,12 @@ export function failureLine(brainHome, { advance = true } = {}) {
   const byHook = new Map();
   for (const r of rows) {
     const id = String(r.hook || 'unknown').slice(0, 40);
-    const why = r.signal ? String(r.signal) : r.error ? String(r.error).slice(0, 40) : `exit ${r.status}`;
+    const why = r.note ? String(r.note).split(':')[0].slice(0, 48) : r.signal ? String(r.signal) : r.error ? String(r.error).slice(0, 40) : `exit ${r.status}`;
     const e = byHook.get(id) || { n: 0, why: new Set() };
     e.n += 1; e.why.add(why); byHook.set(id, e);
   }
   const parts = [...byHook.entries()].sort((a, b) => b[1].n - a[1].n)
     .map(([id, e]) => `${id} ×${e.n} (${[...e.why].slice(0, 3).join(', ')})`);
-  return `${FAILURE_LINE_PREFIX} ${rows.length} advisory hook run(s) did not complete since ${rows[0].at}: ${parts.join('; ')}. `
-    + `They failed open, so their checks did not happen. Details: ${file}`;
+  return `${FAILURE_LINE_PREFIX} ${rows.length} advisory hook run(s) did not complete or did not resolve since ${rows[0].at}: ${parts.join('; ')}. `
+    + `They failed open. Details: ${file}`;
 }

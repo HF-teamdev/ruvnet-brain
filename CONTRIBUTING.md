@@ -405,6 +405,12 @@ Claude turn created an ADR in an adopted project and no successful `decision-rec
 after it (ADR-105 §8; `RUVNET_DECISION_RECORD_CHECK=off` disables it; Codex is not enforced). A
 decision record is committed only by an exact readback; a refusal stays pending for `--flush`; `--supersedes` must name an existing decision record of the project and also writes a
 `supersession-<key>` tombstone that recall honors even when the superseding record is not retrieved.
+It also asks ONCE (`no-deferral`, Claude only) when the final answer ends by asking permission for,
+or postponing, work a standing instruction or open promise already authorized and names no genuine
+blocker class (credential, hardware-key tap, out-of-authority write, irreversible action, evidenced
+outage, running background work, owner-only action, purchase, choice between named options); a
+deferral that survives the continued stop is recorded once as "deferral not resolved"
+(`npm run deferral:replay` measures it on real transcripts; `RUVNET_NO_DEFERRAL=off` disables it).
 An advisory hook that fails (nonzero exit, signal, spawn error) still exits 0 to the host; the shim
 records it and SessionStart prints one `[RuvNet Brain — HOOK FAILURES]` summary of new failures. SessionStart prints one
 `[RuvNet Brain — KNOWLEDGE …]` line when the installed knowledge cannot be proven current (older than

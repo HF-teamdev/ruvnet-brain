@@ -3,8 +3,8 @@ id: ADR-106
 title: The hook standard — one registration per role, refuse only on a fact, AgentDB before and after decisions
 status: Proposed
 date: 2026-10-11
-updated: 2026-10-11 11:30:00 EDT
-version: 0.3.0
+updated: 2026-10-11 13:00:00 EDT
+version: 0.4.0
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [hooks, agentdb, decisions, continuity, codex, claude-code]
 relates: [ADR-0012, ADR-040, ADR-043, ADR-054, ADR-067, ADR-074, ADR-075, ADR-100, ADR-103, ADR-105]
@@ -90,7 +90,39 @@ shifted entry stops on every Codex machine until it is trusted again.
      visible as a host hook error and costs no Codex trust. It is not done in this slice: the suffix
      is referenced by 12 test files, and per-fire hook errors are the owner's recorded complaint
      (`hook-shim.mjs` notice comment).
-5. **Single writer.** The dead user-level deferral is removed. The product is the only writer of
+5. **No deferral of authorized work (`no-deferral`, in continuation-gate).** On Claude, a final
+   answer is asked ONCE to continue when all three hold:
+   - its last ~700 characters seek permission ("say go", "want me to", "should I", "do you want",
+     "let me know if", "decisions I need from you", "waiting on your") or list its own next actions as
+     future work ("Next:", "Remaining:", "I'll … when/once/later");
+   - authorization exists: a standing instruction in the session's owner prompts ("don't stop", "keep
+     going", "get it done/shipped", "finish", "until done", "just do it", …) or an open promise of this
+     session in the work ledger;
+   - the answer names no genuine blocker class: missing credential, hardware-key/2FA tap, write
+     outside the stated authority (user-level, publish needing a human-only step), irreversible
+     action needing consent, evidenced outage, background work still running, an action only the
+     owner can physically do, a purchase, or a choice between named options.
+   The answer is not flagged when it says work is continuing or that nothing is needed from the owner.
+   Loop safety: `stop_hook_active` limits it to one force per natural stop, and a per-prompt counter
+   caps forces at 3. A deferral still present on the continued stop is recorded once in the
+   hook-failures ledger ("deferral not resolved") and reported at the next SessionStart.
+   `RUVNET_NO_DEFERRAL=off` disables it.
+   *Codex:* the detector is shared and pure, but the Codex rollout's prompts are not parsed, so
+   authorization cannot be shown there. The check is not enforced on Codex and nothing is claimed.
+   *Measured* with `npm run deferral:replay` on this machine's real Claude transcripts (2026-10-11):
+   - 99 transcripts and 2,023 turns. 55 turns would be forced (2.7%).
+   - All 55 were hand-classified: 47 true deferrals, 8 false positives, so the false-positive rate is
+     15%. Typical false positives are a status report with a permission phrase mid-answer, a wait on
+     a running review the detector did not recognize, and a clinician-only question.
+   - This is a resubstitution estimate: the phrase and blocker lists were tuned on these same turns,
+     and no unseen transcript set with standing instructions was left on this machine. The true
+     false-positive rate on new transcripts is likely higher.
+   - The "decisions I need from you" pattern counts as a deferral because the owner named it so. Some
+     of those decisions are genuinely the owner's; they still get one correction, after which the
+     answer may stand.
+   - Not measured: false negatives (deferrals the detector misses), and how the host acts on the
+     forced continuation.
+6. **Single writer.** The dead user-level deferral is removed. The product is the only writer of
    project turn history, which closes ADR-105 rule 7.
 
 ### This slice's set (17 Claude, 16 Codex; the design target is 15 and 14)
@@ -102,7 +134,7 @@ shifted entry stops on every Codex machine until it is trusted again.
 | PreToolUse | session-snapshot · decision-gate write | observation; protect-state, managed-memory, ground-before-write, **decision-recall**, adr-currency, duplicate-code | record / refuse |
 | PostToolUse | session-snapshot (+ learning capture) · grounding-stamp | observation and consent-gated learning; grounding receipt | record |
 | PostToolUseFailure (Claude) · SubagentStop · PreCompact | session-snapshot | observation; pending work kept | record |
-| Stop | continuation-gate · session-snapshot · grounding-turn-gate | completion, promises, capability claims, **decision record**; turn outcome; answered-without-searching | force once / record |
+| Stop | continuation-gate · session-snapshot · grounding-turn-gate | completion, promises, capability claims, **decision record**, **no-deferral**; turn outcome; answered-without-searching | force once / record |
 | SessionEnd | session-snapshot (+ learning recovery) | final state | record |
 
 ## Not enforceable by a hook
@@ -148,5 +180,6 @@ shifted entry stops on every Codex machine until it is trusted again.
 ## Currency log
 
 | 2026-10-11 | Drafted with implementation on `hooks/standard-20261011`. | Author-run focused tests and mutation checks only; no independent review. |
+| 2026-10-11 | Added `no-deferral` on the owner's direction; replay-measured 15% resubstitution false-positive rate (55 flagged turns of 2,023). | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Re-review (Fable, REVISE on f65280ce): only ratified records supersede; repeat tombstones are not conflicts; withheld count printed; apply_patch updates and body status lines checked. | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Revised for an independent review (Fable, REVISE): tombstones, `--supersedes` validation, whole-document status, fenced-code status, Stop wording, honest limits. | The review is not a stamp of these bytes. The ADR-103 review stamp and the ADR-075 dual-seat review are still owed. |
