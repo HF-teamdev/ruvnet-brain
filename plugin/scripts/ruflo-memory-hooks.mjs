@@ -14,18 +14,27 @@
  * `.swarm` is never created: its absence means the project has not adopted the brain.
  */
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { resolveRuflo } from './ruflo-bin.mjs';
+import { resolveProjectStore } from './project-store-resolver.mjs';
 
 export const CURATED_PREFIX = 'project-state-current-';
 export const AUTO_PREFIX = 'project-state-auto-';
 const OWNER_NAMESPACES = ['default'];
 
-export function projectStore(projectDir) {
-  let root = projectDir;
-  try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: projectDir, encoding: 'utf8', timeout: 500, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || projectDir; } catch { /* not a git checkout */ }
-  const db = path.join(root, '.swarm', 'memory.db');
+/**
+ * The SAME store and namespace turn capture uses (review M2): the canonical project's `.swarm/memory.db`,
+ * which a linked git worktree shares with its main checkout. Every git call is bounded by the deadline.
+ */
+export function projectStore(projectDir, { deadlineAt = Date.now() + 3000 } = {}) {
+  let root = projectDir; let db = path.join(projectDir, '.swarm', 'memory.db');
+  try {
+    const gitTimeoutMs = Math.max(1, Math.min(1000, Math.floor(deadlineAt - Date.now())));
+    const resolved = resolveProjectStore({ projectDir, gitTimeoutMs, deadlineAt });
+    root = resolved.projectRoot; db = resolved.canonicalAgentDbPath;
+  } catch { /* unresolvable (or out of budget): treated as not adopted below only if no store exists here */ }
   return { root, db, adopted: fs.existsSync(db), namespace: path.basename(root) };
 }
 
@@ -35,7 +44,8 @@ export function rufloMemory(args, { db, env = process.env, bin = resolveRuflo({ 
   return new Promise((resolve) => {
     if (!bin) return resolve({ ok: false, stdout: '', error: 'global Ruflo unavailable' });
     execFile(bin, ['memory', ...args, '--path', db], { env, timeout, killSignal: 'SIGKILL', encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
-      (error, stdout) => resolve({ ok: !error, stdout: String(stdout || ''), error: error ? (error.killed ? 'timed out' : error.message) : null }));
+      // The ledger gets a fixed reason, never execFile's message (it embeds the whole argv: value, db path).
+      (error, stdout) => resolve({ ok: !error, stdout: String(stdout || ''), error: error ? (error.killed ? 'timed out' : `ruflo memory ${args[0]} exited ${error.code ?? 'abnormally'}`) : null }));
   });
 }
 
@@ -57,20 +67,28 @@ const retrieve = async (key, namespace, options) => {
 const newest = (rows, prefix) => rows.filter((e) => e.key.startsWith(prefix))
   .sort((a, b) => Number(b.createdAt ?? 0) - Number(a.createdAt ?? 0) || (a.key < b.key ? 1 : -1))[0] || null;
 
-function gitFacts(root) {
-  const git = (args) => { try { return execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 500, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return 'unmeasured'; } };
+function gitFacts(root, deadlineAt) {
+  const git = (args) => {
+    const timeout = Math.min(500, Math.floor(deadlineAt - Date.now()));
+    if (timeout < 1) return 'unmeasured';
+    try { return execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return 'unmeasured'; }
+  };
   return { branch: git(['rev-parse', '--abbrev-ref', 'HEAD']), head: git(['rev-parse', '--short', 'HEAD']) };
 }
 
 /** PreCompact / SessionEnd: store one small checkpoint and prove it by exact-key readback. */
 export async function checkpoint({ projectDir, event, payload = {}, env = process.env, bin, deadlineAt = Date.now() + 7000, now = Date.now } = {}) {
-  const store = projectStore(projectDir);
+  if (String(env.RUVNET_TURN_CAPTURE || '').toLowerCase() === 'off') return { stored: false, skipped: 'RUVNET_TURN_CAPTURE=off' };
+  const store = projectStore(projectDir, { deadlineAt });
   if (!store.adopted) return { stored: false, skipped: 'project has not adopted a .swarm/memory.db' };
-  const key = `${AUTO_PREFIX}${now()}`;
+  // A short session hash keeps two sessions' same-millisecond checkpoints apart; --no-upsert makes a
+  // collision a refusal (ledger row) instead of a silent overwrite (review m1).
+  const sid = crypto.createHash('sha256').update(String(payload.session_id ?? process.pid)).digest('hex').slice(0, 8);
+  const key = `${AUTO_PREFIX}${now()}-${sid}`;
   const value = JSON.stringify({ kind: 'automatic-checkpoint', event, session: payload.session_id ?? null,
-    at: new Date(now()).toISOString(), ...gitFacts(store.root) });
+    at: new Date(now()).toISOString(), ...gitFacts(projectDir, deadlineAt) });
   const options = { db: store.db, env, bin, deadlineAt };
-  const stored = await rufloMemory(['store', '--key', key, '-n', store.namespace, '--value', value], options);
+  const stored = await rufloMemory(['store', '--key', key, '-n', store.namespace, '--value', value, '--no-upsert'], options);
   if (!stored.ok) return { stored: false, key, skipped: `store failed: ${stored.error}` };
   const readBack = await retrieve(key, store.namespace, options);
   return { stored: true, key, namespace: store.namespace, verified: readBack === value };
@@ -78,7 +96,7 @@ export async function checkpoint({ projectDir, event, payload = {}, env = proces
 
 /** SessionStart: newest curated checkpoint (+ newer auto checkpoint) and lesson keys, by exact key. */
 export async function restore({ cwd, env = process.env, bin, deadlineAt = Date.now() + 3000 } = {}) {
-  const store = projectStore(cwd);
+  const store = projectStore(cwd, { deadlineAt });
   if (!store.adopted) return { status: 'unavailable', context: '' };
   const options = { db: store.db, env, bin, deadlineAt };
   const namespaces = [...new Set([store.namespace, ...OWNER_NAMESPACES])];

@@ -15,6 +15,7 @@
     {
       "path": "scripts/onboarding-console.mjs",
       "signals": [
+        "atomicWrite",
         "lock",
         "memorySink",
         "persist",
@@ -23,7 +24,7 @@
       "note": "not in audit — UNDO_JOURNAL of console settings + wx lock; suspected FALSE POSITIVE: OWNER DECISION (allowlist or rework)"
     }
   ],
-  "maxUnbounded": 30,
+  "maxUnbounded": 29,
   "stateFiles": [
     {
       "module": "plugin/scripts/advocacy-outcomes.mjs",
@@ -132,7 +133,7 @@
         "agentdb-turns.jsonl",
         "receipts.jsonl"
       ],
-      "bound": null
+      "bound": "receipts.jsonl: RECEIPTS_MAX_BYTES (256 KiB) then renameSync to .1 (appendReceipt); readers tail 128 KiB"
     },
     {
       "module": "plugin/scripts/update-apply.mjs",

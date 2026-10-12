@@ -40,8 +40,7 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { nativeTurnLines } from './native-turn-transcript.mjs';
-import { resolveRuflo, rufloInvocation } from './ruflo-bin.mjs';
-import { rufloCwdFor, rufloScratchRoot } from './ruflo-bin.mjs';
+import { resolveRuflo, rufloInvocation, rufloCwdFor, rufloScratchRoot } from './ruflo-bin.mjs';
 import { redactText } from './continuity-events.mjs';
 import { resolveProjectStore, globalEnrollmentAllowed } from './project-store-resolver.mjs';
 import { recordHookFailure } from './hook-failures.mjs';
@@ -49,6 +48,7 @@ import { recordHookFailure } from './hook-failures.mjs';
 const digest = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 function appendReceipt(file, row) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  try { if (fs.statSync(file).size > RECEIPTS_MAX_BYTES) fs.renameSync(file, `${file}.1`); } catch { /* absent */ } // bounded like hook-failures
   fs.appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
 }
 const flagValue = (args, flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
@@ -58,6 +58,8 @@ export const TURN_NAMESPACE = 'turns';
 export const MIN_OUTCOME_CHARS = 200;
 const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
 const STEP_TIMEOUT_MS = 60_000;
+export const RECEIPTS_MAX_BYTES = 256 * 1024;
+export const TURN_STATUS_FRESH_MS /* ✓ only when the newest receipt is verified and younger */ = 24 * 3_600_000;
 const RUFLO_ENV = { RUFLO_DAEMON_AUTOSTART: '0' };
 
 function textOf(content) {
@@ -285,9 +287,10 @@ export function captureTurnOutcome({
   if (String(env.RUVNET_TURN_CAPTURE || '').toLowerCase() === 'off') {
     return { ...report, skipped: 'RUVNET_TURN_CAPTURE=off', distill: { queued: false, skipped: 'RUVNET_TURN_CAPTURE=off' } };
   }
-  if (!ruflo) return { ...report, skipped: 'ruflo not found', distill: { queued: false, skipped: 'ruflo not found' } };
+  // Review M1: a capture that cannot happen is LOUD (a ledger row with a fixed reason, never turn text).
+  const loud = (reason, store) => { recordHookFailure({ hook: 'turn-capture', event, error: reason.slice(0, 160), ...(store ? { store: digest(store).slice(0, 16) } : {}) }, { brainHome }); return reason; };
   let target;
-  try { target = resolveTurnDb({ projectDir, brainHome }); } catch (error) { return { ...report, skipped: `store resolution failed: ${redactText(error.message)}` }; }
+  try { target = resolveTurnDb({ projectDir, brainHome, ...(deadlineAt ? { deadlineAt } : {}) }); } catch (error) { return { ...report, skipped: loud(`store resolution failed: ${redactText(error.message)}`) }; }
   const { db, scope, projectRoot } = target;
   Object.assign(report, { db, scope });
   if (target.skipped) return { ...report, skipped: target.skipped, distill: { queued: false, skipped: target.skipped } };
@@ -340,6 +343,7 @@ export function captureTurnOutcome({
     }
   }
   if (!steps.length) return report;
+  if (!ruflo) return { ...report, queued: false, skipped: loud('ruflo not found', db), distill: { queued: false, skipped: 'ruflo not found' } };
 
   try {
     // Only explicit persisted consent permits creating a project store directory.
@@ -357,7 +361,8 @@ export function captureTurnOutcome({
     const detached = steps.filter((item) => item.kind !== 'store');
     if (detached.length) report.launch = launch(detached, { receipts, brainHome, projectDir: binding.projectDir, env });
   } catch (error) {
-    return { ...report, queued: false, recorded: false, distill: { queued: false, skipped: `launch failed: ${redactText(error.message)}` }, skipped: `launch failed: ${redactText(error.message)}` };
+    const reason = loud(`launch failed: ${redactText(error.message)}`, db);
+    return { ...report, queued: false, recorded: false, distill: { queued: false, skipped: reason }, skipped: reason };
   }
   return report;
 }
@@ -388,7 +393,8 @@ export function runSteps({ steps = [], receipts, event = '' } = {}, { run: suppl
       if (String(env.RUVNET_TURN_CAPTURE || '').toLowerCase() === 'off') throw new Error('RUVNET_TURN_CAPTURE=off');
       if (kind === 'store') { key = flagValue(queued.args, '--key'); db = flagValue(queued.args, '--path'); }
       if ((!queued.projectRoot || !queued.projectDir || !queued.brainHome)) throw new Error('queued step has no canonical project binding');
-      const target = resolveTurnDb({ projectDir, brainHome, gitTimeoutMs: 1000 });
+      const bound = deadlineMs === undefined ? {} : { deadlineAt: deadlineMs }; // review M4: git obeys the hook deadline
+      const target = resolveTurnDb({ projectDir, brainHome, gitTimeoutMs: 1000, ...bound });
       if (target.skipped) throw new Error(target.skipped);
       privacyPatterns = target.contentPathExcludes;
       db = target.db;
@@ -421,7 +427,7 @@ export function runSteps({ steps = [], receipts, event = '' } = {}, { run: suppl
       const rootStat = fs.statSync(target.projectRoot);
       if (binding.rootIdentity && binding.rootIdentity !== `${rootStat.dev}:${rootStat.ino}`) throw new Error('queued canonical project identity changed');
       if (binding.projectRoot !== target.projectRoot) throw new Error('queued canonical project/store identity changed');
-      const origin = resolveTurnDb({ projectDir: binding.projectDir, brainHome, requestedStorePath: db, gitTimeoutMs: 1000 });
+      const origin = resolveTurnDb({ projectDir: binding.projectDir, brainHome, requestedStorePath: db, gitTimeoutMs: 1000, ...bound });
       if (origin.skipped) throw new Error(origin.skipped);
       if (origin.projectRoot !== target.projectRoot || origin.db !== db) throw new Error('queued canonical capture origin changed');
       const ruflo = resolveRuflo({ env, home });
@@ -453,7 +459,7 @@ export function runSteps({ steps = [], receipts, event = '' } = {}, { run: suppl
     results.push(row);
     if (receipts) { try { appendReceipt(receipts, row); } catch { /* the ledger row below still reports a failure */ } }
     if (error || (kind === 'store' && !verified)) {
-      recordHookFailure({ hook: kind === 'store' ? 'turn-capture' : 'turn-distill', event, error: String(error || 'exact turn key/content readback failed').slice(0, 160) }, { brainHome });
+      recordHookFailure({ hook: kind === 'store' ? 'turn-capture' : 'turn-distill', event, error: String(error || 'exact turn key/content readback failed').slice(0, 160), ...(db ? { store: digest(db).slice(0, 16) } : {}) }, { brainHome });
     }
   }
   return results;
@@ -478,6 +484,12 @@ export function turnRecordingStatus({ projectDir = process.cwd(), env = process.
   const failed = rows.filter((r) => r.status !== 0 || r.verified === false);
   if (failed.length) return status({ state: 'warn', line: `turn recording failing ${failed.length}/${rows.length} — ${redactText(failed.at(-1).error || 'write has no exact readback evidence').slice(0, 300)}` });
   if (historical.length) return status({ state: 'unknown', line: `turn recording unverified historical (${historical.length} receipts without exact readback evidence)` });
+  // Review M1: ✓ needs the NEWEST receipt verified, < TURN_STATUS_FRESH_MS old, and no later turn-capture ledger row.
+  const newest = rows.at(-1); const id = digest(target.db).slice(0, 16); let laterFailure = null;
+  try { laterFailure = readTail(path.join(brainHome, 'hook-failures.jsonl'), 64 * 1024).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
+    .findLast((r) => r.hook === 'turn-capture' && (!r.store || r.store === id) && (!newest || Date.parse(r.at) > Date.parse(newest.at))); } catch { /* no ledger */ }
+  if (laterFailure) return status({ state: 'warn', line: `turn recording failing — ${redactText(String(laterFailure.error || 'capture skipped')).slice(0, 200)} (since ${laterFailure.at})` });
+  if (newest && now - Date.parse(newest.at) >= TURN_STATUS_FRESH_MS) return status({ state: 'unknown', line: `turn recording not proven recently — newest exact readback ${newest.at}` });
   return status(rows.length ? { state: 'ok', line: `turn recording ✓ (${rows.length}/${rows.length} exact readbacks)` }
     : { state: 'unknown', line: 'turn recording not yet proven — no exact readback receipt' });
 }

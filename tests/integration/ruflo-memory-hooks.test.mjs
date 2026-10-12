@@ -23,8 +23,10 @@ describe('lifecycle boundaries call ruflo and never read the hand-rolled outbox'
     try { fs.rmSync(outbox, { force: true }); } catch { /* absent */ }
     spawnSync('mkfifo', [outbox]);
     const ruflo = fakeRuflo();
+    // No transcript: the turn is trivial and stores nothing, so the one store is the checkpoint. (Capture is
+    // NOT switched off here: RUVNET_TURN_CAPTURE=off now stops the checkpoint too — see the next test.)
     const env = { ...p.env, RUFLO_BIN: ruflo.bin, RUVNET_BRAIN_HOME: tmp('rmh-bh-'), RUVNET_BRAIN_STATE_DIR: tmp('rmh-st-'),
-      RUVNET_TURN_CAPTURE: 'off', RUVNET_CONTINUITY_CAPTURE: 'off' };
+      RUVNET_TURN_CAPTURE: 'on', RUVNET_CONTINUITY_CAPTURE: 'off' };
     const t = performance.now();
     const r = spawnSync(process.execPath, [HOOK, 'PreCompact'], { cwd: p.dir, env, encoding: 'utf8', timeout: 6000,
       input: JSON.stringify({ hook_event_name: 'PreCompact', session_id: 'rmh', cwd: p.dir }) });
@@ -32,9 +34,20 @@ describe('lifecycle boundaries call ruflo and never read the hand-rolled outbox'
     expect(r.error, 'the boundary blocked: something read the outbox').toBeUndefined();
     expect(ms).toBeLessThan(5000);
     const calls = ruflo.calls();
-    const stored = calls.filter((c) => c.argv[1] === 'store' && /^project-state-auto-\d+$/.test(c.key || ''));
+    const stored = calls.filter((c) => c.argv[1] === 'store' && /^project-state-auto-\d+-[0-9a-f]{8}$/.test(c.key || ''));
     expect(stored.length).toBe(1);
     expect(calls.some((c) => c.argv[1] === 'retrieve' && c.key === stored[0].key)).toBe(true);
+  }, 20_000);
+
+  it('RUVNET_TURN_CAPTURE=off stops the checkpoint write too (review m4)', () => {
+    const p = adoptedProject();
+    const ruflo = fakeRuflo();
+    const env = { ...p.env, RUFLO_BIN: ruflo.bin, RUVNET_BRAIN_HOME: tmp('rmh-bh-'), RUVNET_BRAIN_STATE_DIR: tmp('rmh-st-'),
+      RUVNET_TURN_CAPTURE: 'off', RUVNET_CONTINUITY_CAPTURE: 'off' };
+    const r = spawnSync(process.execPath, [HOOK, 'SessionEnd'], { cwd: p.dir, env, encoding: 'utf8', timeout: 6000,
+      input: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'rmh-off', cwd: p.dir }) });
+    expect(r.status).toBe(0);
+    expect(ruflo.calls().filter((c) => c.argv[1] === 'store')).toEqual([]);
   }, 20_000);
 });
 

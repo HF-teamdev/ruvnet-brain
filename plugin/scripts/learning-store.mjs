@@ -1,5 +1,6 @@
 // Canonical workflow observations; existing Ruflo is the sole writer, never the legacy JSON hook store.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -24,14 +25,14 @@ export function learningTarget(context, { env = process.env, explicitLegacyApply
   return resolved.canonicalAgentDbPath;
 }
 
-export function runLearningRuflo(binary, args, db, { env = process.env, deadline = Date.now() + 18_000 } = {}) {
+export function runLearningRuflo(binary, args, db, { env = process.env, deadline = Date.now() + 18_000, maxStepMs = 6000 } = {}) {
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Error('learning deadline exhausted');
-  const cwd = rufloRunDir(db, { root: env.RUVNET_RUFLO_CWD_ROOT || path.join(env.HOME, '.cache', 'ruvnet-brain', 'learning-ruflo') });
+  const cwd = rufloRunDir(db, { root: env.RUVNET_RUFLO_CWD_ROOT || path.join(env.HOME || env.USERPROFILE || os.homedir(), '.cache', 'ruvnet-brain', 'learning-ruflo') });
   try {
     const invocation = rufloInvocation(binary, args);
     return spawnSync(invocation.executable, invocation.args, { cwd, env: { ...env, RUFLO_DAEMON_AUTOSTART: '0' },
-      encoding: 'utf8', shell: false, timeout: Math.min(6000, remaining), killSignal: 'SIGKILL', maxBuffer: 65536, windowsHide: true });
+      encoding: 'utf8', shell: false, timeout: Math.min(maxStepMs, remaining), killSignal: 'SIGKILL', maxBuffer: 65536, windowsHide: true });
   } finally { fs.rmSync(cwd, { force: true, recursive: true }); }
 }
 
@@ -76,6 +77,19 @@ export function distillLearning(binary, context, options = {}) {
   const distilled = run(['memory', 'distill', 'run', '--db', db, '--namespace', LEARNING_NAMESPACE,
     '--max-entries', '8', '--judge', 'structural', '--budget-usd', '0']);
   return { db, completed: !distilled.error && distilled.status === 0, ratifiedLessons: 0 };
+}
+
+/**
+ * Distill the observation rows with rUv's own `ruflo memory distill run` (incremental cursor, $0
+ * structural judge), bounded. Run detached at SessionEnd/PreCompact (review M3). No backup on this path:
+ * a whole-DB copy per session end costs more than the distill. A failure throws to the caller (ledger).
+ */
+export function distillObservations(binary, context, options = {}) {
+  const db = learningTarget(context, options);
+  const r = runLearningRuflo(binary, ['memory', 'distill', 'run', '--db', db, '--namespace', LEARNING_NAMESPACE,
+    '--max-entries', '500', '--judge', 'structural', '--budget-usd', '0'], db, { ...options, maxStepMs: 60_000, deadline: Date.now() + 60_000 });
+  if (r.error || r.status !== 0) throw new Error(`ruflo memory distill run did not complete (${r.error?.code || `exit ${r.status}`})`);
+  return { db, completed: true };
 }
 
 /** What the console shows: consent, target and the observation count. There is no local queue. */

@@ -228,10 +228,10 @@ describe('turn privacy and receipt evidence', () => {
     // Source-bound negative control: removing the final guard reaches the forbidden launch boundary.
     const workerFile = path.join(ROOT, 'plugin/scripts/turn-outcome-capture.mjs');
     const source = fs.readFileSync(workerFile, 'utf8');
-    const guard = 'const target = resolveTurnDb({ projectDir, brainHome, gitTimeoutMs: 1000 });';
+    const guard = 'const target = resolveTurnDb({ projectDir, brainHome, gitTimeoutMs: 1000, ...bound });';
     expect(source).toContain(guard);
     const mutantFile = path.join(tmp('queued-worker-mutant-'), 'capture.mjs');
-    const originGuard = 'const origin = resolveTurnDb({ projectDir: binding.projectDir, brainHome, requestedStorePath: db, gitTimeoutMs: 1000 });';
+    const originGuard = 'const origin = resolveTurnDb({ projectDir: binding.projectDir, brainHome, requestedStorePath: db, gitTimeoutMs: 1000, ...bound });';
     expect(source).toContain(originGuard);
     const mutant = source.replace(guard, 'const target = { db: queued.args[queued.args.indexOf(queued.kind === "store" ? "--path" : "--db") + 1], projectRoot: queued.projectRoot };')
       .replace(originGuard, 'const origin = { db, projectRoot: target.projectRoot };').replace(/from '(\.\/[^']+)'/g,

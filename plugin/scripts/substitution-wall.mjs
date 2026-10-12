@@ -15,7 +15,7 @@
  * (ruflo/v3/docs/releases/v3.32.34.md), and reports `persistWarning` instead of a blind success
  * (ruflo/v3/@claude-flow/cli/__tests__/memory-store-persist-warning-2968.test.ts).
  *
- * ONE PURE FUNCTION, two callers: the decision-gate policy below (PreToolUse Write/Edit/MultiEdit)
+ * ONE PURE FUNCTION, two callers: the decision-gate policy below (PreToolUse Write/Edit/MultiEdit/NotebookEdit/apply_patch)
  * and the CI gate scripts/no-silent-substitution.mjs. No I/O, no clock, no network inside
  * substitutionVerdict(); the CLI block at the bottom does the reading.
  *
@@ -48,11 +48,20 @@ export function codeOf(content, p = '') {
   return s.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
 }
 
+// pending/flush/retry joined after review M6: decision-record kept an fsynced `pending` dir with a `--flush` replay.
+// Bare "pending"/"retry" are status words (14 false refusals measured over this tree); only their storage/replay forms count.
+const TRANSPORT = /outbox|journal|spool|replay|\bdrain\w*|queue(?!d)|\bpending(?:Dir|Path|Records?|Writes?|Files?|Queue)\b|\bflush(?:Pending|Queue|Outbox|Journal)\w*|['"]--(?:flush|retry)['"]|\bretry(?:Queue|Pending|Worker|Dir)\w*/i;
+/** The distinct transport words in code: an edit to a debt file that adds a NEW one is a new transport. */
+export const transportTerms = (content, p = '') => new Set((codeOf(content, p).match(new RegExp(TRANSPORT.source, 'gi')) || []).map((t) => t.toLowerCase()));
+
 const RULES = {
   persist: /\b(?:appendFileSync|appendFile|fsyncSync|fdatasyncSync|createWriteStream)\b|\bO_APPEND\b|flags?\s*:\s*['"]a\+?['"]/,
+  // A write-then-rename (the usual atomic JSON-file store) persists as surely as an append. It counts toward a
+  // TRANSPORT only: as a bare warn signal it flagged a settings writer (runtime-preferences.mjs) falsely.
+  atomicWrite: /\bwriteFileSync\([^;]{0,200};[\s\S]{0,300}?\brenameSync\(/,
   durable: /\b(?:fsyncSync|fdatasyncSync)\b/,
   // `readback` is verification (store, then retrieve) and `queued` is a status word: neither is a transport.
-  transport: /outbox|journal|spool|replay|\bdrain\w*|queue(?!d)/i,
+  transport: TRANSPORT,
   lock: /['"]wx\+?['"]|\.lock\b/,
   worker: /spawn\(\s*process\.execPath\s*,\s*\[\s*(?:fileURLToPath\(\s*import\.meta\.url\s*\)|__filename|SELF\b)|['"]--(?:replay|drain)[\w-]*['"]/,
   memorySink: /\.swarm\b|memory\.db\b|['"]memory['"]\s*,\s*['"](?:store|retrieve)['"]/,
@@ -69,7 +78,7 @@ export function signalsOf(content, p = '') {
   return hits.sort();
 }
 
-const isTransport = (s) => s.includes('persist') && s.includes('transport')
+const isTransport = (s) => (s.includes('persist') || s.includes('atomicWrite')) && s.includes('transport')
   && (s.includes('durable') || s.includes('lock') || s.includes('worker'));
 
 /**
@@ -90,7 +99,10 @@ export function substitutionVerdict({ path: p, content, before = null, allow = [
     if (allowed) return out('warn', `owner allowlist entry ${allowed}`);
     if (before !== null) {
       const prior = signalsOf(before, rel);
-      if (isTransport(prior) && signals.every((s) => prior.includes(s))) return out('warn', 'existing debt; this change adds no new transport signal');
+      const priorTerms = transportTerms(before, rel);
+      const added = [...transportTerms(content, rel)].filter((t) => !priorTerms.has(t));
+      if (isTransport(prior) && signals.every((s) => prior.includes(s)) && !added.length) return out('warn', 'existing debt; this change adds no new transport signal');
+      if (added.length) return out('refuse', `existing debt gains a new transport signal (${added.join(', ')})`);
     }
     return out('refuse', 'hand-built durable transport for state');
   }
@@ -111,6 +123,38 @@ export function message(rel, v) {
     `Call rUv's tool instead: ${v.tool}. Its store owns durability and fails closed; do not put an outbox, queue, journal, lock or replay worker in front of it.`,
     ...(v.verdict === 'refuse' ? ['A `HAND-ROLLED: ... REAL TOOL: ...` header does NOT lift this. A real exception is an owner-approved entry in config/state-files.json `substitutionAllow`.'] : []),
   ].join('\n');
+}
+
+/** Codex's apply_patch: per file, the content after its hunks (Add = the + lines; Update = hunks applied). */
+function patchChanges(patch, read) {
+  const out = []; let cur = null; let hunk = null;
+  const flush = () => { if (cur && hunk && cur.after !== null) { const from = hunk.old.join('\n'); const to = hunk.new.join('\n'); cur.after = from ? cur.after.replace(from, () => to) : cur.after; } hunk = null; };
+  for (const line of String(patch || '').split(/\r?\n/)) {
+    const m = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(line);
+    if (m || /^\*\*\* (?:End Patch|Move to:)/.test(line)) { flush(); if (m) { cur = m[1] === 'Delete' ? null : { file: m[2].trim(), add: m[1] === 'Add', lines: [] }; if (cur) { cur.before = cur.add ? null : read(cur.file); cur.after = cur.add ? '' : cur.before; out.push(cur); } } continue; }
+    if (!cur) continue;
+    if (cur.add) { if (line.startsWith('+')) cur.lines.push(line.slice(1)); cur.after = cur.lines.join('\n'); continue; }
+    if (line.startsWith('@@')) { flush(); hunk = { old: [], new: [] }; continue; }
+    if (!hunk) hunk = { old: [], new: [] };
+    if (line.startsWith('-')) hunk.old.push(line.slice(1)); else if (line.startsWith('+')) hunk.new.push(line.slice(1));
+    else if (line.startsWith(' ') || line === '') { hunk.old.push(line.slice(1)); hunk.new.push(line.slice(1)); }
+  }
+  flush();
+  return out.filter((c) => c.after !== null).map(({ file, before, after }) => ({ file, before, after }));
+}
+
+/**
+ * Every file a write tool call would produce, as { file, before, after }. Write/Edit/MultiEdit,
+ * NotebookEdit (new_source; .ipynb is out of SCOPE, judged for completeness) and Codex's apply_patch
+ * (the patch text arrives as tool_input.command / .input, or as the bare string).
+ */
+export function proposedChanges(payload, read) {
+  const tool = String(payload?.tool_name || '');
+  const input = payload?.tool_input ?? {};
+  if (tool === 'apply_patch') return patchChanges(typeof input === 'string' ? input : input.command || input.input || input.patch, read);
+  if (tool === 'NotebookEdit') return typeof input.notebook_path === 'string' ? [{ file: input.notebook_path, before: read(input.notebook_path), after: String(input.new_source ?? '') }] : [];
+  const one = proposedContent(payload, read);
+  return one ? [{ file: input.file_path, ...one }] : [];
 }
 
 /** The file after an Edit/MultiEdit/Write, or null when this tool call is not a file write we judge. */
@@ -148,16 +192,16 @@ if (isMain()) {
     const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
     const cwd = typeof payload.cwd === 'string' ? payload.cwd : process.cwd();
     const abs = (p) => (path.isAbsolute(p) ? p : path.resolve(cwd, p));
-    const change = proposedContent(payload, (p) => { try { return fs.readFileSync(abs(p), 'utf8'); } catch { return null; } });
-    if (change && String(process.env.RUVNET_SUBSTITUTION_WALL || '').toLowerCase() !== 'off') {
-      const file = abs(payload.tool_input.file_path);
+    const changes = proposedChanges(payload, (p) => { try { return fs.readFileSync(abs(p), 'utf8'); } catch { return null; } });
+    for (const change of String(process.env.RUVNET_SUBSTITUTION_WALL || '').toLowerCase() !== 'off' ? changes : []) {
+      const file = abs(change.file);
       const root = repoRootOf(file);
       const rel = root ? path.relative(root, file) : String(payload.tool_input.file_path);
       let allow = [];
       if (root) { try { allow = JSON.parse(fs.readFileSync(path.join(root, 'config', 'state-files.json'), 'utf8')).substitutionAllow?.map((a) => a.path) || []; } catch { /* no config: no exemptions */ } }
       let v = substitutionVerdict({ path: rel, content: change.after, before: change.before, allow });
       if (v.verdict === 'refuse' && !root) v = { ...v, verdict: 'warn', reason: `${v.reason} (outside the ruvnet-brain repo: advisory)` };
-      if (v.verdict === 'refuse') { process.stderr.write(`${message(rel, v)}\n`); code = 2; }
+      if (v.verdict === 'refuse') { process.stderr.write(`${message(rel, v)}\n`); code = 2; break; }
       else if (v.verdict === 'warn') process.stdout.write(message(rel, v));
     }
   } catch { code = 0; /* fail open on the wall's own errors */ }

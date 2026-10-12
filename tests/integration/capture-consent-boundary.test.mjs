@@ -50,6 +50,6 @@ it.each(['PreCompact', 'SessionEnd'])('%s with consent on stores one checkpoint 
   const result = await runLifecycleBoundary(event, { session_id: 'consent', hook_event_name: event, cwd: f.origin }, { env: f.env });
   expect(result.checkpoint.stored).toBe(true);
   expect(result.checkpoint.verified).toBe(true);
-  const stores = f.cli.calls().filter((c) => c.argv[1] === 'store' && /^project-state-auto-\d+$/.test(c.key || ''));
+  const stores = f.cli.calls().filter((c) => c.argv[1] === 'store' && /^project-state-auto-\d+-[0-9a-f]{8}$/.test(c.key || ''));
   expect(stores.length).toBe(1);
 });
