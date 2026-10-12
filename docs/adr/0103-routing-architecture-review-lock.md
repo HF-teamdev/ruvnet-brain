@@ -4,8 +4,8 @@ title: Routing architecture qualification requires a current finite source revie
 status: Accepted
 date: 2026-10-05
 updated: 2026-10-12
-version: 0.1.30
-reviewed_digest: a1808e649ce1
+version: 0.1.31
+reviewed_digest: 3f8e7f179c75
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -350,6 +350,7 @@ finite release refusal. No paid provider call, model generation or system config
 
 | 2026-10-07 | Reviewed `7ba26e9903fa` against source `439d94d1` and recorded current bytes. | Independent review covers the test-local fixed Node syntax checker in `tests/unit/model-managed-workflow-service.test.mjs`: original hosted source-only refusal was reproduced, all fresh-recall and receipt assertions retained, and the full 27-case integrated file passed. No production runtime code changed. Prior native proof stays bound to its original source and artifact; exact new qualification and hosted gates remain required. Failed preflight 37606672323 remains failed and main was not promoted. |
 | 2026-10-12 | Reviewed `a1808e649ce1` against source `8ac35320` and the recorded final working bytes. | Three fresh-context single-seat Anthropic reviews (claude-opus-5-5; the OpenAI/Codex seat was unavailable because the managed codex wrapper refused `exec`, so this is DEGRADED under ADR-0075 section 5 and is not a dual-seat review) covered the persistence removal against shipped commit `845d55bd`: `plugin/scripts/ruflo-memory-hooks.mjs`, `plugin/scripts/turn-outcome-capture.mjs`, `plugin/scripts/learn-capture.mjs`, `plugin/scripts/session-snapshot-hook.mjs`, `plugin/scripts/agentdb-recall.mjs` and `plugin/scripts/substitution-wall.mjs`. Each returned ACCEPT-WITH-CONDITIONS with no blocker; conditions 1-7, then 1-5, then 1-2 were fixed with tests (2,079 tests passed on the committed tree). The two third-round fixes (linear Add-File judging and CRLF-tolerant hunk matching, in `plugin/scripts/substitution-wall.mjs`) were not independently re-reviewed. Not verified: Windows, a live Codex session, concurrency under load, and the installed plugin against a live-size store. This is a finite source inventory, not a claim that every governed file was semantically reread. |
+| 2026-10-12 | Reviewed `3f8e7f179c75` against source `061a70c1` and the recorded final working bytes. | Mechanical follow-up to the review row above, found by the hosted preflight on the first push of 4.7.0: `scripts/release-qualification-contract.mjs` still named three deleted tests (`tests/unit/learn-flush-partial-failure.test.mjs`, `tests/unit/health-repair-flush-learning.test.mjs`, `tests/integration/learning-console-scope.test.mjs`), so release-acceptance failed on all three platforms with ENOENT. The entries were removed and the retired learning-recovery entry now says so; no behaviour changed. This edit was not independently re-reviewed; the platform-wide qualification command passed locally (2,079 of 2,079) after it. |
 
 ## Current completion safeguard scope
 
