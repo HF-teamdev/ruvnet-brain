@@ -3,8 +3,8 @@ id: ADR-106
 title: The hook standard — one registration per role, refuse only on a fact, AgentDB before and after decisions
 status: Proposed
 date: 2026-10-11
-updated: 2026-10-11 16:20:00 EDT
-version: 0.5.0
+updated: 2026-10-12 10:05:00 EDT
+version: 0.6.0
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [hooks, agentdb, decisions, continuity, codex, claude-code]
 relates: [ADR-0012, ADR-040, ADR-043, ADR-054, ADR-067, ADR-074, ADR-075, ADR-100, ADR-103, ADR-105]
@@ -249,3 +249,53 @@ shifted entry stops on every Codex machine until it is trusted again.
 | 2026-10-11 | Added `no-deferral` on the owner's direction; replay-measured 15% resubstitution false-positive rate (55 flagged turns of 2,023). | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Re-review (Fable, REVISE on f65280ce): only ratified records supersede; repeat tombstones are not conflicts; withheld count printed; apply_patch updates and body status lines checked. | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Revised for an independent review (Fable, REVISE): tombstones, `--supersedes` validation, whole-document status, fenced-code status, Stop wording, honest limits. | The review is not a stamp of these bytes. The ADR-103 review stamp and the ADR-075 dual-seat review are still owed. |
+
+## Amendment — 2026-10-12: hooks only call rUv's memory tools (4.7.0)
+
+**Status stays Proposed.** This amends the registration table and withdraws one measurement; it carries
+no review stamp. The single-seat review record is in ADR-103.
+
+**Owner ruling (permanent).** Our hooks may only CALL rUv's tools (`ruflo memory store|retrieve|search|list|backup|distill`,
+`ruflo hooks ...`). They never rebuild rUv's storage: no private store, queue, outbox, journal or replay
+worker for agent memory. Anything of that kind is removed, not bounded.
+
+**Why the earlier figures are withdrawn.** The "Measured max" column above (389 ms SessionStart, 236 ms
+snapshot) came from small stores. On a live-size copy of the owner's store on 2026-10-12, 4.6.4's Stop
+snapshot ran 8,611 ms and was killed by its own watchdog (limit 8,500 ms) at five of five Stop events;
+SessionStart ran 6,573 ms and was killed. The cause was the project-progression snapshot layer (added
+2026-08-22 and 2026-09-11, before this ADR): every snapshot carried the project's whole command history
+(up to 912 KB), and a 3.38 GB outbox was never compacted. Nothing in this ADR bounded that layer.
+
+**What 4.7.0 does.** The progression store/outbox/producer/reader/sources/hook/session-start/checkpoint,
+the capture queue, the transition hook, the continuity journal and brief, the learning queue/flush/worker
+and the turn transport journal are deleted. Registrations fall from 17 to 13 on Claude (the
+session-snapshot registrations on UserPromptSubmit, PreToolUse, SubagentStop and PostToolUseFailure did
+no work and were removed) and to 13 on Codex. The remaining work is:
+
+| Event | Writes / reads, all through `ruflo` |
+|---|---|
+| SessionStart | `memory list` + `memory retrieve` of the newest `project-state-current-*` by exact key, and the lesson keys |
+| Stop | `memory store` of the turn outcome (namespace `turns`, `--no-upsert`, append-only) then an exact-key `memory retrieve`; a refusal or unverified readback is one row in the hook-failures ledger, shown at the next SessionStart |
+| PostToolUse | consent-gated `memory store` of one redacted observation, same exact readback |
+| PreCompact, SessionEnd | `memory store` of a `project-state-auto-<ms>` checkpoint with exact readback; `memory distill run` detached and bounded |
+| Per prompt | one `memory search` plus exact reads, replacing about ten concurrent searches |
+
+**Measured (live-size copy of the owner's 988 MB store, load 7-17; before the final rewrite).** Stop
+129-151 ms, SessionEnd and PreCompact about 1.3 s, SessionStart 1.3-1.5 s, recall 640-657 ms with
+results (it timed out at 1,495 ms before). **Not measured:** Stop with the inline store under real
+ruflo (estimated 1-2 s), and any of this on the installed plugin. Treat these as a design check, not as
+a limit.
+
+**Capabilities reduced or removed, stated plainly.** SessionStart no longer carries the structured goal /
+next-action / acceptance contract, concurrent-session conflict reporting, or the "come up to speed"
+brief. Automatic capture of commits, tags, gate outcomes, agent findings and detected decisions is gone
+(manual `ruflo memory store` through `/rnb-brief` remains). Recall is exact reads plus one search, not
+ranked search across lessons, patterns, turns and continuity events. Learning loses per-session dedupe,
+batching and retry of failed writes. The thirteen todos in `tests/unit/agentdb-recall*.test.mjs` are the
+register of what recall used to do.
+
+**Still not our code to be proud of.** `lesson-store.mjs` keeps its own `lessons.json`, `lesson-bridge.mjs`
+reads the ruflo database directly, `decision-record.mjs` keeps refusals on disk, and
+`turn-outcome-capture.mjs` keeps local receipt and dedupe files. The write-time wall lists the last as
+known debt. Each is a violation of the ruling above until it is replaced by a `ruflo` call.
+
