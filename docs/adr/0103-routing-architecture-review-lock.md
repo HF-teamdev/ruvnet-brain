@@ -3,15 +3,27 @@ id: ADR-103
 title: Routing architecture qualification requires a current finite source review
 status: Accepted
 date: 2026-10-05
-updated: 2026-10-11
-version: 0.1.28
+updated: 2026-10-12
+version: 0.1.29
 reviewed_digest: abe7f78abbf5
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
 relates: [ADR-024, ADR-069, ADR-072, ADR-100, ADR-101]
 governs:
+  - .github/workflows/ci.yml
+  - .github/workflows/early-public.yml
+  - .github/workflows/protected-release.yml
+  - .github/workflows/release-candidate-preflight.yml
+  - CONTRIBUTING.md
+  - bin/install.mjs
+  - bin/nightly-refresh.mjs
+  - config/model-router/policy.default.mjs
+  - config/model-router/weekly-analyst-instruction.md
   - config/practical-rule-catalog.json
+  - docs/adr/0074-ruvnet-capability-claim-integrity.md
+  - docs/model-routing-operation.md
+  - package-lock.json
   - plugin/hooks/codex-hooks.json
   - plugin/hooks/hook-contracts.json
   - plugin/scripts/adr-currency-gate.mjs
@@ -20,14 +32,22 @@ governs:
   - plugin/scripts/capability-inventory-receipt.mjs
   - plugin/scripts/capability-registry.mjs
   - plugin/scripts/capacity-aware-parallel-work.mjs
+  - plugin/scripts/codex-console-alias.mjs
   - plugin/scripts/codex-hook-adapter.mjs
   - plugin/scripts/codex-hook-wrapper.mjs
-  - plugin/scripts/continuity-brief.mjs
+  - plugin/scripts/completion-claim-evidence.mjs
+  - plugin/scripts/continuation-gate.mjs
+  - plugin/scripts/continuation-objective.mjs
   - plugin/scripts/continuity-events.mjs
   - plugin/scripts/continuity-hook-policy.mjs
   - plugin/scripts/decision-gate.mjs
   - plugin/scripts/decision-outcomes.mjs
+  - plugin/scripts/decision-recall-gate.mjs
+  - plugin/scripts/decision-record.mjs
+  - plugin/scripts/deferral-evidence.mjs
   - plugin/scripts/detach.mjs
+  - plugin/scripts/developer-update-maintenance.mjs
+  - plugin/scripts/developer-update.mjs
   - plugin/scripts/doc-currency.mjs
   - plugin/scripts/ground-ruvnet.sh
   - plugin/scripts/grounding-answer.mjs
@@ -36,39 +56,93 @@ governs:
   - plugin/scripts/grounding-turn-gate.mjs
   - plugin/scripts/grounding-turn-mark.mjs
   - plugin/scripts/hook-context-budget.mjs
+  - plugin/scripts/hook-failures.mjs
   - plugin/scripts/hook-registry.mjs
+  - plugin/scripts/hook-shim.mjs
   - plugin/scripts/lesson-gate.mjs
-  - plugin/scripts/project-capture-queue.mjs
-  - plugin/scripts/project-progression-producer.mjs
-  - plugin/scripts/project-progression-reader.mjs
-  - plugin/scripts/project-progression-session-start.mjs
-  - plugin/scripts/project-progression-sources.mjs
-  - plugin/scripts/project-progression-store.mjs
+  - plugin/scripts/nightly-scheduler.mjs
   - plugin/scripts/project-store-resolver.mjs
-  - plugin/scripts/project-transition-hook.mjs
+  - plugin/scripts/routing-outcome-capture.mjs
+  - plugin/scripts/ruflo-memory-hooks.mjs
   - plugin/scripts/session-snapshot-hook.mjs
+  - plugin/scripts/session-start-budget.mjs
+  - plugin/scripts/session-start-core.mjs
   - plugin/scripts/session-start-trace.mjs
+  - plugin/scripts/substitution-wall.mjs
   - plugin/scripts/turn-outcome-capture.mjs
   - plugin/scripts/unprompted-runtime.mjs
   - plugin/scripts/user-settings.mjs
+  - scripts/architecture-review-lock.mjs
+  - scripts/candidate-ci-receipt.mjs
+  - scripts/claude-controlled-terminal.mjs
+  - scripts/codex-managed-terminal.mjs
+  - scripts/deferral-replay.mjs
+  - scripts/doc-currency.mjs
   - scripts/hook-qualify-core.mjs
+  - scripts/managed-terminal-input.mjs
+  - scripts/model-managed-prompt.mjs
+  - scripts/model-managed-workflow-service.mjs
+  - scripts/model-native-catalog.mjs
+  - scripts/model-native-qualification.mjs
+  - scripts/model-router-catalog.mjs
+  - scripts/model-router-dispatch.mjs
+  - scripts/model-router-engine.mjs
+  - scripts/model-router-outcome.mjs
+  - scripts/model-router-setup.mjs
+  - scripts/model-routing-controller.mjs
+  - scripts/model-routing-defence.mjs
+  - scripts/model-routing-execution-adapters.mjs
+  - scripts/model-routing-gateway.mjs
+  - scripts/model-routing-launchers.mjs
+  - scripts/model-routing-policy-promotion.mjs
+  - scripts/model-terminal-launchers.mjs
+  - scripts/model-weekly-analyst.mjs
+  - scripts/model-weekly-assessment.mjs
+  - scripts/model-weekly-cycle.mjs
+  - scripts/model-weekly-qualification.mjs
+  - scripts/native-subscription-usage.mjs
   - scripts/practical-rule-selector.mjs
+  - scripts/prepublication-evidence.mjs
   - scripts/product-integrity-contract.mjs
-  - tests/integration/continuity-journal.test.mjs
-  - tests/integration/project-progression-session-start.test.mjs
+  - scripts/qe/agentic-qe-4.3.mjs
+  - scripts/release-qualification-contract.mjs
+  - scripts/release-qualification.mjs
+  - scripts/release-transaction-provider.mjs
+  - scripts/release-transaction.mjs
+  - scripts/source-scope-receipt.mjs
+  - scripts/subscription-hosts.mjs
+  - tests/integration/model-managed-checker-native.test.mjs
   - tests/integration/unprompted-speech-registry.test.mjs
+  - tests/qe/release/packed-clean-install.test.mjs
   - tests/unit/adr-currency-gate-parity.test.mjs
   - tests/unit/adr-currency-gate.test.mjs
   - tests/unit/advocacy-outcomes.test.mjs
   - tests/unit/agentdb-recall.test.mjs
+  - tests/unit/agentic-qe-early-public.test.mjs
+  - tests/unit/architecture-review-lock.test.mjs
+  - tests/unit/automatic-hook-retirement-posix.test.mjs
+  - tests/unit/automatic-hook-retirement.test.mjs
   - tests/unit/capability-inventory-receipt.test.mjs
   - tests/unit/capability-registry.test.mjs
+  - tests/unit/claude-controlled-terminal.test.mjs
   - tests/unit/codex-claude-hook-parity.test.mjs
-  - tests/unit/continuity-brief-host-hint.test.mjs
+  - tests/unit/codex-fresh-host-proof.test.mjs
+  - tests/unit/codex-managed-terminal.test.mjs
+  - tests/unit/continuation-commitment-ownership.test.mjs
+  - tests/unit/continuation-gate-capability-truth.test.mjs
+  - tests/unit/continuation-gate-completion-claims.test.mjs
+  - tests/unit/continuation-gate-decision-record.test.mjs
+  - tests/unit/continuation-gate-objective-close.test.mjs
+  - tests/unit/continuation-gate.test.mjs
+  - tests/unit/continuation-objective.test.mjs
   - tests/unit/continuity-events.test.mjs
-  - tests/unit/continuity-journal-bounds.test.mjs
   - tests/unit/decision-gate.test.mjs
   - tests/unit/decision-outcomes.test.mjs
+  - tests/unit/decision-record.test.mjs
+  - tests/unit/deferral-evidence.test.mjs
+  - tests/unit/developer-update-codex-launcher.test.mjs
+  - tests/unit/developer-update-scheduled-receipt.test.mjs
+  - tests/unit/doc-currency-review.test.mjs
   - tests/unit/doc-currency.test.mjs
   - tests/unit/entrypoint-symlink.test.mjs
   - tests/unit/grounding-scope.test.mjs
@@ -80,137 +154,45 @@ governs:
   - tests/unit/grounding-turn-false-alarm.test.mjs
   - tests/unit/grounding-turn-gate.test.mjs
   - tests/unit/hook-context-budget.test.mjs
+  - tests/unit/hook-failures.test.mjs
   - tests/unit/hook-hardening.test.mjs
   - tests/unit/hook-registry-lint.test.mjs
+  - tests/unit/hook-shim.test.mjs
   - tests/unit/injection-budget.test.mjs
   - tests/unit/lesson-gate.test.mjs
-  - tests/unit/practical-rule-selector.test.mjs
-  - tests/unit/product-integrity-contract.test.mjs
-  - tests/unit/project-progression-producer.test.mjs
-  - tests/unit/project-progression-reader.test.mjs
-  - tests/unit/project-transition-hook.test.mjs
-  - tests/unit/session-snapshot-budget.test.mjs
-  - tests/unit/session-start-budget.test.mjs
-  - tests/unit/session-start-trace.test.mjs
-  - tests/unit/source-scope-receipt.test.mjs
-  - tests/unit/continuation-commitment-ownership.test.mjs
-  - plugin/scripts/continuation-gate.mjs
-  - plugin/scripts/completion-claim-evidence.mjs
-  - plugin/scripts/continuation-objective.mjs
-  - plugin/scripts/hook-shim.mjs
-  - tests/unit/continuation-gate-completion-claims.test.mjs
-  - tests/unit/continuation-gate-objective-close.test.mjs
-  - tests/unit/continuation-objective.test.mjs
-  - tests/unit/continuation-gate.test.mjs
-  - tests/unit/continuation-gate-capability-truth.test.mjs
-  - tests/unit/hook-shim.test.mjs
-  - tests/unit/automatic-hook-retirement.test.mjs
-  - tests/unit/automatic-hook-retirement-posix.test.mjs
-  - docs/adr/0074-ruvnet-capability-claim-integrity.md
-  - package-lock.json
-  - scripts/model-managed-prompt.mjs
-  - scripts/model-managed-workflow-service.mjs
-  - scripts/model-routing-controller.mjs
-  - scripts/model-routing-execution-adapters.mjs
-  - scripts/claude-controlled-terminal.mjs
-  - scripts/codex-managed-terminal.mjs
-  - scripts/managed-terminal-input.mjs
-  - scripts/model-router-dispatch.mjs
-  - scripts/model-routing-defence.mjs
-  - config/model-router/policy.default.mjs
-  - tests/unit/model-managed-prompt.test.mjs
-  - tests/unit/model-managed-workflow-service.test.mjs
-  - tests/unit/model-routing-controller.test.mjs
-  - tests/unit/model-routing-execution-adapters.test.mjs
-  - tests/unit/claude-controlled-terminal.test.mjs
-  - tests/unit/codex-managed-terminal.test.mjs
   - tests/unit/managed-terminal-input.test.mjs
   - tests/unit/model-managed-parent-context-posix.test.mjs
-  - tests/unit/codex-fresh-host-proof.test.mjs
-  - tests/integration/model-managed-checker-native.test.mjs
-  - docs/model-routing-operation.md
-  - scripts/model-router-engine.mjs
-  - scripts/model-routing-launchers.mjs
-  - CONTRIBUTING.md
-  - scripts/subscription-hosts.mjs
-  - scripts/native-subscription-usage.mjs
-  - scripts/model-native-catalog.mjs
-  - scripts/model-native-qualification.mjs
-  - scripts/model-weekly-cycle.mjs
-  - scripts/model-weekly-analyst.mjs
-  - scripts/model-weekly-assessment.mjs
-  - scripts/model-weekly-qualification.mjs
-  - scripts/model-routing-policy-promotion.mjs
-  - scripts/model-router-catalog.mjs
-  - scripts/model-router-setup.mjs
-  - scripts/model-router-outcome.mjs
-  - plugin/scripts/routing-outcome-capture.mjs
-  - bin/install.mjs
-  - plugin/scripts/codex-console-alias.mjs
-  - plugin/scripts/session-start-budget.mjs
-  - plugin/scripts/session-start-core.mjs
-  - scripts/model-terminal-launchers.mjs
-  - tests/unit/model-terminal-launchers.test.mjs
-  - tests/unit/npm-tarball-codex.test.mjs
-  - tests/qe/release/packed-clean-install.test.mjs
-  - tests/unit/session-start-core-parity.test.mjs
-  - plugin/scripts/continuity-journal.mjs
-  - config/model-router/weekly-analyst-instruction.md
-  - tests/unit/subscription-hosts.test.mjs
-  - tests/unit/native-subscription-usage.test.mjs
+  - tests/unit/model-managed-prompt.test.mjs
+  - tests/unit/model-managed-workflow-service.test.mjs
   - tests/unit/model-native-catalog.test.mjs
   - tests/unit/model-native-qualification.test.mjs
-  - tests/unit/model-weekly-cycle.test.mjs
+  - tests/unit/model-router-outcome.test.mjs
+  - tests/unit/model-router-update-convergence.test.mjs
+  - tests/unit/model-routing-controller.test.mjs
+  - tests/unit/model-routing-execution-adapters.test.mjs
+  - tests/unit/model-routing-gateway-boundaries.test.mjs
+  - tests/unit/model-routing-gateway.test.mjs
+  - tests/unit/model-routing-policy-promotion.test.mjs
+  - tests/unit/model-terminal-launchers.test.mjs
   - tests/unit/model-weekly-analyst.test.mjs
   - tests/unit/model-weekly-assessment.test.mjs
+  - tests/unit/model-weekly-cycle.test.mjs
   - tests/unit/model-weekly-qualification.test.mjs
-  - tests/unit/model-routing-policy-promotion.test.mjs
-  - tests/unit/model-router-outcome.test.mjs
-  - tests/unit/routing-outcome-capture.test.mjs
-  - tests/unit/model-router-update-convergence.test.mjs
-  - scripts/model-routing-gateway.mjs
-  - tests/unit/model-routing-gateway.test.mjs
-  - tests/unit/model-routing-gateway-boundaries.test.mjs
-  - scripts/doc-currency.mjs
-  - scripts/architecture-review-lock.mjs
-  - tests/unit/architecture-review-lock.test.mjs
-  - tests/unit/doc-currency-review.test.mjs
-  - scripts/release-qualification-contract.mjs
-  - scripts/release-qualification.mjs
-  - scripts/prepublication-evidence.mjs
-  - scripts/candidate-ci-receipt.mjs
-  - scripts/qe/agentic-qe-4.3.mjs
-  - tests/unit/agentic-qe-early-public.test.mjs
-  - tests/unit/release-evidence-dag.test.mjs
-  - tests/unit/protected-release-workflow.test.mjs
-  - tests/unit/prepublication-evidence.test.mjs
-  - scripts/source-scope-receipt.mjs
-  - scripts/release-transaction.mjs
-  - scripts/release-transaction-provider.mjs
-  - tests/unit/release-transaction-provider-buffer.test.mjs
-  - .github/workflows/ci.yml
-  - .github/workflows/release-candidate-preflight.yml
-  - .github/workflows/protected-release.yml
-  - .github/workflows/early-public.yml
-  - plugin/scripts/developer-update-maintenance.mjs
-  - tests/unit/developer-update-codex-launcher.test.mjs
-  - bin/nightly-refresh.mjs
+  - tests/unit/native-subscription-usage.test.mjs
   - tests/unit/nightly-scheduler.test.mjs
-  - plugin/scripts/developer-update.mjs
-  - plugin/scripts/nightly-scheduler.mjs
-  - tests/unit/developer-update-scheduled-receipt.test.mjs
-  - plugin/scripts/decision-record.mjs
-  - plugin/scripts/decision-recall-gate.mjs
-  - plugin/scripts/hook-failures.mjs
-  - plugin/scripts/deferral-evidence.mjs
-  - scripts/deferral-replay.mjs
-  - tests/unit/decision-record.test.mjs
-  - tests/unit/hook-failures.test.mjs
-  - tests/unit/deferral-evidence.test.mjs
-  - tests/unit/continuation-gate-decision-record.test.mjs
-  - tests/integration/hook-latency-budget.test.mjs
-  - tests/integration/learning-fold.test.mjs
-  - tests/unit/transition-pending-notices.test.mjs
+  - tests/unit/npm-tarball-codex.test.mjs
+  - tests/unit/practical-rule-selector.test.mjs
+  - tests/unit/prepublication-evidence.test.mjs
+  - tests/unit/product-integrity-contract.test.mjs
+  - tests/unit/protected-release-workflow.test.mjs
+  - tests/unit/release-evidence-dag.test.mjs
+  - tests/unit/release-transaction-provider-buffer.test.mjs
+  - tests/unit/routing-outcome-capture.test.mjs
+  - tests/unit/session-start-budget.test.mjs
+  - tests/unit/session-start-core-parity.test.mjs
+  - tests/unit/session-start-trace.test.mjs
+  - tests/unit/source-scope-receipt.test.mjs
+  - tests/unit/subscription-hosts.test.mjs
 ---
 
 # ADR-103 — Routing architecture review lock
@@ -423,3 +405,15 @@ Component reviews and focused checks cover their recorded source/range scopes.
 The dated integrated review identifies the baseline-plus-delta read scope, its
 source hashes, resolved findings and remaining limits. Native qualification is
 still required before publication. File hashes do not certify semantic reading.
+
+## Persistence removal — 2026-10-12
+
+The owner ruled that the plugin only CALLS rUv's memory tools and never rebuilds his storage. The
+progression store/outbox/producer/reader/sources/hook/session-start/checkpoint, the capture queue, the
+transition hook, the continuity journal and brief, the learning queue/flush/worker and the turn transport
+journal were deleted, together with the tests that exercised only them. The governed set above no longer
+names them; `ruflo-memory-hooks.mjs` (checkpoint and restore through `ruflo memory`) and
+`substitution-wall.mjs` (the write-time refusal of a rebuilt transport) now join it. Capabilities that
+were reduced rather than moved are recorded as todos in `tests/unit/agentdb-recall*.test.mjs`. This
+section is a change record, not a review: the source-bound review of the final governed bytes below is the
+only statement that they were examined, and it states its own limits.
