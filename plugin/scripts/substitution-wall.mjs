@@ -132,8 +132,9 @@ function patchChanges(patch, read) {
   // appended to the after-text, so a pure-addition outbox module is judged, never skipped.
   const flush = () => {
     if (cur && hunk && cur.after !== null && hunk.new.length) {
-      const from = hunk.old.join('\n'); const to = hunk.new.join('\n');
-      cur.after = from && cur.after.includes(from) ? cur.after.replace(from, () => to) : `${cur.after}\n${to}`;
+      const norm = (t) => t.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '');
+      const from = norm(hunk.old.join('\n')); const to = hunk.new.join('\n'); const hay = norm(cur.after);
+      cur.after = from && hay.includes(from) ? hay.replace(from, () => to) : `${hay}\n${to}`;
     }
     hunk = null;
   };
@@ -141,13 +142,14 @@ function patchChanges(patch, read) {
     const m = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(line);
     if (m || /^\*\*\* (?:End Patch|Move to:)/.test(line)) { flush(); if (m) { cur = m[1] === 'Delete' ? null : { file: m[2].trim(), add: m[1] === 'Add', lines: [] }; if (cur) { cur.before = cur.add ? null : read(cur.file); cur.after = cur.add ? '' : cur.before; out.push(cur); } } continue; }
     if (!cur) continue;
-    if (cur.add) { if (line.startsWith('+')) cur.lines.push(line.slice(1)); cur.after = cur.lines.join('\n'); continue; }
+    if (cur.add) { if (line.startsWith('+')) cur.lines.push(line.slice(1)); continue; }
     if (line.startsWith('@@')) { flush(); hunk = { old: [], new: [] }; continue; }
     if (!hunk) hunk = { old: [], new: [] };
     if (line.startsWith('-')) hunk.old.push(line.slice(1)); else if (line.startsWith('+')) hunk.new.push(line.slice(1));
     else if (line.startsWith(' ') || line === '') { hunk.old.push(line.slice(1)); hunk.new.push(line.slice(1)); }
   }
   flush();
+  for (const c of out) if (c.add) c.after = c.lines.join('\n'); // once, not per line (review 3: 80k lines took 53 s)
   return out.filter((c) => c.after !== null).map(({ file, before, after }) => ({ file, before, after }));
 }
 
