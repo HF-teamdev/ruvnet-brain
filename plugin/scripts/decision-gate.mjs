@@ -162,10 +162,7 @@ const POLICY = (id, file, interpreter = 'bash') => ({ id, file, interpreter });
 const REFUSAL_POLICIES = [
   POLICY('protect-state', 'protect-brain-state.sh'),
   POLICY('hijack-ruvnet', 'hijack-ruvnet.sh'),
-  // substitution-wall (2026-10-12, owner ruling): our code may only CALL rUv's memory tools, never rebuild
-  // his storage (outbox/queue/journal/lock/replay worker). A boundary about where data goes, so it sits
-  // with hijack-ruvnet. Refuses only on the transport FACT, only inside this repo; else it warns.
-  POLICY('substitution-wall', 'substitution-wall.mjs', 'node'),
+  POLICY('substitution-wall', 'substitution-wall.mjs', 'node'), // owner ruling 2026-10-12: only CALL rUv's memory tools; refuses a rebuilt transport (outbox/queue/journal/replay), in this repo only
   POLICY('ground-before-write', 'ground-before-write.sh'), POLICY('decision-recall', 'decision-recall-gate.mjs', 'node'), // ADR-106
   // adr-currency-gate fires on the EDIT, where the pre-push gate fires on the push. Same rule, same
   // machinery (it calls doc-currency.mjs, never a second copy of the logic) — moved to the earliest
@@ -291,7 +288,6 @@ function payloadInput(payload) { return parsed(payload).tool_input || {}; }
  * `Cannot access 'speechEventFor' before initialization` on this gate's first live refusal.
  */
 function speechEventFor(event) { return event === 'bash' ? 'PreToolUse-bash' : 'PreToolUse-write'; }
-
 // ── Runtime ──────────────────────────────────────────────────────────────────────────────────────
 if (isMain()) {
   const started = Date.now();

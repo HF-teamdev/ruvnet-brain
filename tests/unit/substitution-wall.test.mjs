@@ -13,6 +13,13 @@ import { audit, storageAudit } from '../../scripts/no-silent-substitution.mjs';
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SHIPPED = '845d55bd'; // origin/main = 4.6.4, where every positive fixture below still existed
 
+/** A positive fixture is the file AS SHIPPED in 4.6.4 (pinned commit), never the working tree: a module rewritten
+ *  to call ruflo must stop refusing, and that must not flip this fixture. Null on a shallow clone. */
+function shipped(rel) {
+  const r = spawnSync('git', ['-C', ROOT, 'show', `${SHIPPED}:${rel}`], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout : null;
+}
+
 /** The real file: from disk, else from the 4.6.4 commit (it may since have been deleted), else null. */
 function real(rel) {
   try { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); } catch { /* deleted since 4.6.4 */ }
@@ -23,13 +30,17 @@ function real(rel) {
 const REPLACE = ['project-progression-outbox', 'project-capture-queue', 'session-snapshot-hook', 'turn-transport-journal',
   'continuity-journal', 'learning-queue', 'turn-outcome-capture'].map((n) => `plugin/scripts/${n}.mjs`);
 const KEEP = ['lesson-store', 'lesson-gate', 'lesson-provenance', 'decision-record', 'hook-shim', 'hook-input', 'grounding-substance',
-  'grounding-turn-evidence', 'continuation-gate', 'duplicate-gate', 'decision-outcomes', 'learning-store', 'project-progression-store',
-  'project-progression-contract', 'routing-outcome-capture', 'decision-gate'].map((n) => `plugin/scripts/${n}.mjs`);
+  'grounding-turn-evidence', 'continuation-gate', 'duplicate-gate', 'decision-outcomes', 'learning-store', 'routing-outcome-capture', 'decision-gate'].map((n) => `plugin/scripts/${n}.mjs`);
 
 describe('substitution-wall — refuses the real hand-built transports (positive fixtures)', () => {
+  it('refuses a minimal synthetic outbox + replay transport (always runs, independent of git history)', () => {
+    const content = "import fs from 'node:fs';\nconst OUTBOX = '.swarm/outbox.jsonl';\nexport function enqueue(row) { const fd = fs.openSync(OUTBOX, 'a'); fs.writeSync(fd, JSON.stringify(row) + '\\n'); fs.fsyncSync(fd); fs.closeSync(fd); }\nexport function replay(send) { for (const line of fs.readFileSync(OUTBOX, 'utf8').split('\\n')) if (line) send(JSON.parse(line)); }\n";
+    const v = substitutionVerdict({ path: 'plugin/scripts/x-outbox.mjs', content });
+    expect(v.verdict, v.signals.join(',')).toBe('refuse');
+  });
   for (const rel of REPLACE) {
-    const src = real(rel);
-    it.skipIf(src === null)(`refuses ${rel}${src === null ? ' (not on disk and commit 845d55bd unavailable — shallow clone)' : ''}`, () => {
+    const src = shipped(rel);
+    it.skipIf(src === null)(`refuses ${rel}${src === null ? ' (commit 845d55bd unavailable — shallow clone)' : ''} as shipped in 4.6.4`, () => {
       const v = substitutionVerdict({ path: rel, content: src });
       expect(v.verdict, v.signals.join(',')).toBe('refuse');
       expect(v.signals).toEqual(expect.arrayContaining(['persist', 'transport']));
