@@ -44,8 +44,8 @@ const blockingHooks = new Set([
  *
  *     warning: clamping SessionEnd hook timeout to 3s in .../hooks.json
  *
- * SessionEnd is HARD-CAPPED at 3 seconds and no registration can ask for more. learn-flush needs
- * 18s: measured with a real 10-entry queue and the real `ruflo`, 18342 / 18347 / 18384 ms, because
+ * SessionEnd is HARD-CAPPED at 3 seconds and no registration can ask for more. The former learning
+ * flusher needed 18s: measured with a real 10-entry queue and the real `ruflo`, 18342 / 18347 / 18384 ms, because
  * one `ruflo hooks` call alone costs seconds and it self-bounds at LEARN_FLUSH_DEADLINE_MS.
  *
  * So the arithmetic never closes, and what shipped was the worst version of that: this wrapper
@@ -57,7 +57,8 @@ const blockingHooks = new Set([
  * exactly — the hook returns immediately — while the flush runs to its own deadline and does its
  * own write-back. Raising the number instead would have been a fiction the host silently clamps.
  */
-const DETACHED_HOOKS = new Set(['learn-flush']);
+// Empty since the learning flusher was deleted (2026-10-12): learning writes directly through ruflo.
+const DETACHED_HOOKS = new Set([]);
 
 /** THE BUDGET IS DERIVED FROM WHAT THE HOOK MEASURABLY COSTS, never from what looks tidy. */
 function timeoutFor(hookId, event = '', sessionBudgetMs = 0) {

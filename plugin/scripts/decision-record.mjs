@@ -28,7 +28,7 @@ import { maskExcludedPaths } from './turn-capture-privacy.mjs';
 import { resolveTurnDb, readSettledTranscript } from './turn-outcome-capture.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { resolveRuflo, rufloInvocation } from './ruflo-bin.mjs';
-import { rufloRunDir } from './project-progression-store.mjs';
+import { rufloRunDir } from './ruflo-bin.mjs';
 import { currentTurnRecords } from './completion-claim-evidence.mjs';
 
 export const DECISION_SCHEMA = 'ruvnet-brain.decision-record';

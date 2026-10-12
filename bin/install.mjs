@@ -89,7 +89,6 @@ import { installTerminalLaunchers } from '../scripts/model-terminal-launchers.mj
 import { readConsoleReceipts, replaceStaleConsoles } from '../scripts/console-instances.mjs';
 import { moveBrain, MoveRefused } from '../scripts/move-brain.mjs';
 import { brainLocation } from '../plugin/scripts/brain-location.mjs';
-import { cleanLegacyRufloDebris } from '../plugin/scripts/project-progression-store.mjs';
 import { resolveProjectStore } from '../plugin/scripts/project-store-resolver.mjs';
 import { runHostCli, waitForHostCli } from '../scripts/host-cli.mjs';
 import {
@@ -1074,9 +1073,9 @@ export function serverDependencies(source, seen = new Set()) {
     try { src = fs.readFileSync(file, 'utf8'); } catch { return; }
     // Lazy [^'"]* (no \n exclusion) so a multi-line named import — `import {\n  a,\n} from './x.mjs';`
     // — is still seen: the exclusion used to stop at the first newline, so this walker silently
-    // missed any dependency imported that way. Caught live 2026-09-27: session-snapshot-hook.mjs's
-    // multi-line import of project-progression-hook.mjs never reached the Codex MCP server package,
-    // reproducing the exact packaging-boundary failure this function's own header warns about.
+    // missed any dependency imported that way. Caught live 2026-09-27: a multi-line import in the
+    // lifecycle hook never reached the Codex MCP server package, reproducing the exact
+    // packaging-boundary failure this function's own header warns about.
     for (const m of src.matchAll(/^\s*(?:import|export)[^'"]*?from\s*['"](\.[^'"]+)['"]/gm)) {
       const spec = specPrefix ? path.join(specPrefix, m[1]) : m[1];
       const from = path.resolve(path.dirname(file), m[1]);
@@ -1307,30 +1306,6 @@ export function withLiveConsoleState(recorded, { receiptDir, alive, probe } = {}
   const live = { ...kept, ...consoleRestartState(recorded.consoleRuntime, { receiptDir, alive, probe }) };
   if (live.state !== 'ready' && replacementFailures) live.replacementFailures = replacementFailures;
   return { ...recorded, consoleRuntime: live };
-}
-
-/**
- * 4.3.40's ruflo leftovers inside this project's `.swarm` (cleanLegacyRufloDebris). --update removes
- * them; --doctor only reports (dryRun). Either way a REFUSED artifact (unexpected contents, a symlink) is
- * printed, never dropped silently. Not a project (or no .swarm): nothing to say.
- */
-export function reportLegacyRufloDebris({ projectDir = process.cwd(), dryRun = false } = {}) {
-  let storeDir;
-  try { storeDir = path.dirname(resolveProjectStore({ projectDir }).canonicalAgentDbPath); } catch { return null; }
-  if (!fs.existsSync(storeDir)) return null;
-  const result = cleanLegacyRufloDebris(storeDir, { dryRun });
-  for (const entry of result.removed) {
-    // Dry run applies the same checks (allowlist, mirror proof, in-use window); only the final
-    // unchanged-since-proof comparison can still keep it at --update time.
-    if (dryRun) info(`legacy ruflo debris from 4.3.40 in ${entry}: passes every check; --update removes it unless it is written to before then`);
-    else ok(`removed legacy ruflo debris from 4.3.40: ${entry}`);
-  }
-  for (const { path: entry, reason, kept } of result.refused) {
-    // A KEPT nested AgentDB holds rows (or may still be written): never suggest deleting it by hand.
-    if (kept) warn(`left 4.3.40's nested ruflo store in place — ${entry}: ${reason}. It is checked again on every update.`);
-    else warn(`left legacy ruflo debris in place — ${entry}: ${reason}. Inspect it; remove it yourself if it is ruflo's.`);
-  }
-  return result;
 }
 
 export function consoleRestartState(identity, {
@@ -3127,7 +3102,6 @@ async function doctorRun({ json }) {
       warn(`host convergence receipt is invalid: ${error.message}`);
     }
   }
-  try { reportLegacyRufloDebris({ dryRun: true }); } catch (error) { warn(`legacy ruflo debris check failed: ${error.message}`); }
   const brainHome = process.env.RUVNET_BRAIN_HOME || path.dirname(cacheDir);
   const nightlyHealth = schedulerStatus({ platform: process.platform, env: process.env,
     brainHome, kbDir: cacheDir });
@@ -3304,26 +3278,9 @@ async function doctorRun({ json }) {
     c.dim('\n  Heads-up: a window that was ALREADY open when you installed needs a restart to pick it up;\n  newly-opened windows are fine.\n'),
   );
 
-  // ── AGENTDB RECORDING (ADR-100 §4) — positive confirmation, or the loud reason it is not ────────
-  // For the project --doctor is run from. Read-only: the outbox and the store are inspected, nothing
-  // is written. A project without `.swarm` has not adopted the store and gets no line. It is a LINE OF THE
-  // ONE VERDICT (re-review S2: it used to be narration only, so --json never saw it): advisory '!' when
-  // stuck — recording is the project's opt-in memory, not the Brain's health — ✓ when proven, ○ otherwise.
-  let agentdbLine = null;
-  try {
-    const { ContinuityJournal, recordingLine } = await import('../plugin/scripts/continuity-journal.mjs');
-    const { resolveProjectStore } = await import('../plugin/scripts/project-store-resolver.mjs');
-    const journal = new ContinuityJournal({ projectRoot: resolveProjectStore({ projectDir: process.cwd() }).projectRoot });
-    if (fs.existsSync(journal.swarm)) {
-      const status = journal.status();
-      const detail = recordingLine(status).replace(/^AgentDB: /, '');
-      agentdbLine = { id: 'agentdb', label: 'AgentDB', detail,
-        state: status.stuck ? 'warn' : status.lastCommitAt && !status.notApplicable ? 'ok' : 'unknown',
-        fix: status.stuck ? (status.problem === 'stuck-pending' ? 'ruflo doctor --fix (then the next session drains the outbox)' : 'node <plugin>/scripts/continuity-brief.mjs --clear') : null };
-    }
-  } catch (error) {
-    agentdbLine = { id: 'agentdb', label: 'AgentDB', state: 'unknown', detail: `recording status unavailable: ${error.message}`, fix: null };
-  }
+  // AgentDB recording is proven per write: a refused or unverified ruflo write is a hook-failures row,
+  // summarized at SessionStart. There is no local outbox to inspect here any more.
+  const agentdbLine = null;
 
   const { turnRecordingStatus } = await import('../plugin/scripts/turn-outcome-capture.mjs');
   const turnStatus = turnRecordingStatus({ projectDir: process.cwd() });
@@ -4337,7 +4294,6 @@ async function runUpdate() {
       warn(hostSynchronizationFailureMessage(convergence, active));
       updateStatus = 1;
     } else if (convergence.convergence?.notice) info(convergence.convergence.notice);
-    try { reportLegacyRufloDebris(); } catch (error) { warn(`legacy ruflo debris cleanup failed: ${error.message}`); }
     recordRefreshPhase(refreshReceipt, 'host-convergence', convergence.ok && convergence.convergence?.healthy === true ? 'PASS' : 'FAIL', {
       state: convergence.convergence?.state || null, error: convergence.error || null,
       ...(convergence.convergence?.openSessions ? { openSessions: convergence.convergence.openSessions } : {}),

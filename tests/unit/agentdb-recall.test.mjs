@@ -32,7 +32,9 @@ fs.appendFileSync(process.env.RECALL_LOG, JSON.stringify({ args: a, cwd: process
 fs.writeFileSync(path.join(process.cwd(), 'ruvector.db'), 'scratch');
 if (process.env.RECALL_HANG || (process.env.RECALL_RETRIEVE_HANG && a[1] === 'retrieve')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10000);
 const rows = JSON.parse(fs.readFileSync(process.env.RECALL_ROWS, 'utf8'));
-if (a[1] === 'retrieve') console.log(rows.find(r => r.key === get('-k') && r.namespace === get('-n'))?.content || '');
+const ns = a.includes('--namespace') ? get('--namespace') : get('-n'), key = a.includes('--key') ? get('--key') : get('-k');
+if (a[1] === 'retrieve') console.log(rows.find(r => r.key === key && r.namespace === ns)?.content || '');
+else if (a[1] === 'list') console.log(JSON.stringify(rows.filter(r => r.namespace === ns).map(r => ({ key: r.key, namespace: r.namespace }))));
 else {
  const kw = a.includes('-t'), q = get('-q');
  console.log('[INFO] Searching');

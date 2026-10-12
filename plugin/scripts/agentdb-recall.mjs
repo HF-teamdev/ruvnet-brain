@@ -12,12 +12,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolveRuflo } from './ruflo-bin.mjs';
-import { rufloCwdFor, rufloScratchRoot } from './project-progression-store.mjs';
+import { rufloCwdFor, rufloScratchRoot } from './ruflo-bin.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { isHarnessGenerated, readStdinBounded } from './hook-input.mjs';
 import { learningContext } from './runtime-preferences.mjs';
 import { learningTarget, LEARNING_NAMESPACE } from './learning-store.mjs';
-import { safeAction } from './learning-queue.mjs';
+import { safeAction } from './learn-capture.mjs';
 
 import { redactText } from './continuity-events.mjs';
 import { resolveTurnDb } from './turn-outcome-capture.mjs';
@@ -345,11 +345,6 @@ export async function recall({ prompt, projectDir = process.cwd(), env = process
     const scratchFor = scratch || ((storePath) => rufloCwdFor(storePath, { root: rufloScratchRoot(env) }));
     if (consequential) return await consequentialRecall({ prompt, root, store, bin, scratch: scratchFor, env, deadline, binding, signal, enumerateKeys, exclusions });
     const namespaces = [...new Set(['lessons', 'patterns', 'pattern', 'turns', 'continuity-events', path.basename(root), 'default'])];
-    const family = /\bhooks?\b|hook.harness/i.test(prompt) ? 'decision-hook-harness-index'
-      : /score|grade|north.star/i.test(prompt) ? 'scorecard'
-      : /where are we|status|catch me up/i.test(prompt) ? 'project-state-current'
-      : /releas|publish|workflow run|dispatch/i.test(prompt) ? 'release'
-      : /requirement|always|every prompt/i.test(prompt) ? 'decision-agentdb' : null;
     // This machine runs loaded (load average 30-60 measured 2026-10-10) and ranked search spawns one Ruflo process
     // per namespace; run concurrently they starve every other read past the deadline. So: ONE native enumeration
     // (reused for the curated pass and for pruning empty namespaces), then exact curated state/lessons/decisions,
@@ -362,13 +357,12 @@ export async function recall({ prompt, projectDir = process.cwd(), env = process
       enumerateKeys: sharedKeys, exclusions, rankedSearch: false }).catch(() => null) : null;
     const searchDeadline = searchDeadlineFor(Date.now(), deadline);
     const activeNamespaces = presence?.ok ? namespaces.filter(namespace => presence.value[namespace]?.length) : namespaces;
-    const jobs = (store ? activeNamespaces : []).flatMap((namespace) => [{ store, namespace, family: null, args: ['--format', 'json', '-q', query, '-n', namespace, '--limit', '12'] },
-      ...(family && !SIGNAL_NAMESPACES.has(namespace) && namespace !== 'turns' ? [{ store, namespace, family, args: ['--format', 'json', '-q', family, '-n', namespace, '-t', 'keyword', '--limit', '4'] }] : [])]);
-    const words = promptKeywords(prompt, 14);
-    const workflowQuery = words.map(word => safeAction('Bash', word))
-      .find(action => action && action !== 'command');
-    if (learningStore && workflowQuery) jobs.push({ store: learningStore, namespace: LEARNING_NAMESPACE, family: null,
-      args: ['--format', 'json', '-q', workflowQuery, '-n', LEARNING_NAMESPACE, '-t', 'keyword', '--limit', '4'] });
+    // ONE supplementary search (owner ruling 2026-10-12). Measured on a live-size store at load 17: ~10
+    // concurrent `ruflo memory search` processes took 1.34-1.45 s each against a ~1.1 s window, so every
+    // ranked search timed out. Curated state/lessons/decisions already came from exact reads above.
+    const searchNamespace = [path.basename(root), 'default', 'turns'].find((namespace) => activeNamespaces.includes(namespace));
+    const jobs = store && searchNamespace ? [{ store, namespace: searchNamespace, family: null,
+      args: ['--format', 'json', '-q', query, '-n', searchNamespace, '--limit', '12'] }] : [];
     const results = await Promise.all(jobs.map(async ({ store: jobStore, namespace, family: recordFamily, args }) => ({ namespace, family: recordFamily, storePath: jobStore.path,
       ...await searchOnce({ ruflo: bin, store: jobStore, deadline: searchDeadline, env, scratch: scratchFor, args, signal }) })));
     let status = results.every((r) => r.state === 'ok') ? 'ok'
