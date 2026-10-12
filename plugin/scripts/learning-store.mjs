@@ -43,15 +43,22 @@ export function runLearningRuflo(binary, args, db, { env = process.env, deadline
  */
 export function recordLearningObservation(binary, context, { tool, action, session = '' }, options = {}) {
   const db = learningTarget(context, options);
-  const key = 'workflow-' + createHash('sha256').update(`${session}:${tool}:${action}:${Date.now()}:${Math.random()}`).digest('hex');
+  // DETERMINISTIC per (session, tool, action) (review N1): with --no-upsert, rUv's store itself dedupes, so a
+  // session holds at most one row per distinct pair and concurrent writers of the same pair collapse.
+  const key = 'workflow-' + createHash('sha256').update(JSON.stringify([session, tool, action])).digest('hex');
   const value = JSON.stringify({ schemaVersion: 1, tool, action, scope: context.scope,
     authoritative: false, provenance: 'system-observation', outcome: 'host-reported-success' });
   const run = args => { if (options.allowed && !options.allowed()) throw new Error('learning consent changed'); return runLearningRuflo(binary, args, db, options); };
   const stored = run(['memory', 'store', '--key', key, '--value', value, '--namespace', LEARNING_NAMESPACE,
     '--no-upsert', '--provenance', 'system_observation', '--path', db]);
-  if (stored.error || stored.status !== 0) throw new Error(`ruflo memory store refused the observation: ${String(stored.stderr || stored.stdout || stored.error?.message || '').trim().slice(0, 160)}`);
   const retrieved = run(['memory', 'retrieve', '--key', key, '--namespace', LEARNING_NAMESPACE, '--value-only', '--path', db]);
-  if (retrieved.error || retrieved.status !== 0 || retrieved.stdout.trim() !== value) throw new Error('canonical exact CLI readback failed');
+  const exact = !retrieved.error && retrieved.status === 0 && String(retrieved.stdout || '').trim() === value;
+  // A refused store whose key already holds these exact bytes is the dedupe working, not a failure.
+  if (stored.error || stored.status !== 0) {
+    if (exact) return { db, key, digest: createHash('sha256').update(value).digest('hex'), exactCli: true, alreadyStored: true };
+    throw new Error(`ruflo memory store refused the observation: ${String(stored.stderr || stored.stdout || stored.error?.message || '').trim().slice(0, 160)}`);
+  }
+  if (!exact) throw new Error('canonical exact CLI readback failed');
   return { db, key, digest: createHash('sha256').update(value).digest('hex'), exactCli: true };
 }
 

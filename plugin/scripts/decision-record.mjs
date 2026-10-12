@@ -300,7 +300,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ou
     out.write(`decision-record: supersedes ${key} — ${String(row.what).slice(0, 120)}\n`);
   }
   const r = storeDecision({ ruflo, db: target.db, namespace, key: built.key, value: built.value, ...(store ? { store } : {}), ...(readBack ? { readBack } : {}) });
-  out.write(`decision-record: ${r.state} ${r.key} (namespace ${namespace})${r.reason ? ` — ${r.reason}` : ''}${r.state === 'refused' ? ' — NOT recorded (logged to hook-failures); re-run --record once ruflo accepts writes' : ''}\n`);
+  out.write(`decision-record: ${r.state} ${r.key} (namespace ${namespace})${r.reason ? ` — ${r.reason}` : ''}${r.state === 'refused' ? ` — NOT recorded (logged to hook-failures). A store that committed but did not read back may still hold it: run \`ruflo memory retrieve -k ${r.key} -n ${namespace} --path ${target.db}\` before re-running --record` : ''}\n`);
   if (!['committed', 'already-stored'].includes(r.state)) return 3;
   let ok = true;
   for (const oldKey of built.record.supersedes) {

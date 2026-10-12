@@ -128,7 +128,15 @@ export function message(rel, v) {
 /** Codex's apply_patch: per file, the content after its hunks (Add = the + lines; Update = hunks applied). */
 function patchChanges(patch, read) {
   const out = []; let cur = null; let hunk = null;
-  const flush = () => { if (cur && hunk && cur.after !== null) { const from = hunk.old.join('\n'); const to = hunk.new.join('\n'); cur.after = from ? cur.after.replace(from, () => to) : cur.after; } hunk = null; };
+  // A hunk with no context, or context that is not in the file, fails CLOSED (review N3): its lines are
+  // appended to the after-text, so a pure-addition outbox module is judged, never skipped.
+  const flush = () => {
+    if (cur && hunk && cur.after !== null && hunk.new.length) {
+      const from = hunk.old.join('\n'); const to = hunk.new.join('\n');
+      cur.after = from && cur.after.includes(from) ? cur.after.replace(from, () => to) : `${cur.after}\n${to}`;
+    }
+    hunk = null;
+  };
   for (const line of String(patch || '').split(/\r?\n/)) {
     const m = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(line);
     if (m || /^\*\*\* (?:End Patch|Move to:)/.test(line)) { flush(); if (m) { cur = m[1] === 'Delete' ? null : { file: m[2].trim(), add: m[1] === 'Add', lines: [] }; if (cur) { cur.before = cur.add ? null : read(cur.file); cur.after = cur.add ? '' : cur.before; out.push(cur); } } continue; }
@@ -152,6 +160,9 @@ export function proposedChanges(payload, read) {
   const tool = String(payload?.tool_name || '');
   const input = payload?.tool_input ?? {};
   if (tool === 'apply_patch') return patchChanges(typeof input === 'string' ? input : input.command || input.input || input.patch, read);
+  // The REAL Codex path (review N2): codex-hook-adapter.mjs rewrites apply_patch into an Edit whose
+  // new_string is the whole patch and which has no old_string. Judge that patch, not the Edit.
+  if (tool === 'Edit' && !input.old_string && /^\s*\*\*\* Begin Patch/.test(String(input.new_string ?? ''))) return patchChanges(input.new_string, read);
   if (tool === 'NotebookEdit') return typeof input.notebook_path === 'string' ? [{ file: input.notebook_path, before: read(input.notebook_path), after: String(input.new_source ?? '') }] : [];
   const one = proposedContent(payload, read);
   return one ? [{ file: input.file_path, ...one }] : [];

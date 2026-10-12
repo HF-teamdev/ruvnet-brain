@@ -398,7 +398,7 @@ next") in the project's work ledger until a later evidenced completion claim clo
 only; `npm run completion-claim:replay` measures both on real transcripts). It also asks ONCE when a
 Claude turn created an ADR in an adopted project and no successful `decision-record.mjs --record` ran
 after it (ADR-105 §8; `RUVNET_DECISION_RECORD_CHECK=off` disables it; Codex is not enforced). A
-decision record is committed only by an exact readback; a refusal stays pending for `--flush`; `--supersedes` must name an existing decision record of the project and also writes a
+decision record is committed only by an exact readback; a refused or unverified write returns `refused`, writes one hook-failures row and prints `NOT recorded` (nothing is kept on disk for a replay); `--supersedes` must name an existing decision record of the project and also writes a
 `supersession-<key>` tombstone that recall honors even when the superseding record is not retrieved.
 It also asks ONCE (`no-deferral`, Claude only) when the final answer ends by asking permission for,
 or postponing, work a standing instruction or open promise already authorized and names no genuine

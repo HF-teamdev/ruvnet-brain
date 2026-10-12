@@ -1,6 +1,6 @@
 // A stub `ruflo` for latency and loud-failure tests: logs every argv (JSONL), sleeps RUFLO_STUB_DELAY_MS on
 // `memory store|list|distill` (or every call with RUFLO_STUB_DELAY_ALL=1), refuses stores with RUFLO_STUB_REFUSE=1,
-// and keeps stored values in one JSON file so `memory retrieve --value-only` reads back the exact bytes.
+// honours --no-upsert like rUv's store (an existing key is refused), and keeps stored values in one JSON file so `memory retrieve --value-only` reads back the exact bytes.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -18,7 +18,9 @@ const slow = ${delayAll ? 'true' : "['store', 'list', 'distill'].includes(a[1])"
 if (slow && ${delayMs}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${delayMs});
 let v = {}; try { v = JSON.parse(fs.readFileSync(${JSON.stringify(values)}, 'utf8')); } catch {}
 const id = (flag('--namespace', '-n') || '') + '/' + flag('--key', '-k');
-if (a[1] === 'store') { if (${refuse}) { console.error('[ERROR] refusing an unsafe write'); process.exit(1); } v[id] = flag('--value'); fs.writeFileSync(${JSON.stringify(values)}, JSON.stringify(v)); console.log('[OK] stored'); process.exit(0); }
+if (a[1] === 'store') { if (${refuse}) { console.error('[ERROR] refusing an unsafe write'); process.exit(1); }
+  if (a.includes('--no-upsert') && id in v) { console.error('[ERROR] immutable append rejected: logical key already exists'); process.exit(1); }
+  v[id] = flag('--value'); fs.writeFileSync(${JSON.stringify(values)}, JSON.stringify(v)); console.log('[OK] stored'); process.exit(0); }
 if (a[1] === 'retrieve') { if (!(id in v)) process.exit(1); process.stdout.write(v[id]); process.exit(0); }
 if (a[1] === 'list') { process.stdout.write('[]'); process.exit(0); }
 process.exit(0);
@@ -36,3 +38,5 @@ export async function until(predicate, ms = 20_000) {
   while (Date.now() < end) { if (predicate()) return true; await new Promise((r) => setTimeout(r, 200)); }
   return predicate();
 }
+
+export const storedRows = (dir) => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'values.json'), 'utf8')); } catch { return {}; } };

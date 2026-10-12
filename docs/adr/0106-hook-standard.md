@@ -68,7 +68,8 @@ shifted entry stops on every Codex machine until it is trusted again.
      parsed, so this check is not enforced there and nothing is claimed.
    - `decision-record.mjs` implements the §8 record: validate, redact, then bound, and key
      `decision-<slug>-<stamp>`. It writes through the §3 door, and only an exact readback commits a
-     record. A refusal stays pending on disk for `--flush`. The CLI records `host` as `cli` when
+     record. A refused or unverified write returns `refused`, writes one hook-failures row and prints
+     `NOT recorded`; nothing is kept on disk for a replay. The CLI records `host` as `cli` when
      neither host is identified. Supersession is computed from newer ratified records, and recall
      drops a superseded record and says how many it withheld, on both the prompt and the
      consequential block.

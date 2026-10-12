@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 // New installs colocate the helper. Older standalone fixtures/installations can omit it;
 // they retain their prior behavior until the installer upgrades both files.
@@ -227,6 +228,14 @@ const result = spawnSync(process.execPath, [adapter, ...process.argv.slice(2)], 
   timeout: budgetMs,
   killSignal: 'SIGKILL',
 });
+// Review N5: Codex has no shim watchdog in front of the body, so a kill here was silent. One ledger row,
+// read by the next SessionStart (same writer and file as the shim's own rows). Never throws.
+if (result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL') {
+  try {
+    const { recordHookFailure } = await import(pathToFileURL(path.join(root, 'scripts', 'hook-failures.mjs')).href);
+    recordHookFailure({ hook: hookId, event: process.argv[3] || '', error: 'killed-by-codex-wrapper', limitMs: budgetMs }, { brainHome });
+  } catch { /* an unrecordable failure must not become a second one */ }
+}
 if (hookId === 'session-start' && result.status !== 0) {
   process.stderr.write('[RuvNet Brain — PROJECT CONTINUITY UNKNOWN] SessionStart did not complete inside its host deadline; no restoration success is claimed.\n');
 }
