@@ -59,13 +59,11 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     },
     {
       "id": "canonical-learning-capture",
-      "reason": "Fixed metadata capture, canonical scope, consent, acknowledgement and bounded owned recovery retain privacy and originals",
+      "reason": "Fixed metadata capture, canonical scope, consent, exact readback and loud refusal retain privacy; learning is handed straight to ruflo memory store with no local queue",
       "files": [
-        "tests/unit/learn-flush-partial-failure.test.mjs",
         "tests/unit/learn-capture-project-root.test.mjs",
         "tests/unit/learn-capture-redaction.test.mjs",
-        "tests/unit/learner-scope-agreement.test.mjs",
-        "tests/unit/health-repair-flush-learning.test.mjs"
+        "tests/unit/learner-scope-agreement.test.mjs"
       ]
     },
     {
@@ -304,8 +302,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     },
     {
       "id": "canonical-learning-recovery",
-      "reason": "Cross-session recovery and Console evidence agree on the same canonical scope without ratifying tool metadata as instructions",
-      "files": [ "tests/integration/learning-console-scope.test.mjs"]
+      "reason": "Retired 2026-10-12: the learning queue, flush worker and Console queue recovery were deleted (owner ruling: hooks only call rUv's memory tools); learning writes are covered by canonical-learning-capture",
+      "files": []
     },
     {
       "id": "canonical-progression-store",
