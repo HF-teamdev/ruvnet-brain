@@ -162,6 +162,10 @@ const POLICY = (id, file, interpreter = 'bash') => ({ id, file, interpreter });
 const REFUSAL_POLICIES = [
   POLICY('protect-state', 'protect-brain-state.sh'),
   POLICY('hijack-ruvnet', 'hijack-ruvnet.sh'),
+  // substitution-wall (2026-10-12, owner ruling): our code may only CALL rUv's memory tools, never rebuild
+  // his storage (outbox/queue/journal/lock/replay worker). A boundary about where data goes, so it sits
+  // with hijack-ruvnet. Refuses only on the transport FACT, only inside this repo; else it warns.
+  POLICY('substitution-wall', 'substitution-wall.mjs', 'node'),
   POLICY('ground-before-write', 'ground-before-write.sh'), POLICY('decision-recall', 'decision-recall-gate.mjs', 'node'), // ADR-106
   // adr-currency-gate fires on the EDIT, where the pre-push gate fires on the push. Same rule, same
   // machinery (it calls doc-currency.mjs, never a second copy of the logic) — moved to the earliest
@@ -181,7 +185,7 @@ const SPEECH = { id: 'unprompted-speech', file: 'unprompted-runtime.mjs', interp
 
 /** Which policies apply to which PreToolUse sub-event, mirroring the matchers they replaced. */
 const REGISTRY = {
-  'write': ['protect-state', 'hijack-ruvnet', 'ground-before-write', 'decision-recall', 'adr-currency', 'duplicate-code'],
+  'write': ['protect-state', 'hijack-ruvnet', 'substitution-wall', 'ground-before-write', 'decision-recall', 'adr-currency', 'duplicate-code'],
 };
 
 export function policiesFor(event, registry = REGISTRY, all = REFUSAL_POLICIES) {
