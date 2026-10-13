@@ -295,7 +295,16 @@ test('native binaries fall back to the standard install paths when the retired l
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rnb-native-binaries-'));
   const config = path.join(home, '.cache/ruvnet-brain/model-routing/terminal-launcher-config.json');
   try {
-    assert.deepEqual(nativeWorkflowBinaries(home), { claude: path.join(home, '.npm-global/bin/claude'), codex: path.join(home, '.local/bin/codex') });
+    const standard = { claude: path.join(home, '.npm-global/bin/claude'), codex: path.join(home, '.local/bin/codex') };
+    // nothing installed and nothing on PATH: throw ENOENT, never hand back a path that cannot run
+    assert.throws(() => nativeWorkflowBinaries(home, { PATH: '' }), { code: 'ENOENT' });
+    // not at the standard path but on PATH: the PATH binary is used (hosted Linux runners)
+    const onPath = path.join(home, 'pathbin'); fs.mkdirSync(onPath);
+    for (const name of ['claude', 'codex']) fs.writeFileSync(path.join(onPath, name), '#!/bin/sh\n', { mode: 0o755 });
+    assert.deepEqual(nativeWorkflowBinaries(home, { PATH: onPath }), { claude: path.join(onPath, 'claude'), codex: path.join(onPath, 'codex') });
+    // standard install paths win when present
+    for (const file of Object.values(standard)) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '#!/bin/sh\n', { mode: 0o755 }); }
+    assert.deepEqual(nativeWorkflowBinaries(home, { PATH: onPath }), standard);
     assert.equal(fs.existsSync(config), false);
     assert.equal(fs.existsSync(path.dirname(config)), false);
     fs.mkdirSync(path.dirname(config), { recursive: true });

@@ -128,7 +128,11 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/kb-copy-proof-legacy-sidecars.test.mjs",
         "tests/unit/kb-copy-proof-unknown-content.test.mjs",
         "tests/unit/user-model-hook-install.test.mjs"
-      ]
+      ],
+      "platformFiles": {
+        "linux": ["tests/unit/codex-wrapper-upgrade-ownership-links.test.mjs"],
+        "macos": ["tests/unit/codex-wrapper-upgrade-ownership-links.test.mjs"]
+      }
     },
     {
       "id": "approved-native-routing",
@@ -184,7 +188,11 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/user-model-prompt-hook.test.mjs",
         "tests/unit/model-routing-policy-promotion.test.mjs",
         "tests/unit/codex-hook-trust.test.mjs"
-      ]
+      ],
+      "platformFiles": {
+        "linux": ["tests/unit/model-weekly-cycle-native-stub.test.mjs"],
+        "macos": ["tests/unit/model-weekly-cycle-native-stub.test.mjs"]
+      }
     },
     {
       "id": "native-scheduler",

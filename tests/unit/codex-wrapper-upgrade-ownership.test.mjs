@@ -98,27 +98,6 @@ describe('Codex hook bridge ownership across a release upgrade', () => {
     expectPreserved(f, f.install(), PRIOR);
   });
 
-  it('a symlinked bridge stays a conflict, even when it points at a generation wrapper', (ctx) => {
-    const f = fixture();
-    try { fs.symlinkSync(f.generationWrapper('4.6.4'), f.wrapper); } catch { return ctx.skip(); }
-    const result = f.install();
-    expect(result.action).toBe('hook-wrapper-ownership-conflict');
-    expect(fs.lstatSync(f.wrapper).isSymbolicLink()).toBe(true);
-    expect(fs.readFileSync(f.generationWrapper('4.6.4'))).toEqual(PRIOR);
-    expect(fs.existsSync(path.join(f.codexDir, 'config.toml'))).toBe(false);
-  });
-
-  it('a generation directory that is a symlink is not followed as proof', (ctx) => {
-    const f = fixture({ generations: {}, active: null });
-    const elsewhere = path.join(f.home, 'elsewhere');
-    fs.mkdirSync(path.join(elsewhere, 'scripts'), { recursive: true });
-    fs.writeFileSync(path.join(elsewhere, 'scripts', 'codex-hook-wrapper.mjs'), PRIOR);
-    fs.mkdirSync(path.join(f.brain, 'versions'), { recursive: true });
-    try { fs.symlinkSync(elsewhere, path.join(f.brain, 'versions', '4.6.4'), 'junction'); } catch { return ctx.skip(); }
-    fs.writeFileSync(f.wrapper, PRIOR);
-    expectPreserved(f, f.install(), PRIOR);
-  });
-
   it('a hard-linked bridge stays a conflict, even when its bytes match a generation', () => {
     const f = fixture();
     fs.linkSync(f.generationWrapper('4.6.4'), f.wrapper);
@@ -126,13 +105,14 @@ describe('Codex hook bridge ownership across a release upgrade', () => {
     expect(fs.statSync(f.wrapper).ino).toBe(fs.statSync(f.generationWrapper('4.6.4')).ino);
   });
 
-  it.skipIf(typeof process.getuid !== 'function')('a bridge owned by another uid stays a conflict', () => {
+  it('a bridge owned by another uid stays a conflict', () => {
     const f = fixture();
     fs.writeFileSync(f.wrapper, PRIOR);
-    const uid = process.getuid();
-    vi.spyOn(process, 'getuid').mockReturnValue(uid + 1);
-    const result = f.install();
-    vi.restoreAllMocks();
+    const original = process.getuid; // undefined on Windows: install.mjs only checks ownership when it exists
+    const owner = fs.statSync(f.wrapper).uid;
+    process.getuid = () => owner + 1;
+    let result;
+    try { result = f.install(); } finally { if (original === undefined) delete process.getuid; else process.getuid = original; }
     expectPreserved(f, result, PRIOR);
   });
 
