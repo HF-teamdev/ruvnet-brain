@@ -78,7 +78,7 @@ if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('--key') + 1]);
   // Measured on the owner's store: namespace ruvnet-brain holds 2,828 rows and `ruflo memory list` answers
   // newest-first by createdAt; restore() then took 3.1-4.0 s against a 3.5 s budget. Order is verified from
   // createdAt on a 100-row page, never assumed, and a larger page is read only when that page cannot prove it.
-  const restoreWith = async (dirName, rowsByNamespace, { delayMs = 0, budgetMs = 5000 } = {}) => {
+  const restoreWith = async (dirName, rowsByNamespace, { delayMs = 0, budgetMs = 5000, withCheckpoint = false } = {}) => {
     const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rmh-order-')), dirName);
     fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.swarm', 'memory.db'), '');
@@ -88,19 +88,27 @@ if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('--key') + 1]);
     // Honors --limit exactly like ruflo: the first <limit> rows in the order given (list order is the fixture's).
     fs.writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('fs'); const a = process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n');
+fs.appendFileSync(${JSON.stringify(log)} + '.spawn', JSON.stringify({ op: a[1], cwd: fs.realpathSync(process.cwd()), autostart: process.env.RUFLO_DAEMON_AUTOSTART ?? null }) + '\\n');
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${delayMs});
 const rows = JSON.parse(fs.readFileSync(${JSON.stringify(rowsFile)}, 'utf8'));
 if (a[1] === 'list') console.log(JSON.stringify((rows[a[a.indexOf('-n') + 1]] || []).slice(0, Number(a[a.indexOf('--limit') + 1]))));
 if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('-n') + 1] + '/' + a[a.indexOf('--key') + 1]);
 `, { mode: 0o755 });
-    const { restore } = await import('../../plugin/scripts/ruflo-memory-hooks.mjs');
+    const { restore, checkpoint } = await import('../../plugin/scripts/ruflo-memory-hooks.mjs');
     const t = performance.now();
-    const r = await restore({ cwd: dir, bin, deadlineAt: Date.now() + budgetMs });
+    const scratchRoot = path.join(path.dirname(dir), 'ruflo-cwd');
+    const env = { ...process.env, RUVNET_RUFLO_CWD_ROOT: scratchRoot };
+    const r = await restore({ cwd: dir, env, bin, deadlineAt: Date.now() + budgetMs });
     const ms = performance.now() - t;
+    if (withCheckpoint) await checkpoint({ projectDir: dir, event: 'PreCompact', payload: { session_id: 's' }, env: { ...env, RUVNET_TURN_CAPTURE: 'on' }, bin });
     const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const spawns = fs.readFileSync(log + '.spawn', 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const projectDir = fs.realpathSync(dir);
+    const scratch = fs.realpathSync(scratchRoot);
+    const leftover = fs.readdirSync(scratch).flatMap((k) => fs.readdirSync(path.join(scratch, k)));
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });
     const lists = calls.filter((c) => c[1] === 'list').map((c) => `${c[c.indexOf('-n') + 1]}:${c[c.indexOf('--limit') + 1]}`);
-    return { r, ms, lists, retrieved: calls.filter((c) => c[1] === 'retrieve').map((c) => c[c.indexOf('--key') + 1]) };
+    return { r, ms, lists, spawns, projectDir, scratch, leftover, retrieved: calls.filter((c) => c[1] === 'retrieve').map((c) => c[c.indexOf('--key') + 1]) };
   };
   const NEWEST = 'project-state-current-1791912547000';
   const OLD = 'project-state-current-1786376123058';
@@ -146,6 +154,18 @@ if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('-n') + 1] + '/' 
     expect(added, `600 ms ruflo added ${added.toFixed(0)} ms`).toBeGreaterThanOrEqual(1100);
     expect(added, `600 ms ruflo added ${added.toFixed(0)} ms`).toBeLessThan(1600);
   }, 20_000);
+
+  it('every restore and checkpoint ruflo call runs outside the project with daemon autostart off', async () => {
+    const { spawns, projectDir, scratch, leftover } = await restoreWith('proj', { proj: liveLike() }, { withCheckpoint: true });
+    expect(leftover, 'each call removes its own scratch run dir').toEqual([]);
+    expect(new Set(spawns.map((x) => x.op))).toEqual(new Set(['list', 'retrieve', 'store']));
+    for (const x of spawns) {
+      expect(x.cwd, `${x.op} ran in the project dir`).not.toBe(projectDir);
+      expect(x.cwd.startsWith(projectDir + path.sep), `${x.op} ran inside the project`).toBe(false);
+      expect(x.cwd.startsWith(scratch + path.sep), `${x.op} ran in ${x.cwd}, not a private scratch run dir`).toBe(true);
+      expect(x.autostart, `${x.op} could start the daemon`).toBe('0');
+    }
+  });
 
   it('picks by the epoch-ms in the key across namespace spellings', async () => {
     const { r, retrieved } = await restoreWith('AppealArmor', {

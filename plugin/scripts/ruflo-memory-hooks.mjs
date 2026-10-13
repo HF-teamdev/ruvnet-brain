@@ -17,7 +17,8 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
-import { resolveRuflo } from './ruflo-bin.mjs';
+import os from 'node:os';
+import { resolveRuflo, rufloRunDir, rufloScratchRoot } from './ruflo-bin.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
 import { checkpointNamespaces, newestOfFamily } from './checkpoint-keys.mjs';
 
@@ -38,14 +39,27 @@ export function projectStore(projectDir, { deadlineAt = Date.now() + 3000 } = {}
   return { root, db, adopted: fs.existsSync(db), namespace: path.basename(root) };
 }
 
+/**
+ * The spawn options every ruflo call here uses. `--path` pins the store, so the working directory only receives
+ * what ruflo writes beside itself (`ruvector.db`, `.swarm/hnsw.*`, verified on 3.56.9). Run it in a fresh private
+ * scratch dir, never the project (where ruflo loaded the project's own .swarm index: median 1729 ms vs 1067 ms
+ * measured for the same list), and never let a hook call start the background daemon.
+ */
+export function rufloSpawnOptions(db, env = process.env) {
+  let cwd;
+  try { cwd = rufloRunDir(db, { root: rufloScratchRoot(env) }); } catch { cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ruvnet-ruflo-')); }
+  return { cwd, env: { ...env, RUFLO_DAEMON_AUTOSTART: '0' }, cleanup: () => { try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* swept later as a stale run- dir */ } } };
+}
+
 /** One `ruflo memory <args>` call, bounded by the caller's deadline. Resolves, never rejects. */
 export function rufloMemory(args, { db, env = process.env, bin = resolveRuflo({ env }), deadlineAt = Date.now() + 3000 } = {}) {
   const timeout = Math.max(1, Math.floor(deadlineAt - Date.now()));
   return new Promise((resolve) => {
     if (!bin) return resolve({ ok: false, stdout: '', error: 'global Ruflo unavailable' });
-    execFile(bin, ['memory', ...args, '--path', db], { env, timeout, killSignal: 'SIGKILL', encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
+    const spawnAt = rufloSpawnOptions(db, env);
+    execFile(bin, ['memory', ...args, '--path', db], { cwd: spawnAt.cwd, env: spawnAt.env, timeout, killSignal: 'SIGKILL', encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
       // The ledger gets a fixed reason, never execFile's message (it embeds the whole argv: value, db path).
-      (error, stdout) => resolve({ ok: !error, stdout: String(stdout || ''), error: error ? (error.killed ? 'timed out' : `ruflo memory ${args[0]} exited ${error.code ?? 'abnormally'}`) : null }));
+      (error, stdout) => { spawnAt.cleanup(); resolve({ ok: !error, stdout: String(stdout || ''), error: error ? (error.killed ? 'timed out' : `ruflo memory ${args[0]} exited ${error.code ?? 'abnormally'}`) : null }); });
   });
 }
 
@@ -177,11 +191,14 @@ export async function restore({ cwd, env = process.env, bin, deadlineAt = Date.n
  */
 export function storeExact({ db, namespace, key, value, env = process.env, bin = resolveRuflo({ env }), timeoutMs = 6000, run = spawnSync } = {}) {
   if (!bin) return { stored: false, verified: false, error: 'global Ruflo unavailable' };
-  const options = { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024, env: { ...env, RUFLO_DAEMON_AUTOSTART: '0' } };
-  const stored = run(bin, ['memory', 'store', '--key', key, '--value', value, '--namespace', namespace, '--path', db], options);
-  if (stored.error || stored.status !== 0) {
-    return { stored: false, verified: false, error: String(stored.stderr || stored.stdout || stored.error?.message || 'store failed').trim().slice(0, 200) };
-  }
-  const read = run(bin, ['memory', 'retrieve', '--key', key, '--namespace', namespace, '--value-only', '--path', db], options);
-  return { stored: true, verified: !read.error && read.status === 0 && String(read.stdout || '').trim() === value, key };
+  const spawnAt = rufloSpawnOptions(db, env);
+  const options = { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024, cwd: spawnAt.cwd, env: spawnAt.env };
+  try {
+    const stored = run(bin, ['memory', 'store', '--key', key, '--value', value, '--namespace', namespace, '--path', db], options);
+    if (stored.error || stored.status !== 0) {
+      return { stored: false, verified: false, error: String(stored.stderr || stored.stdout || stored.error?.message || 'store failed').trim().slice(0, 200) };
+    }
+    const read = run(bin, ['memory', 'retrieve', '--key', key, '--namespace', namespace, '--value-only', '--path', db], options);
+    return { stored: true, verified: !read.error && read.status === 0 && String(read.stdout || '').trim() === value, key };
+  } finally { spawnAt.cleanup(); }
 }
