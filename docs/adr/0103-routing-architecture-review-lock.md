@@ -3,9 +3,9 @@ id: ADR-103
 title: Routing architecture qualification requires a current finite source review
 status: Accepted
 date: 2026-10-05
-updated: 2026-10-12
-version: 0.1.31
-reviewed_digest: 3f8e7f179c75
+updated: 2026-10-13
+version: 0.1.32
+reviewed_digest: 68f3db5eace3
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -351,6 +351,7 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-07 | Reviewed `7ba26e9903fa` against source `439d94d1` and recorded current bytes. | Independent review covers the test-local fixed Node syntax checker in `tests/unit/model-managed-workflow-service.test.mjs`: original hosted source-only refusal was reproduced, all fresh-recall and receipt assertions retained, and the full 27-case integrated file passed. No production runtime code changed. Prior native proof stays bound to its original source and artifact; exact new qualification and hosted gates remain required. Failed preflight 37606672323 remains failed and main was not promoted. |
 | 2026-10-12 | Reviewed `a1808e649ce1` against source `8ac35320` and the recorded final working bytes. | Three fresh-context single-seat Anthropic reviews (claude-opus-5-5; the OpenAI/Codex seat was unavailable because the managed codex wrapper refused `exec`, so this is DEGRADED under ADR-0075 section 5 and is not a dual-seat review) covered the persistence removal against shipped commit `845d55bd`: `plugin/scripts/ruflo-memory-hooks.mjs`, `plugin/scripts/turn-outcome-capture.mjs`, `plugin/scripts/learn-capture.mjs`, `plugin/scripts/session-snapshot-hook.mjs`, `plugin/scripts/agentdb-recall.mjs` and `plugin/scripts/substitution-wall.mjs`. Each returned ACCEPT-WITH-CONDITIONS with no blocker; conditions 1-7, then 1-5, then 1-2 were fixed with tests (2,079 tests passed on the committed tree). The two third-round fixes (linear Add-File judging and CRLF-tolerant hunk matching, in `plugin/scripts/substitution-wall.mjs`) were not independently re-reviewed. Not verified: Windows, a live Codex session, concurrency under load, and the installed plugin against a live-size store. This is a finite source inventory, not a claim that every governed file was semantically reread. |
 | 2026-10-12 | Reviewed `3f8e7f179c75` against source `061a70c1` and the recorded final working bytes. | Mechanical follow-up to the review row above, found by the hosted preflight on the first push of 4.7.0: `scripts/release-qualification-contract.mjs` still named three deleted tests (`tests/unit/learn-flush-partial-failure.test.mjs`, `tests/unit/health-repair-flush-learning.test.mjs`, `tests/integration/learning-console-scope.test.mjs`), so release-acceptance failed on all three platforms with ENOENT. The entries were removed and the retired learning-recovery entry now says so; no behaviour changed. This edit was not independently re-reviewed; the platform-wide qualification command passed locally (2,079 of 2,079) after it. |
+| 2026-10-13 | Reviewed `68f3db5eace3` against source `1c5950f8` and the recorded final working bytes. | Mechanical follow-up found by hosted run 38267827528: release qualification refuses todo and skipped cases, and the integration suite carried nine `it.todo` entries in `tests/unit/agentdb-recall.test.mjs` (the register of recall capabilities lost vs 4.6.4). The nine were deleted from that governed test file with no assertion changed; all thirteen lost capabilities are now a named list in the ADR-106 4.7.0 amendment, and the persistence-removal section here points to it. The ungated `tests/unit/learn-capture-*.test.mjs` POSIX shell stub became a Node stub with an npm `ruflo.cmd` layout on Windows; no production code changed. DEGRADED under ADR-0075 section 5: author edit only, not independently re-reviewed, single seat. Verified locally on macOS only; hosted Linux and Windows results were not available when this row was written. |
 
 ## Current completion safeguard scope
 
@@ -416,6 +417,7 @@ transition hook, the continuity journal and brief, the learning queue/flush/work
 journal were deleted, together with the tests that exercised only them. The governed set above no longer
 names them; `ruflo-memory-hooks.mjs` (checkpoint and restore through `ruflo memory`) and
 `substitution-wall.mjs` (the write-time refusal of a rebuilt transport) now join it. Capabilities that
-were reduced rather than moved are recorded as todos in `tests/unit/agentdb-recall*.test.mjs`. This
+were reduced rather than moved are recorded as a named register in the ADR-106 4.7.0 amendment (they were
+todos in `tests/unit/agentdb-recall*.test.mjs`; the gated ones were removed because qualification refuses todo cases). This
 section is a change record, not a review: the source-bound review of the final governed bytes below is the
 only statement that they were examined, and it states its own limits.

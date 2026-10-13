@@ -17,24 +17,38 @@ import { safeAction } from '../../plugin/scripts/learn-capture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const HOOK = path.join(ROOT, 'plugin', 'scripts', 'learn-capture.mjs');
-const posix = process.platform !== 'win32'; // the stub is a POSIX shell script
 const SECRETS = ['wJalr', 'Hunter2Pass', 'db.internal', 'ghp_', 'ConfidentialClientProject'];
 
 let home; let stub; let argvLog; let storedFile;
 
-/** A ruflo stand-in: logs argv, remembers the --value of `memory store`, echoes it for `memory retrieve`. */
+/**
+ * A ruflo stand-in written in Node, so it runs on every OS: logs argv; `memory store` records the
+ * --value, `memory retrieve` echoes it back. On Windows it is laid out as npm's global `ruflo.cmd`
+ * shim beside `node_modules/ruflo`, so the hook reaches it through the same rufloInvocation() path a
+ * real Windows install takes (the .cmd itself fails if it is ever run); elsewhere RUFLO_BIN is the
+ * executable script.
+ */
 function makeStub(dir) {
-  const bin = path.join(dir, 'ruflo-stub.sh');
-  fs.writeFileSync(bin, `#!/bin/sh
-printf '%s\\n' "$*" >> "${dir}/argv.log"
-if [ "$1" = memory ] && [ "$2" = store ]; then
-  while [ $# -gt 0 ]; do [ "$1" = --value ] && printf '%s' "$2" > "${dir}/stored.json"; shift; done
-  exit 0
-fi
-if [ "$1" = memory ] && [ "$2" = retrieve ]; then cat "${dir}/stored.json"; exit 0; fi
-exit 0
+  const prefix = path.join(dir, 'npm-global');
+  const pkg = path.join(prefix, 'node_modules', 'ruflo');
+  fs.mkdirSync(pkg, { recursive: true });
+  const entry = path.join(pkg, 'cli.mjs');
+  fs.writeFileSync(entry, `#!/usr/bin/env node
+import fs from 'node:fs';
+const args = process.argv.slice(2);
+const stored = ${JSON.stringify(path.join(dir, 'stored.json'))};
+fs.appendFileSync(${JSON.stringify(path.join(dir, 'argv.log'))}, args.join(' ') + '\\n');
+if (args[0] === 'memory' && args[1] === 'store') {
+  for (let i = 0; i < args.length - 1; i += 1) if (args[i] === '--value') fs.writeFileSync(stored, args[i + 1]);
+} else if (args[0] === 'memory' && args[1] === 'retrieve' && fs.existsSync(stored)) {
+  process.stdout.write(fs.readFileSync(stored, 'utf8'));
+}
 `, { mode: 0o755 });
-  return bin;
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ruflo', bin: { ruflo: 'cli.mjs' } }));
+  if (process.platform !== 'win32') return entry;
+  const shim = path.join(prefix, 'ruflo.cmd');
+  fs.writeFileSync(shim, '@echo off\r\nexit /b 99\r\n');
+  return shim;
 }
 
 /** Run the real hook with a fake HOME so nothing touches a real store; return what ruflo was handed. */
@@ -55,7 +69,7 @@ beforeAll(() => {
   fs.mkdirSync(dir, { recursive: true }); new (loadNodeSqlite().DatabaseSync)(path.join(dir, 'memory.db')).close();
   fs.mkdirSync(path.join(home, '.config', 'ruvnet-brain'), { recursive: true });
   fs.writeFileSync(path.join(home, '.config', 'ruvnet-brain', 'settings.json'), '{"learningScope":"user"}');
-  if (posix) { stub = makeStub(home); argvLog = path.join(home, 'argv.log'); storedFile = path.join(home, 'stored.json'); }
+  stub = makeStub(home); argvLog = path.join(home, 'argv.log'); storedFile = path.join(home, 'stored.json');
 });
 afterAll(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ } });
 
@@ -82,7 +96,7 @@ describe('safeAction: intent, never data (pure)', () => {
   });
 });
 
-describe.skipIf(!posix)('the real hook hands rUv\'s `ruflo memory store` an observation without data', () => {
+describe('the real hook hands rUv\'s `ruflo memory store` an observation without data', () => {
   it('stores intent only: no secret appears in the stored value or in any ruflo argv', () => {
     const observed = capture('export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY && psql postgres://admin:Hunter2Pass@db.internal/prod');
     expect(observed.action).toBe('export');

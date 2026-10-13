@@ -112,8 +112,6 @@ describe('canonical prompt-time AgentDB recall', () => {
       expect(() => agentdbStores(wt)).toThrow(/escape/);
     } finally { w.cleanup(); }
   });
-  it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): searches curated lessons and patterns, excluding transcript telemetry despite its high score");
-  it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): runs real child processes for both namespaces and full-value recall in isolated cwd with daemon off");
   it('kills hung search processes at the shared deadline and records unavailable evidence honestly', async () => {
     const w = world();
     try {
@@ -122,8 +120,6 @@ describe('canonical prompt-time AgentDB recall', () => {
       expect(Date.now() - started).toBeLessThan(1000); expect(r.block).toContain('timed out'); expect(r.picks).toEqual([]);
     } finally { w.cleanup(); }
   });
-  it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): does not inject previews when exact-key retrieval times out");
-  it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): recalls relevant automatic OUTCOME knowledge stored only in turns, not session metadata");
   it('preserves worked, failed and no-retry facts from an automatic outcome and deduplicates repeated clauses', async () => {
     const w = world();
     try {
@@ -188,7 +184,6 @@ describe('canonical prompt-time AgentDB recall', () => {
       } finally { process.env.PATH = original; }
     } finally { w.cleanup(); }
   });
-  it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): runs the actual registered Claude command and Codex launcher/adapter with source candidate bytes");
   it.skipIf(process.platform === 'win32')('registered commands recall from nested cwd and a linked worktree without local memory', () => {
     const w = world();
     try {
@@ -232,10 +227,8 @@ it('learning recall refuses extra fields and delivers only unratified fixed voca
  expect(learningObservationExcerpt(JSON.stringify(row))).toBe('Unratified host-reported success: Bash npm test. Verify current results.');
  for(const altered of [{...row,secret:'private'},{...row,action:'npm test --token private'},{...row,authoritative:true},{...row,provenance:'user_claim'},{...row,tool:'unknown'}])expect(learningObservationExcerpt(JSON.stringify(altered))).toBeNull();
 });
-it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): normal prompt recall reads exact project observations from the authorized store");
 
 describe('explicit recall availability and phase receipt', () => {
-  it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): distinguishes disabled/not-adopted/valid-empty from malformed-search unavailability");
   it('binds exact retrieval metadata to canonical project, request and fresh phase without persisting raw prompt', async () => {
     const w = world();
     try {
@@ -336,8 +329,6 @@ it('expiry during structural enumeration refuses before launching exact retrieva
   } finally { w.cleanup(); }
 });
 
-it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): successful CLI parent cannot leave an owned pipe-free grandchild running on POSIX");
-
 it.each(['off', 'invalid', 'exclude'])('honors %s recall privacy before delivering historical content', async mode => {
   const w = world();
   try {
@@ -354,5 +345,3 @@ it.each(['off', 'invalid', 'exclude'])('honors %s recall privacy before deliveri
     if (mode !== 'exclude') expect(fs.existsSync(w.env.RECALL_LOG)).toBe(false);
   } finally { w.cleanup(); }
 });
-
-it.todo("LOST vs 4.6.4 (ranked/typed recall reduced to exact reads + one ruflo search, 2026-10-12): recalls short typed continuity decisions while rejecting commit and gate telemetry");

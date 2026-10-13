@@ -3,8 +3,8 @@ id: ADR-106
 title: The hook standard — one registration per role, refuse only on a fact, AgentDB before and after decisions
 status: Proposed
 date: 2026-10-11
-updated: 2026-10-12 10:05:00 EDT
-version: 0.6.0
+updated: 2026-10-13 14:55:00 EDT
+version: 0.6.1
 authors: [Stuart Kerr, Claude Opus 5.5]
 tags: [hooks, agentdb, decisions, continuity, codex, claude-code]
 relates: [ADR-0012, ADR-040, ADR-043, ADR-054, ADR-067, ADR-074, ADR-075, ADR-100, ADR-103, ADR-105]
@@ -250,6 +250,7 @@ shifted entry stops on every Codex machine until it is trusted again.
 | 2026-10-11 | Added `no-deferral` on the owner's direction; replay-measured 15% resubstitution false-positive rate (55 flagged turns of 2,023). | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Re-review (Fable, REVISE on f65280ce): only ratified records supersede; repeat tombstones are not conflicts; withheld count printed; apply_patch updates and body status lines checked. | Author tests and mutation checks only; no stamp. |
 | 2026-10-11 | Revised for an independent review (Fable, REVISE): tombstones, `--supersedes` validation, whole-document status, fenced-code status, Stop wording, honest limits. | The review is not a stamp of these bytes. The ADR-103 review stamp and the ADR-075 dual-seat review are still owed. |
+| 2026-10-13 | The thirteen lost-recall todos are now a named register in the 4.7.0 amendment; the nine in the gated recall test were removed because release qualification refuses todo cases. | Author edit only; no stamp. |
 
 ## Amendment — 2026-10-12: hooks only call rUv's memory tools (4.7.0)
 
@@ -292,8 +293,28 @@ next-action / acceptance contract, concurrent-session conflict reporting, or the
 brief. Automatic capture of commits, tags, gate outcomes, agent findings and detected decisions is gone
 (manual `ruflo memory store` through `/rnb-brief` remains). Recall is exact reads plus one search, not
 ranked search across lessons, patterns, turns and continuity events. Learning loses per-session dedupe,
-batching and retry of failed writes. The thirteen todos in `tests/unit/agentdb-recall*.test.mjs` are the
-register of what recall used to do.
+batching and retry of failed writes.
+
+**Register of recall capabilities lost vs 4.6.4.** This list is the register. An `it.todo` is not
+coverage, and the release qualification refuses todo cases, so the nine entries that sat in the gated
+`tests/unit/agentdb-recall.test.mjs` were removed from it on 2026-10-13 and are recorded here instead.
+The four in the ungated `tests/unit/agentdb-recall-native.test.mjs` remain there and are listed here
+too. Restore any of them by extending the single `ruflo memory search`, never by rebuilding a reader
+beside rUv's. Recall no longer:
+
+1. searches curated lessons and patterns while excluding transcript telemetry despite its high score;
+2. runs real child processes for both namespaces and full-value recall in an isolated cwd with the daemon off;
+3. refuses to inject previews when exact-key retrieval times out;
+4. recalls relevant automatic OUTCOME knowledge stored only in turns, not session metadata;
+5. is proven by running the actual registered Claude command and the Codex launcher/adapter with source candidate bytes;
+6. reads exact project observations from the authorized store during normal prompt recall;
+7. distinguishes disabled, not-adopted and valid-empty from malformed-search unavailability;
+8. guarantees that a successful CLI parent cannot leave an owned pipe-free grandchild running on POSIX;
+9. recalls short typed continuity decisions while rejecting commit and gate telemetry;
+10. prunes empty namespaces and reads exact values without additional CLI boots or mutation;
+11. delivers exact curated records within 600 bytes when ranked search is hung;
+12. delivers exact curated records within 600 bytes when ranked search is below threshold;
+13. avoids reporting ok-empty when the curated state read is unavailable but ranked search succeeded empty.
 
 **Still not our code to be proud of.** `lesson-store.mjs` keeps its own `lessons.json`, `lesson-bridge.mjs`
 reads the ruflo database directly, `decision-record.mjs` keeps refusals on disk, and

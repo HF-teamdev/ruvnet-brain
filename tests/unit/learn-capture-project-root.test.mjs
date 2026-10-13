@@ -17,7 +17,6 @@ import { fileURLToPath } from 'node:url';
  */
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const CAPTURE = path.join(ROOT, 'plugin', 'scripts', 'learn-capture.mjs');
-const posix = process.platform !== 'win32'; // the stub is a POSIX shell script
 
 const temps = [];
 const originalCwd = process.cwd();
@@ -34,19 +33,34 @@ afterEach(() => {
   temps.length = 0;
 });
 
-/** A ruflo stand-in: logs argv; `memory store` records the value, `memory retrieve` echoes it back. */
+/**
+ * A ruflo stand-in written in Node, so it runs on every OS: logs argv; `memory store` records the
+ * --value, `memory retrieve` echoes it back. On Windows it is laid out as npm's global `ruflo.cmd`
+ * shim beside `node_modules/ruflo`, so the hook reaches it through the same rufloInvocation() path a
+ * real Windows install takes (the .cmd itself fails if it is ever run); elsewhere RUFLO_BIN is the
+ * executable script.
+ */
 function makeStub(dir) {
-  const bin = path.join(dir, 'ruflo-stub.sh');
-  fs.writeFileSync(bin, `#!/bin/sh
-printf '%s\\n' "$*" >> "${dir}/argv.log"
-if [ "$1" = memory ] && [ "$2" = store ]; then
-  while [ $# -gt 0 ]; do [ "$1" = --value ] && printf '%s' "$2" > "${dir}/stored.json"; shift; done
-  exit 0
-fi
-if [ "$1" = memory ] && [ "$2" = retrieve ]; then cat "${dir}/stored.json"; exit 0; fi
-exit 0
+  const prefix = path.join(dir, 'npm-global');
+  const pkg = path.join(prefix, 'node_modules', 'ruflo');
+  fs.mkdirSync(pkg, { recursive: true });
+  const entry = path.join(pkg, 'cli.mjs');
+  fs.writeFileSync(entry, `#!/usr/bin/env node
+import fs from 'node:fs';
+const args = process.argv.slice(2);
+const stored = ${JSON.stringify(path.join(dir, 'stored.json'))};
+fs.appendFileSync(${JSON.stringify(path.join(dir, 'argv.log'))}, args.join(' ') + '\\n');
+if (args[0] === 'memory' && args[1] === 'store') {
+  for (let i = 0; i < args.length - 1; i += 1) if (args[i] === '--value') fs.writeFileSync(stored, args[i + 1]);
+} else if (args[0] === 'memory' && args[1] === 'retrieve' && fs.existsSync(stored)) {
+  process.stdout.write(fs.readFileSync(stored, 'utf8'));
+}
 `, { mode: 0o755 });
-  return bin;
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'ruflo', bin: { ruflo: 'cli.mjs' } }));
+  if (process.platform !== 'win32') return entry;
+  const shim = path.join(prefix, 'ruflo.cmd');
+  fs.writeFileSync(shim, '@echo off\r\nexit /b 99\r\n');
+  return shim;
 }
 
 /** Fire the hook exactly as PostToolUse does; return the `--path` rUv's store was asked to write, or null. */
@@ -71,7 +85,7 @@ function capture({ cwd, projectDir, claudeProjectDir }) {
 
 const inside = (p, dir) => typeof p === 'string' && (p === dir || p.startsWith(dir + path.sep));
 
-describe.skipIf(!posix)('issue #134 — captured events land in the store the reader opens', () => {
+describe('issue #134 — captured events land in the store the reader opens', () => {
   it('honours RUVNET_BRAIN_PROJECT_DIR even when the shell has drifted below the root', () => {
     const project = mktemp();
     const drifted = path.join(project, 'tests', 'fixtures');
