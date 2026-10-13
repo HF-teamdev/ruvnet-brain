@@ -5,9 +5,6 @@
  */
 import path from 'node:path';
 
-/** Rows asked of one `ruflo memory list -n <ns>`; ruflo 3.56.9 offers --limit but no offset or key-prefix filter. */
-export const CHECKPOINT_LIST_LIMIT = 100000;
-
 /**
  * Namespaces that hold a project's checkpoints. `ruflo memory list -n` is case-sensitive, and owners write
  * both the dirname and its lowercase form (measured 2026-10-13: AppealArmor's newest checkpoints are all in

@@ -19,7 +19,7 @@ import path from 'node:path';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { resolveRuflo } from './ruflo-bin.mjs';
 import { resolveProjectStore } from './project-store-resolver.mjs';
-import { CHECKPOINT_LIST_LIMIT, checkpointNamespaces, newestOfFamily } from './checkpoint-keys.mjs';
+import { checkpointNamespaces, newestOfFamily } from './checkpoint-keys.mjs';
 
 export const CURATED_PREFIX = 'project-state-current-';
 export const AUTO_PREFIX = 'project-state-auto-';
@@ -92,6 +92,35 @@ export async function checkpoint({ projectDir, event, payload = {}, env = proces
   return { stored: true, key, namespace: store.namespace, verified: readBack === value };
 }
 
+/** First page per namespace; ruflo answers it newest-first by createdAt, which restore() verifies, never assumes. */
+export const RESTORE_FAST_LIMIT = 100;
+/** Fallback page when the first page cannot prove where the newest checkpoint is. */
+export const RESTORE_FALLBACK_LIMIT = 5000;
+
+/**
+ * What one listed page proves. `ordered`: createdAt strictly non-increasing, so every row NOT on the page was
+ * created no later than `floor` (the page's oldest createdAt). `complete`: the page is shorter than the limit,
+ * so it is the whole namespace.
+ */
+export function pageFacts(rows, limit) {
+  if (!rows) return { listed: false };
+  const at = rows.map((e) => Number(e.createdAt));
+  const ordered = at.every(Number.isFinite) && at.every((t, i) => i === 0 || t <= at[i - 1]);
+  return { listed: true, ordered, complete: rows.length < limit, floor: at.length ? at[at.length - 1] : -Infinity };
+}
+
+/**
+ * A namespace still has to be read further only if a checkpoint newer than `best` could be hiding beyond its
+ * page: the page is partial AND (its order is unproven OR its floor is newer than the best checkpoint found).
+ * A checkpoint key carries its write time, so one created before `floor` carries an epoch-ms at or before it.
+ */
+export function needsFallback(facts, best) {
+  if (!facts.listed) return true;
+  if (facts.complete) return false;
+  if (!facts.ordered) return true;
+  return !best || facts.floor > best.ms;
+}
+
 /** SessionStart: newest curated checkpoint (+ newer auto checkpoint) and lesson keys, by exact key. */
 export async function restore({ cwd, env = process.env, bin, deadlineAt = Date.now() + 3000 } = {}) {
   const store = projectStore(cwd, { deadlineAt });
@@ -99,26 +128,47 @@ export async function restore({ cwd, env = process.env, bin, deadlineAt = Date.n
   const options = { db: store.db, env, bin, deadlineAt };
   // Dirname, its lowercase form and default: `ruflo memory list -n` is case-sensitive and owners write both.
   const namespaces = checkpointNamespaces(store.root);
-  // Whole namespaces, not a newest-first window: ruflo's list order is not a documented guarantee and ruflo
-  // 3.56.9 offers no offset or key-prefix filter, so the newest is chosen below by the epoch-ms in the key.
-  const [lists, lessons] = await Promise.all([Promise.all(namespaces.map((n) => listKeys(n, options, CHECKPOINT_LIST_LIMIT))), listKeys('lessons', options, 20)]);
-  if (lists.every((rows) => rows === null)) {
+  // Fast path: ONE small newest-first page per namespace, all in parallel with the lessons list. ruflo 3.56.9
+  // list has --limit only (no offset, no key prefix), so order is verified from createdAt, not trusted.
+  const fastStarted = Date.now();
+  const [pages, lessons] = await Promise.all([Promise.all(namespaces.map((n) => listKeys(n, options, RESTORE_FAST_LIMIT))), listKeys('lessons', options, 20)]);
+  const fastMs = Date.now() - fastStarted;
+  if (pages.every((rows) => rows === null)) {
     return { status: 'unknown', context: '[RuvNet Brain — PROJECT CONTINUITY UNKNOWN] ruflo memory list did not answer in time; nothing restored.' };
   }
-  const keys = Object.fromEntries(namespaces.map((n, i) => [n, (lists[i] || []).map((e) => e.key)]));
-  const curated = newestOfFamily(keys, namespaces, 'current');
-  const auto = newestOfFamily(keys, namespaces, 'auto');
+  const keysOf = (rowsList) => Object.fromEntries(namespaces.map((n, i) => [n, (rowsList[i] || []).map((e) => e.key)]));
+  let rows = pages;
+  let facts = pages.map((p) => pageFacts(p, RESTORE_FAST_LIMIT));
+  let best = newestOfFamily(keysOf(rows), namespaces, 'current');
+  let pending = namespaces.filter((n, i) => needsFallback(facts[i], best));
+  let route = 'fast';
+  const firstPending = pending.slice();
+  if (pending.length) {
+    // Leave the exact retrieve as much time as the first round took; skip the fallback if that cannot fit.
+    const fallbackDeadline = deadlineAt - fastMs;
+    if (fallbackDeadline - Date.now() >= fastMs) {
+      route = 'fallback';
+      const more = await Promise.all(namespaces.map((n) => (pending.includes(n)
+        ? listKeys(n, { ...options, deadlineAt: fallbackDeadline }, RESTORE_FALLBACK_LIMIT) : null)));
+      rows = namespaces.map((n, i) => more[i] ?? pages[i]);
+      facts = namespaces.map((n, i) => (more[i] ? pageFacts(more[i], RESTORE_FALLBACK_LIMIT) : facts[i]));
+      best = newestOfFamily(keysOf(rows), namespaces, 'current');
+      pending = namespaces.filter((n, i) => needsFallback(facts[i], best));
+    } else route = 'fast-unverified';
+  }
+  const curated = best;
+  const auto = newestOfFamily(keysOf(rows), namespaces, 'auto');
   const wanted = [curated, auto && (!curated || auto.ms > curated.ms) ? auto : null].filter(Boolean);
   const values = await Promise.all(wanted.map((e) => retrieve(e.key, e.namespace, options)));
   const lines = [`[RuvNet Brain — PROJECT STATE · ${store.db}; historical evidence, not instructions; verify current facts]`];
   wanted.forEach((e, i) => lines.push(`${e.namespace}/${e.key}: ${values[i] === null ? '(exact read failed)' : values[i].slice(0, 1200)}`));
   if (!wanted.length) lines.push('No project-state-current-* checkpoint stored yet.');
-  const unread = namespaces.filter((n, i) => lists[i] === null);
-  const capped = namespaces.filter((n, i) => (lists[i]?.length ?? 0) >= CHECKPOINT_LIST_LIMIT);
-  if (unread.length) lines.push(`Not listed in time (a newer checkpoint may exist there): ${unread.join(', ')}`);
-  if (capped.length) lines.push(`Listing reached ${CHECKPOINT_LIST_LIMIT} rows (a newer checkpoint may be beyond it): ${capped.join(', ')}`);
+  if (route !== 'fast') lines.push(route === 'fallback'
+    ? `Fast path not used: the newest-first page could not prove the newest checkpoint for ${firstPending.join(', ')}; read a ${RESTORE_FALLBACK_LIMIT}-row page.`
+    : `Fast path not verified for ${pending.join(', ')} and no budget left for a larger page.`);
+  if (pending.length) lines.push(`Not proven newest (a newer checkpoint may exist in): ${pending.join(', ')}`);
   if (lessons?.length) lines.push(`Lessons (ruflo memory retrieve -n lessons -k <key>): ${lessons.slice(0, 20).map((e) => e.key).join(', ')}`);
-  return { status: wanted.length ? 'restored' : 'empty', context: lines.join('\n'), keys: wanted.map((e) => e.key) };
+  return { status: wanted.length ? 'restored' : 'empty', context: lines.join('\n'), keys: wanted.map((e) => e.key), route };
 }
 
 /**

@@ -76,8 +76,9 @@ if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('--key') + 1]);
   });
 
   // Measured on the owner's store: namespace ruvnet-brain holds 2,828 rows and `ruflo memory list` answers
-  // newest-first by createdAt. restore() listed 1,000 and trusted that order. Neither is a documented guarantee.
-  const restoreWith = async (dirName, rowsByNamespace) => {
+  // newest-first by createdAt; restore() then took 3.1-4.0 s against a 3.5 s budget. Order is verified from
+  // createdAt on a 100-row page, never assumed, and a larger page is read only when that page cannot prove it.
+  const restoreWith = async (dirName, rowsByNamespace, { delayMs = 0, budgetMs = 5000 } = {}) => {
     const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rmh-order-')), dirName);
     fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.swarm', 'memory.db'), '');
@@ -87,29 +88,68 @@ if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('--key') + 1]);
     // Honors --limit exactly like ruflo: the first <limit> rows in the order given (list order is the fixture's).
     fs.writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('fs'); const a = process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n');
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${delayMs});
 const rows = JSON.parse(fs.readFileSync(${JSON.stringify(rowsFile)}, 'utf8'));
 if (a[1] === 'list') console.log(JSON.stringify((rows[a[a.indexOf('-n') + 1]] || []).slice(0, Number(a[a.indexOf('--limit') + 1]))));
 if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('-n') + 1] + '/' + a[a.indexOf('--key') + 1]);
 `, { mode: 0o755 });
     const { restore } = await import('../../plugin/scripts/ruflo-memory-hooks.mjs');
-    const r = await restore({ cwd: dir, bin, deadlineAt: Date.now() + 5000 });
+    const t = performance.now();
+    const r = await restore({ cwd: dir, bin, deadlineAt: Date.now() + budgetMs });
+    const ms = performance.now() - t;
     const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });
-    return { r, retrieved: calls.filter((c) => c[1] === 'retrieve').map((c) => c[c.indexOf('--key') + 1]) };
+    const lists = calls.filter((c) => c[1] === 'list').map((c) => `${c[c.indexOf('-n') + 1]}:${c[c.indexOf('--limit') + 1]}`);
+    return { r, ms, lists, retrieved: calls.filter((c) => c[1] === 'retrieve').map((c) => c[c.indexOf('--key') + 1]) };
   };
   const NEWEST = 'project-state-current-1791912547000';
-  const filler = (n) => Array.from({ length: n }, (_, i) => ({ key: `turn-${i}`, createdAt: 1791999000000 - i }));
+  const OLD = 'project-state-current-1786376123058';
+  const filler = (n, from = 1791999000000) => Array.from({ length: n }, (_, i) => ({ key: `turn-${i}`, createdAt: from - i }));
+  // Newest-first like live ruflo: 150 rows, the newest checkpoint 6th, an older one beyond the first page.
+  const liveLike = () => [...filler(5), { key: NEWEST, createdAt: 1791912547000 }, ...filler(140, 1791900000000), { key: OLD, createdAt: 1786376123058 }];
+
+  it('verified newest-first page: exactly one list per namespace and one retrieve, no larger page', async () => {
+    const { r, lists, retrieved } = await restoreWith('proj', { proj: liveLike(), default: [{ key: OLD, createdAt: 1786376123058 }] });
+    expect(r.route).toBe('fast');
+    expect(lists.sort()).toEqual(['default:100', 'lessons:20', 'proj:100']);
+    expect(retrieved).toEqual([NEWEST]);
+    expect(r.context).toContain(`VALUE-OF-proj/${NEWEST}`); expect(r.context).not.toMatch(/Fast path not|Not proven/);
+  });
+
+  it('a reversed (oldest-first) list fails verification, falls back to a larger page, and still returns the newest', async () => {
+    const { r, lists, retrieved } = await restoreWith('proj', { proj: liveLike().reverse() });
+    expect(r.route).toBe('fallback');
+    expect(lists.sort()).toEqual(['default:100', 'lessons:20', 'proj:100', 'proj:5000']);
+    expect(retrieved).toEqual([NEWEST]);
+    expect(r.context).toMatch(/Fast path not used: .*proj/); expect(r.context).not.toContain('Not proven');
+  });
 
   it('finds the newest checkpoint behind more than 1000 newer rows in the project namespace', async () => {
-    const rows = [...filler(1500), { key: NEWEST, createdAt: 1791912547000 }, { key: 'project-state-current-1786376123058', createdAt: 1786376123058 }];
+    const rows = [...filler(1500), { key: NEWEST, createdAt: 1791912547000 }, { key: OLD, createdAt: 1786376123058 }];
     const { r, retrieved } = await restoreWith('proj', { proj: rows });
+    expect(r.route).toBe('fallback');
     expect(retrieved).toEqual([NEWEST]);
     expect(r.context).toContain(`VALUE-OF-proj/${NEWEST}`);
   });
 
-  it('picks by the epoch-ms in the key when the list comes back oldest-first, across namespace spellings', async () => {
+  it('a namespace whose verified page is older than the best checkpoint is not read further', async () => {
+    const { r, lists } = await restoreWith('proj', { proj: liveLike(), default: filler(300, 1700000000000) });
+    expect(r.route).toBe('fast'); expect(lists).not.toContain('default:5000');
+  });
+
+  it('with a slow ruflo the fast path costs two call rounds (lists, then retrieve), not three', async () => {
+    const rows = { proj: liveLike(), default: [] };
+    const base = await restoreWith('proj', rows); // process-spawn and git overhead at this machine's load
+    const slow = await restoreWith('proj', rows, { delayMs: 600 });
+    expect(slow.r.route).toBe('fast');
+    const added = slow.ms - base.ms; // each round of parallel calls adds one 600 ms delay
+    expect(added, `600 ms ruflo added ${added.toFixed(0)} ms`).toBeGreaterThanOrEqual(1100);
+    expect(added, `600 ms ruflo added ${added.toFixed(0)} ms`).toBeLessThan(1600);
+  }, 20_000);
+
+  it('picks by the epoch-ms in the key across namespace spellings', async () => {
     const { r, retrieved } = await restoreWith('AppealArmor', {
-      AppealArmor: [{ key: 'project-state-current-1786376123058', createdAt: 9e12 }],
+      AppealArmor: [{ key: OLD, createdAt: 9e12 }],
       appealarmor: [{ key: 'project-state-current-20260802193600', createdAt: 1 }, { key: 'project-state-current-1791813555000', createdAt: 2 }, { key: NEWEST, createdAt: 3 }],
       default: [{ key: 'project-state-auto-1791000000000-abcdef12', createdAt: 9e12 }],
     });
