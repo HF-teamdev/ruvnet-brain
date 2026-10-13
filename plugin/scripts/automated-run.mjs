@@ -17,6 +17,9 @@
 import { execFileSync } from 'node:child_process';
 
 const CODEX_EXEC = /(^|\/)codex(\s+\S+)*\s+exec(\s|$)/;
+// Grok's headless entry points (`grok --help`): -p/--single, --prompt-file, --prompt-json and the `agent` subcommand.
+// Measured 2026-10-13 under `grok -p`: the hook's parent is `grok -p ...` and its env carries GROK_HOOK_EVENT and GROK_SESSION_ID.
+const GROK_HEADLESS = /(^|\/)grok(\s+\S+)*\s+(-p|--single|--prompt-file|--prompt-json|agent)(\s|$)/;
 const MAX_ANCESTORS = 12;
 
 function psRow(pid) {
@@ -28,13 +31,15 @@ function psRow(pid) {
 /** True when the hook belongs to an automated run. `ps` is injectable for tests. */
 export function isAutomatedRun({ env = process.env, ppid = process.ppid, ps = psRow } = {}) {
   if (/^sdk-/.test(env.CLAUDE_CODE_ENTRYPOINT || '')) return true;
-  if (env.RUVNET_HOOK_HOST !== 'codex') return false;
+  const grok = env.RUVNET_HOOK_HOST === 'grok' || Boolean(env.GROK_HOOK_EVENT || env.GROK_SESSION_ID);
+  const pattern = env.RUVNET_HOOK_HOST === 'codex' ? CODEX_EXEC : grok ? GROK_HEADLESS : null;
+  if (!pattern) return false;
   try {
     let pid = ppid;
     for (let i = 0; i < MAX_ANCESTORS && pid > 1; i++) {
       const row = ps(pid);
       if (!row) return false;
-      if (CODEX_EXEC.test(row.args)) return true;
+      if (pattern.test(row.args)) return true;
       pid = row.ppid;
     }
   } catch { /* unknown parent: keep gating */ }

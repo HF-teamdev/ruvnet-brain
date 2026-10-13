@@ -17,17 +17,19 @@ const posix = process.platform !== 'win32';
 
 function sandbox() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cont-auto-'));
+  // The gate keeps a per-session loop guard; a shared id made later cases depend on earlier ones.
+  const sid = `s-auto-${path.basename(dir)}`;
   const identity = continuationProjectIdentity(dir);
   const at = new Date().toISOString();
   const ledger = path.join(dir, 'ledger.json');
   fs.writeFileSync(ledger, JSON.stringify({ items: [{ text: 'finish the open work', at, done: false }],
     objective: { schemaVersion: 1, kind: 'continuation-preferences', authoritative: false, id: 'fixture', text: 'finish the open work',
-      at, state: 'active', projectId: identity.projectId, worktreeIds: [identity.worktreeId], sessionIds: ['s-auto'],
+      at, state: 'active', projectId: identity.projectId, worktreeIds: [identity.worktreeId], sessionIds: [sid],
       authorization: { kind: 'user', reference: 'fixture-explicit-user-request' } } }));
   const env = { ...process.env, RUVNET_WORK_LEDGER: ledger, RUVNET_CONTINUATION_COOLDOWN_MS: '0',
     RUVNET_OPEN_ISSUES_FILE: path.join(dir, 'none.json'), RUVNET_CI_STATUS_FILE: path.join(dir, 'none.json') };
   delete env.CLAUDE_CODE_ENTRYPOINT; delete env.RUVNET_HOOK_HOST;
-  const payload = JSON.stringify({ hook_event_name: 'Stop', session_id: 's-auto', stop_hook_active: false, cwd: dir,
+  const payload = JSON.stringify({ hook_event_name: 'Stop', session_id: sid, stop_hook_active: false, cwd: dir,
     last_assistant_message: 'Here is the requested answer.' });
   return { dir, env, payload };
 }
@@ -63,6 +65,19 @@ describe('continuation-gate skips automated runs and still gates interactive one
   });
 });
 
+describe('continuation-gate under Grok', () => {
+  it.skipIf(!posix)('under a real `grok -p` ancestor: no correction request; interactive `grok` still gated', () => {
+    const s = sandbox();
+    try {
+      const fake = path.join(s.dir, 'grok');
+      fs.writeFileSync(fake, `#!${process.execPath}\nconst r=require('node:child_process').spawnSync(process.execPath,[${JSON.stringify(GATE)}],{stdio:'inherit'});process.exit(r.status??0);\n`, { mode: 0o755 });
+      const env = { ...s.env, GROK_HOOK_EVENT: 'stop', GROK_SESSION_ID: 'fixture' };
+      expect(forced(run(fake, ['-p', 'reply OK'], { ...s, env }))).toBe(false);
+      expect(forced(run(fake, [], { ...s, env }))).toBe(true);
+    } finally { fs.rmSync(s.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('isAutomatedRun', () => {
   const table = (rows) => (pid) => rows[pid] ?? null;
   it('matches the sdk- entrypoint prefix only', () => {
@@ -92,5 +107,18 @@ describe('isAutomatedRun', () => {
     expect(isAutomatedRun({ env, ppid: 5, ps: table({ 5: { ppid: 1, args: '/usr/local/bin/codex' } }) })).toBe(false);
     expect(isAutomatedRun({ env, ppid: 5, ps: table({ 5: { ppid: 1, args: 'codex executor' } }) })).toBe(false);
     expect(isAutomatedRun({ env, ppid: 5, ps: () => { throw new Error('no ps'); } })).toBe(false);
+  });
+  it('finds a headless `grok` ancestor only when Grok set its hook env or the Grok adapter marked the host', () => {
+    const rows = { 10: { ppid: 9, args: 'node grok-hook-adapter.mjs stop' }, 9: { ppid: 8, args: 'node hook-shim.mjs continuation-gate' },
+      8: { ppid: 7, args: '/Users/u/.grok/bin/grok -p Reply with exactly: ok' } };
+    expect(isAutomatedRun({ env: { GROK_HOOK_EVENT: 'stop' }, ppid: 10, ps: table(rows) })).toBe(true);
+    expect(isAutomatedRun({ env: { RUVNET_HOOK_HOST: 'grok' }, ppid: 10, ps: table(rows) })).toBe(true);
+    expect(isAutomatedRun({ env: {}, ppid: 10, ps: table(rows) })).toBe(false);
+    for (const top of ['/Users/u/.grok/bin/grok', '/Users/u/.grok/bin/grok --cwd /x', '/Users/u/.grok/bin/grok login', 'grokker -p x']) {
+      expect(isAutomatedRun({ env: { GROK_SESSION_ID: 'x' }, ppid: 8, ps: table({ 8: { ppid: 1, args: top } }) })).toBe(false);
+    }
+    for (const top of ['grok --single hi', 'grok --prompt-file p.txt', 'grok --prompt-json {}', 'grok agent run']) {
+      expect(isAutomatedRun({ env: { GROK_SESSION_ID: 'x' }, ppid: 8, ps: table({ 8: { ppid: 1, args: top } }) })).toBe(true);
+    }
   });
 });
