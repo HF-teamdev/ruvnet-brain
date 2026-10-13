@@ -2,7 +2,7 @@ import fs from 'node:fs';import os from 'node:os';import path from 'node:path';i
 import {spawn} from 'node:child_process';
 import {afterEach,expect,it,vi} from 'vitest';
 import {digest} from '../../scripts/model-currency-evidence.mjs';
-import {runWeeklyCycle,runCycleStage,canonicalTextReleases,maybeLaunchWeeklyCycle} from '../../scripts/model-weekly-cycle.mjs';
+import {runWeeklyCycle,runCycleStage,canonicalTextReleases,weeklyCycleStatus} from '../../scripts/model-weekly-cycle.mjs';
 const dirs=[],NOW=Date.now(),WEEK=604800000;const write=(d,f,v)=>fs.writeFileSync(path.join(d,f),JSON.stringify(v));
 const releases=[{id:'openai/sol-20261001',provider:'openai',aliases:['openai/sol']},{id:'anthropic/sonnet-20261001',provider:'anthropic',aliases:['anthropic/sonnet']}];
 function inventory(extra=[]){return JSON.stringify({data:[...Array.from({length:50},(_,i)=>({id:'other/model'+i})),...releases.map(r=>({id:r.aliases[0],canonical_slug:r.id,architecture:{output_modalities:['text']}})),...extra]});}
@@ -52,10 +52,16 @@ it('source failure is unknown and preserves prior baseline; public removals aler
   const s=JSON.parse(before);s.baselineReleaseIds.push('openai/other-existing');write(dir,'weekly-model-discovery.json',s);
   const result=await runWeeklyCycle({routerDir:dir,now:NOW+WEEK+3600001,stage,fetchImpl:fetcher(JSON.stringify(parsed))});expect(result.status).toBe('availability-alert-policy-retained');expect(result.publicAvailabilityAlert.nativeAvailability).toMatch(/unknown/);expect(stage).not.toHaveBeenCalled();
 });
-it('offline prompt path stays quiet without a new release and fences one background cycle',()=>{
-  const dir=fixture(),launch=vi.fn(()=>({once(){},unref(){}}));expect(maybeLaunchWeeklyCycle({routerDir:dir,now:NOW,launch})).toMatchObject({status:'current',launched:false,reviewRequired:false});
+it('prompt-path status is read-only: reports current, due, pending and a failed scheduled run, and never claims or launches',()=>{
+  const dir=fixture(),files=()=>fs.readdirSync(dir).sort(),before=files();
+  expect(weeklyCycleStatus({routerDir:dir,now:NOW})).toMatchObject({status:'current',reviewRequired:false});
+  expect(weeklyCycleStatus({routerDir:dir,now:NOW+WEEK})).toMatchObject({status:'due',reviewRequired:false});
   const s=JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json')));s.pendingReleases=[{id:newRelease.canonical_slug}];write(dir,'weekly-model-discovery.json',s);
-  expect(maybeLaunchWeeklyCycle({routerDir:dir,now:NOW,launch})).toMatchObject({status:'launched',launched:true,reviewRequired:true});expect(maybeLaunchWeeklyCycle({routerDir:dir,now:NOW,launch}).status).toBe('busy');expect(launch).toHaveBeenCalledOnce();
+  expect(weeklyCycleStatus({routerDir:dir,now:NOW})).toMatchObject({status:'review-pending',reviewRequired:true});
+  write(dir,'weekly-cycle-last-attempt.json',{status:'failed',checkedAt:new Date(NOW).toISOString(),reason:'Native account model catalog refresh unavailable; approved policy retained'});
+  expect(weeklyCycleStatus({routerDir:dir,now:NOW})).toMatchObject({status:'blocked',reason:expect.stringMatching(/last scheduled run failed .*catalog refresh unavailable/)});
+  expect(files()).toEqual([...before,'weekly-cycle-last-attempt.json'].sort());expect(fs.existsSync(path.join(dir,'weekly-cycle-owner.json'))).toBe(false);
+  const missing=path.join(os.tmpdir(),'weekly-cycle-absent-'+process.pid+'-'+NOW);expect(weeklyCycleStatus({routerDir:missing,now:NOW}).status).toBe('due');expect(fs.existsSync(missing)).toBe(false);
 });
 it('deduplicates and fences delayed old-worker writes and cleanup after successor claim',async()=>{
   const dir=fixture(),s=JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json')));s.pendingReleases=[{id:newRelease.canonical_slug}];write(dir,'weekly-model-discovery.json',s);let finishOld,finishNew;
@@ -182,3 +188,43 @@ it('a late promotion-shaped qualification cannot mark the cycle promoted or reti
  expect(JSON.parse(fs.readFileSync(path.join(dir,'weekly-model-discovery.json')))).toEqual(state);expect(fs.readFileSync(path.join(dir,'routing-policy.json'))).toEqual(before);
  expect(JSON.parse(fs.readFileSync(path.join(dir,'weekly-cycle-last-attempt.json')))).toEqual(receipt);
 });
+
+// 4.7.1 checks 1f/6d: a full scheduled cycle in a TEMP HOME with stubbed native claude/codex. The real
+// native-catalog stage runs as a child process against the stubs; the stub Claude reports the installed
+// 2.1.296 that the old exact 2.1.289 pin refused, which failed every cycle. Native protocol replies are
+// fixtures shaped like model-native-qualification.mjs expects; no real model or network is touched.
+const STUB=`const fs=require('node:fs'),host=process.env.STUB_HOST,a=process.argv.slice(2);
+if(a[0]==='--version'){console.log(host==='claude'?'2.1.296 (Claude Code)':'codex-cli 0.162.1');process.exit(0);}
+if(a[0]==='auth'){console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'max'}));process.exit(0);}
+let buf='';const out=p=>process.stdout.write(JSON.stringify(p)+'\\n');
+process.stdin.on('data',d=>{buf+=d;let i;while((i=buf.indexOf('\\n'))>=0){const m=JSON.parse(buf.slice(0,i));buf=buf.slice(i+1);
+ if(host==='claude'&&m.type==='control_request'){const ok=r=>out({type:'control_response',response:{subtype:'success',request_id:m.request_id,response:r}});
+  if(m.request.subtype==='initialize')ok({session_state:'idle',models:[{resolvedModel:'claude-sonnet-5-5',supportsEffort:true,supportedEffortLevels:['medium']}]});
+  if(m.request.subtype==='get_usage')ok({rate_limits_available:true,rate_limits:{extra_usage:{is_enabled:false},five_hour:{utilization:4,locked_reason:null},seven_day:{utilization:7,locked_reason:null},model_scoped:[],limits:[]}});}
+ if(host==='codex'&&m.id){const ok=r=>out({id:m.id,result:r});
+  if(m.method==='initialize')ok({});if(m.method==='account/read')ok({account:{type:'chatgpt'}});
+  if(m.method==='account/rateLimits/read')ok({ordinaryUsageAllowed:true});
+  if(m.method==='model/list')ok({data:[{model:'gpt-5.6-sol',supportedReasoningEfforts:[{reasoningEffort:'medium'}]}],nextCursor:null});}}});
+process.stdin.on('end',()=>process.exit(0));process.on('SIGTERM',()=>process.exit(0));`;
+it.skipIf(process.platform==='win32')('runs a full scheduled cycle in a temp HOME with stubbed native binaries: native catalog current, cycle unchanged',async()=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'weekly-cycle-home-'));dirs.push(home);
+  const ext=path.join(home,'.vscode-server/extensions'),claudeExt=path.join(ext,'anthropic.claude-code-2.1.296'),codexExt=path.join(ext,'openai.chatgpt-1');
+  const arch=process.arch==='arm64'?'aarch64':process.arch==='x64'?'x86_64':process.arch,plat=process.platform==='darwin'?'macos':process.platform;
+  const stubJs=path.join(home,'native-stub.cjs');fs.writeFileSync(stubJs,STUB);
+  const stub=(file,host)=>{fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,`#!/bin/sh\nSTUB_HOST=${host} exec '${process.execPath}' '${stubJs}' "$@"\n`,{mode:0o755});};
+  stub(path.join(claudeExt,'resources/native-binary/claude'),'claude');stub(path.join(codexExt,'bin',`${plat}-${arch}`,'codex'),'codex');
+  fs.writeFileSync(path.join(ext,'extensions.json'),JSON.stringify([{identifier:{id:'anthropic.claude-code'},location:{path:claudeExt}},{identifier:{id:'openai.chatgpt'},location:{path:codexExt}}]));
+  fs.mkdirSync(path.join(home,'.codex'));fs.writeFileSync(path.join(home,'.codex/auth.json'),JSON.stringify({tokens:{},auth_mode:'chatgpt'}));
+  const dir=path.join(home,'.claude/model-router');fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'routing-policy.json'),'{"schemaVersion":1,"routes":{}}');
+  write(dir,'profile.json',{automaticModelRoutingUpdates:true,harnesses:{codex:{available:true,subscription:true},'claude-code':{available:true,subscription:true}}});
+  write(dir,'catalog.json',{candidates:[]});
+  write(dir,'weekly-model-discovery.json',{schemaVersion:1,checkedAt:new Date(NOW-WEEK-1).toISOString(),releases,baselineReleaseIds:releases.map(r=>r.id),pendingReleases:[]});
+  const env={...process.env,HOME:home,CODEX_HOME:path.join(home,'.codex')};
+  const result=await runWeeklyCycle({routerDir:dir,now:NOW,env,fetchImpl:fetcher(),maxMs:120000});
+  expect(result.stages).toEqual([{component:'native-catalog',status:'current',exitCode:0}]);
+  expect(result).toMatchObject({status:'unchanged',policyApplied:false});
+  const availability=JSON.parse(fs.readFileSync(path.join(dir,'native-availability.json')));
+  expect(availability.nativeModelIds).toEqual(['anthropic/claude-sonnet-5-5','openai/gpt-5.6-sol']);
+  expect(availability.hosts.find(h=>h.host==='claude-code').harnessVersion).toBe('2.1.296 (Claude Code)');
+  expect(fs.existsSync(path.join(home,'.cache/ruvnet-brain/model-routing/terminal-launcher-config.json'))).toBe(false);
+},60000);
