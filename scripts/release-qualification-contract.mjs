@@ -118,9 +118,10 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
     },
     {
       "id": "safe-install-update",
-      "reason": "Installation and update preserve prior and private state and reject invalid dependencies",
+      "reason": "Installation and update preserve prior and private state and reject invalid dependencies; the Codex hook bridge a retained Brain generation shipped upgrades reversibly while edited, linked, shared or foreign-owned bridges stay preserved",
       "files": [
         "tests/unit/automatic-hook-retirement.test.mjs",
+        "tests/unit/codex-wrapper-upgrade-ownership.test.mjs",
         "tests/unit/install-activation-rollback.test.mjs",
         "tests/unit/forge-update-apply-rollback.test.mjs",
         "tests/unit/forge-update-archive-digest.test.mjs",

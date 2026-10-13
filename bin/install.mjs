@@ -1756,10 +1756,60 @@ function legacyBrainWrapperOwnership(wrapperPath, home) {
     || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
     return { state: 'conflict', reason: 'existing bridge is not an unshared regular file' };
   }
+  let installed;
   try {
-    if (fs.readFileSync(wrapperPath).equals(fs.readFileSync(source))) return { state: 'verified' };
+    installed = fs.readFileSync(wrapperPath);
+    if (installed.equals(fs.readFileSync(source))) return { state: 'verified' };
   } catch { /* Missing proof is not ownership. */ }
+  // An UPGRADE: the bridge is still byte-identical to a wrapper an earlier Brain generation shipped.
+  // Comparing only against the NEW source made every release that changed the wrapper bytes refuse
+  // its own previous install (4.6.4 -> 4.7.0, hook-wrapper-ownership-conflict). The proof is a
+  // generation the Stable Spine keeps under the already-verified namespace: versions/<v>/ (the
+  // active one named by active.json, its previous, and any retained one). Every directory on that
+  // path must be a real, owner-uid directory and the candidate a regular file; nothing is followed.
+  if (installed && shippedByRetainedGeneration(installed, path.join(home, '.cache', 'ruvnet-brain', 'versions'))) {
+    return { state: 'prior-generation' };
+  }
   return { state: 'conflict', reason: 'existing bridge differs from the shipped Brain source' };
+}
+
+function shippedByRetainedGeneration(bytes, versionsDir) {
+  const ownedDir = (dir) => {
+    try {
+      const st = fs.lstatSync(dir);
+      return st.isDirectory() && !st.isSymbolicLink()
+        && (typeof process.getuid !== 'function' || st.uid === process.getuid());
+    } catch { return false; }
+  };
+  if (!ownedDir(versionsDir)) return false;
+  let names;
+  try { names = fs.readdirSync(versionsDir); } catch { return false; }
+  return names.some((name) => {
+    // Staging remnants and hidden temporaries were never activated, so they prove nothing.
+    if (name.startsWith('.') || name.includes('.staging-')) return false;
+    const generation = path.join(versionsDir, name);
+    const scripts = path.join(generation, 'scripts');
+    const candidate = path.join(scripts, 'codex-hook-wrapper.mjs');
+    if (!ownedDir(generation) || !ownedDir(scripts)) return false;
+    try {
+      const st = fs.lstatSync(candidate);
+      if (!st.isFile() || st.isSymbolicLink() || st.size !== bytes.length) return false;
+      return fs.readFileSync(candidate).equals(bytes);
+    } catch { return false; }
+  });
+}
+
+// The bridge's previous bytes are kept beside it under ONE fixed name (the immediately prior
+// generation's wrapper), so a rollback is a rename and nothing accumulates release over release.
+// Written temp-then-rename: rename replaces a planted link at the backup name, never follows it.
+function backupPriorWrapper(wrapperPath) {
+  const backup = `${wrapperPath}.prior`;
+  const temporary = `${backup}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(temporary, fs.readFileSync(wrapperPath), { flag: 'wx', mode: fs.statSync(wrapperPath).mode & 0o777 });
+    fs.renameSync(temporary, backup);
+  } finally { fs.rmSync(temporary, { force: true }); }
+  return backup;
 }
 
 export function wireCodexHost({
@@ -1845,6 +1895,7 @@ export function wireCodexHost({
     return { host: true, action: 'hook-wrapper-source-missing' };
   }
   let hookRetirement;
+  let hookWrapperBackup = null;
   try {
     fs.mkdirSync(path.dirname(hookWrapperPath), { recursive: true });
     const wrapperStat = (() => { try { return fs.lstatSync(hookWrapperPath); } catch (error) {
@@ -1856,6 +1907,7 @@ export function wireCodexHost({
     const currentOwnership = legacyBrainWrapperOwnership(hookWrapperPath, path.dirname(codexDir));
     if (currentOwnership.state === 'conflict') throw new Error(currentOwnership.reason);
     hookRetirement = retireManagedHookRegistrations({ home: path.dirname(codexDir), codexDir, wrapperPath: hookWrapperPath });
+    if (currentOwnership.state === 'prior-generation') hookWrapperBackup = backupPriorWrapper(hookWrapperPath);
     atomicReplace(hookWrapperPath, (tmp) => fs.copyFileSync(hookWrapperSource, tmp));
   } catch (error) {
     if (announce) warn(`could not install the Codex hook bridge at ${hookWrapperPath}: ${error.message}`);
@@ -1874,7 +1926,7 @@ export function wireCodexHost({
       info(`  to hand it to us instead, delete that ${c.bold('[mcp_servers.ruvnet-brain]')} block and re-run this installer`);
     }
     return { host: true, action, serverPath, managedCliPath, runtimePreferencesPath,
-      hookWrapperPath, hookWrapperInstalled: true, hookOwnershipConflicts: hookRetirement.conflicts.length };
+      hookWrapperPath, hookWrapperInstalled: true, hookWrapperBackup, hookOwnershipConflicts: hookRetirement.conflicts.length };
   }
   if (text !== before) {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -1886,7 +1938,7 @@ export function wireCodexHost({
     info(`  ${c.dim('only our marked block is written; every other section is byte-preserved')}`);
   }
   return { host: true, action, serverPath, managedCliPath, runtimePreferencesPath,
-    hookWrapperPath, hookWrapperInstalled: true, hookOwnershipConflicts: hookRetirement.conflicts.length,
+    hookWrapperPath, hookWrapperInstalled: true, hookWrapperBackup, hookOwnershipConflicts: hookRetirement.conflicts.length,
     changed: text !== before };
 }
 
@@ -2361,7 +2413,9 @@ export function retireManagedHookRegistrations({ home = os.homedir(), codexDir =
   let removed = 0;
   const changedFiles = [];
   const conflicts = [];
-  const verifiedWrapper = legacyBrainWrapperOwnership(wrapperPath, path.dirname(codexDir)).state === 'verified';
+  // A bridge a retained Brain generation shipped is as much the Brain's as the new source.
+  const verifiedWrapper = ['verified', 'prior-generation']
+    .includes(legacyBrainWrapperOwnership(wrapperPath, path.dirname(codexDir)).state);
   const tokensOf = (command) => (command.match(/"[^"]*"|'[^']*'|[^\s]+/g) || [])
     .map((token) => token.replace(/^["']|["']$/g, ''));
   const registry = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'plugin', 'hooks', 'codex-hooks.json'), 'utf8'));
@@ -4885,6 +4939,7 @@ function uninstallAll() {
     // ADR-054 §5: a reinstall must never inherit an invisible OFF. See brainOffSentinelPath().
     ['brain on/off switch', brainOffSentinelPath()],
     ['legacy Codex lifecycle hook wrapper', codexHookWrapperPath()],
+    ['prior Codex hook wrapper backup', `${codexHookWrapperPath()}.prior`],
     ['Codex MCP server files', codexServerDir()],
   ]) {
     if (!fs.existsSync(target)) continue;
