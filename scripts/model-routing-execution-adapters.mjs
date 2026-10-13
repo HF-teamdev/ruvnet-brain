@@ -13,8 +13,16 @@ import { readCodexAllowance } from './native-subscription-usage.mjs';
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const blocked = reason => Object.assign(new Error(reason), { safetyBlocked: true });
 
+// The launcher config is retired: an owner who removed it gets the standard install paths. Never
+// recreate it here (install.mjs refreshInstalledModelLaunchers would reinstall the terminal wrappers).
 export function nativeWorkflowBinaries(home = os.homedir()) {
-  const config = JSON.parse(fs.readFileSync(path.join(home, '.cache/ruvnet-brain/model-routing/terminal-launcher-config.json'), 'utf8'));
+  let text;
+  try { text = fs.readFileSync(path.join(home, '.cache/ruvnet-brain/model-routing/terminal-launcher-config.json'), 'utf8'); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return { claude: path.join(home, '.npm-global/bin/claude'), codex: path.join(home, '.local/bin/codex') };
+  }
+  const config = JSON.parse(text);
   return { claude: config.realClaude, codex: config.realCodex };
 }
 

@@ -78,6 +78,15 @@ describe('isAutomatedRun', () => {
     expect(isAutomatedRun({ env: { RUVNET_HOOK_HOST: 'codex' }, ppid: 10, ps: table(rows) })).toBe(true);
     expect(isAutomatedRun({ env: {}, ppid: 10, ps: table(rows) })).toBe(false);
   });
+  it('fake chain gate -> hook-shim -> node wrapper -> codex-hook -> `codex exec` skips; the same chain under interactive `codex` stays gated', () => {
+    const chain = (top) => ({ 20: { ppid: 19, args: 'node /x/plugin/scripts/hook-shim.mjs continuation-gate' },
+      19: { ppid: 18, args: 'node /x/codex-hook-adapter.mjs continuation-gate' }, 18: { ppid: 17, args: 'node /h/.cache/ruvnet-brain/codex-hook.mjs continuation-gate' },
+      17: { ppid: 16, args: 'node -e const f=require(...) 9000 continuation-gate' }, 16: { ppid: 1, args: top } });
+    const env = { RUVNET_HOOK_HOST: 'codex' };
+    expect(isAutomatedRun({ env, ppid: 20, ps: table(chain('/Users/u/.local/bin/codex exec --json "reply OK"')) })).toBe(true);
+    expect(isAutomatedRun({ env, ppid: 20, ps: table(chain('/Users/u/.local/bin/codex')) })).toBe(false);
+    expect(isAutomatedRun({ env, ppid: 20, ps: table(chain('/Users/u/.local/bin/codex resume --last')) })).toBe(false);
+  });
   it('interactive codex, `codex execute-something`, and an unreadable ps all keep gating', () => {
     const env = { RUVNET_HOOK_HOST: 'codex' };
     expect(isAutomatedRun({ env, ppid: 5, ps: table({ 5: { ppid: 1, args: '/usr/local/bin/codex' } }) })).toBe(false);

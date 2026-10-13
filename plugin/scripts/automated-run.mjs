@@ -20,7 +20,7 @@ const CODEX_EXEC = /(^|\/)codex(\s+\S+)*\s+exec(\s|$)/;
 const MAX_ANCESTORS = 12;
 
 function psRow(pid) {
-  const out = execFileSync('/bin/ps', ['-o', 'ppid=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 });
+  const out = execFileSync('/bin/ps', ['-o', 'ppid=,command=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 });
   const m = /^\s*(\d+)\s+(.*)$/s.exec(out.trim());
   return m ? { ppid: Number(m[1]), args: m[2].trim() } : null;
 }
