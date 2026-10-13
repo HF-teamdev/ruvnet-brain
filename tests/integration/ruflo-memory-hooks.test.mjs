@@ -62,16 +62,63 @@ describe('SessionStart restore reads the newest checkpoint by exact key', () => 
 const a = process.argv.slice(2); require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n');
 if (a[1] === 'list') { const n = a[a.indexOf('-n') + 1];
   console.log(JSON.stringify(n === 'lessons' ? [{ key: 'lesson-a', createdAt: 1 }] : [
-    { key: 'project-state-current-100', createdAt: 100 }, { key: 'project-state-current-300', createdAt: 300 }, { key: 'other', createdAt: 900 }])); }
+    { key: 'project-state-current-1791000000100', createdAt: 100 }, { key: 'project-state-current-1791000000300', createdAt: 300 }, { key: 'other', createdAt: 900 }])); }
 if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('--key') + 1]);
 `, { mode: 0o755 });
     const { restore } = await import('../../plugin/scripts/ruflo-memory-hooks.mjs');
     const r = await restore({ cwd: dir, bin, deadlineAt: Date.now() + 5000 });
     expect(r.status).toBe('restored');
-    expect(r.context).toContain('VALUE-OF-project-state-current-300');
+    expect(r.context).toContain('VALUE-OF-project-state-current-1791000000300');
     expect(r.context).toContain('lesson-a');
     const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(calls.filter((c) => c[1] === 'retrieve').map((c) => c[c.indexOf('--key') + 1])).toEqual(['project-state-current-300']);
+    expect(calls.filter((c) => c[1] === 'retrieve').map((c) => c[c.indexOf('--key') + 1])).toEqual(['project-state-current-1791000000300']);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Measured on the owner's store: namespace ruvnet-brain holds 2,828 rows and `ruflo memory list` answers
+  // newest-first by createdAt. restore() listed 1,000 and trusted that order. Neither is a documented guarantee.
+  const restoreWith = async (dirName, rowsByNamespace) => {
+    const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rmh-order-')), dirName);
+    fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.swarm', 'memory.db'), '');
+    const rowsFile = path.join(dir, 'rows.json'); fs.writeFileSync(rowsFile, JSON.stringify(rowsByNamespace));
+    const log = path.join(dir, 'calls.log');
+    const bin = path.join(dir, 'ruflo');
+    // Honors --limit exactly like ruflo: the first <limit> rows in the order given (list order is the fixture's).
+    fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('fs'); const a = process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n');
+const rows = JSON.parse(fs.readFileSync(${JSON.stringify(rowsFile)}, 'utf8'));
+if (a[1] === 'list') console.log(JSON.stringify((rows[a[a.indexOf('-n') + 1]] || []).slice(0, Number(a[a.indexOf('--limit') + 1]))));
+if (a[1] === 'retrieve') console.log('VALUE-OF-' + a[a.indexOf('-n') + 1] + '/' + a[a.indexOf('--key') + 1]);
+`, { mode: 0o755 });
+    const { restore } = await import('../../plugin/scripts/ruflo-memory-hooks.mjs');
+    const r = await restore({ cwd: dir, bin, deadlineAt: Date.now() + 5000 });
+    const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+    return { r, retrieved: calls.filter((c) => c[1] === 'retrieve').map((c) => c[c.indexOf('--key') + 1]) };
+  };
+  const NEWEST = 'project-state-current-1791912547000';
+  const filler = (n) => Array.from({ length: n }, (_, i) => ({ key: `turn-${i}`, createdAt: 1791999000000 - i }));
+
+  it('finds the newest checkpoint behind more than 1000 newer rows in the project namespace', async () => {
+    const rows = [...filler(1500), { key: NEWEST, createdAt: 1791912547000 }, { key: 'project-state-current-1786376123058', createdAt: 1786376123058 }];
+    const { r, retrieved } = await restoreWith('proj', { proj: rows });
+    expect(retrieved).toEqual([NEWEST]);
+    expect(r.context).toContain(`VALUE-OF-proj/${NEWEST}`);
+  });
+
+  it('picks by the epoch-ms in the key when the list comes back oldest-first, across namespace spellings', async () => {
+    const { r, retrieved } = await restoreWith('AppealArmor', {
+      AppealArmor: [{ key: 'project-state-current-1786376123058', createdAt: 9e12 }],
+      appealarmor: [{ key: 'project-state-current-20260802193600', createdAt: 1 }, { key: 'project-state-current-1791813555000', createdAt: 2 }, { key: NEWEST, createdAt: 3 }],
+      default: [{ key: 'project-state-auto-1791000000000-abcdef12', createdAt: 9e12 }],
+    });
+    expect(retrieved).toEqual([NEWEST]); // the older auto checkpoint is not newer, so it is not restored
+    expect(r.context).toContain(`VALUE-OF-appealarmor/${NEWEST}`);
+  });
+
+  it('adds a newer automatic checkpoint after the curated one, ordered by key epoch-ms', async () => {
+    const { retrieved } = await restoreWith('proj', { proj: [{ key: 'project-state-auto-1791999999000-abcdef12', createdAt: 1 }, { key: NEWEST, createdAt: 2 }] });
+    expect(retrieved.sort()).toEqual(['project-state-auto-1791999999000-abcdef12', NEWEST]);
   });
 });

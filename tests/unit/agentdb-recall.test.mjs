@@ -255,8 +255,8 @@ it('consequential recall reserves state, fourth applicable lesson and decision u
     const lesson = projects => JSON.stringify({ id: 'scope-lesson', statement: 'Preserve the parser invariants before code changes.', trigger: 'write-code', enforcement: 'checklist', evidence: ['observed fixture regression'], projects,
       origin: 'user-stated', sourceClass: 'current-user', status: 'ratified', ratifiedBy: 'user', demoted: false });
     const values = [
-      { key: 'project-state-current-1', namespace: 'proj', content: '{"status":"stale parser state"}' },
-      { key: 'project-state-current-2', namespace: 'proj', content: '{"status":"current parser state"}' },
+      { key: 'project-state-current-1791000000001', namespace: 'proj', content: '{"status":"stale parser state"}' },
+      { key: 'project-state-current-1791000000002', namespace: 'proj', content: '{"status":"current parser state"}' },
       ...[1,2,3].map(i => ({ key: `lesson-foreign-${i}`, namespace: 'lessons', content: lesson(['/foreign']) })),
       { key: 'lesson-applicable-4', namespace: 'lessons', content: lesson([w.proj]) },
       { key: 'decision-parser', namespace: 'proj', content: 'Parser decision: keep original syntax validation.' },
@@ -266,7 +266,7 @@ it('consequential recall reserves state, fourth applicable lesson and decision u
     const r = await recall({ prompt: 'Fix parser', projectDir: w.proj, env: w.env, consequential: true, enumerateKeys,
       binding: { workflowId: 'workflow', phase: 'implementation', sessionId: null } });
     expect(r.outcome).toBe('ok-with-results');
-    expect(r.picks.map(row => row.key)).toEqual(['project-state-current-2','lesson-applicable-4','decision-parser']);
+    expect(r.picks.map(row => row.key)).toEqual(['project-state-current-1791000000002','lesson-applicable-4','decision-parser']);
     expect(r.block).toContain('current parser state'); expect(r.block).not.toContain('stale parser state');
     expect(r.receipt.binding.sessionId).toBeNull(); expect(r.receipt.binding.phase).toBe('implementation');
     expect(r.picks.every(row => row.authority === false)).toBe(true);
@@ -288,13 +288,13 @@ it.each([{ projectRoot: '/foreign' }, { superseded: true }])('rejected latest st
   const w = world();
   try {
     fs.writeFileSync(w.env.RECALL_ROWS, JSON.stringify([
-      { key: 'project-state-current-1', namespace: 'proj', content: '{"status":"earlier applicable parser state"}' },
-      { key: 'project-state-current-2', namespace: 'proj', content: JSON.stringify({ status: 'rejected state', ...rejected }) },
+      { key: 'project-state-current-1791000000001', namespace: 'proj', content: '{"status":"earlier applicable parser state"}' },
+      { key: 'project-state-current-1791000000002', namespace: 'proj', content: JSON.stringify({ status: 'rejected state', ...rejected }) },
     ]));
     const result = await recall({ prompt: 'Fix parser', projectDir: w.proj, env: w.env, consequential: true,
-      enumerateKeys: async () => ({ ok: true, value: { proj: ['project-state-current-1','project-state-current-2'], default: [], lessons: [], 'continuity-events': [] } }) });
+      enumerateKeys: async () => ({ ok: true, value: { proj: ['project-state-current-1791000000001','project-state-current-1791000000002'], default: [], lessons: [], 'continuity-events': [] } }) });
     expect(result.categories.state).toBe('unavailable'); expect(result.outcome).toBe('unavailable');
-    expect(result.picks).toEqual([]); expect(w.calls().every(call => call.args.includes('project-state-current-2'))).toBe(true);
+    expect(result.picks).toEqual([]); expect(w.calls().every(call => call.args.includes('project-state-current-1791000000002'))).toBe(true);
   } finally { w.cleanup(); }
 });
 

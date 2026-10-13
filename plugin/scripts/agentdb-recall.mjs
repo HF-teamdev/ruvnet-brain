@@ -25,11 +25,16 @@ import { maskExcludedPaths } from './turn-capture-privacy.mjs';
 import { searchOnce, nativeRead, exactReads, searchJsonResult } from './agentdb-recall-process.mjs';
 import { makeLesson } from './lesson-store.mjs';
 import { supersededKeys, tombstonedKeys } from './decision-record.mjs';
+import { checkpointMs, checkpointNamespaces, newestCheckpoint } from './checkpoint-keys.mjs';
 export const STORE_FILES = Object.freeze(['memory.db']);
 export const DEFAULT_DEADLINE_MS = 1900;
 export const BLOCK_MAX_BYTES = 600;
 export const CONSEQUENTIAL_BLOCK_MAX_BYTES = 1800;
 export const MIN_RELEVANCE = 0.45;
+/** Exact-read requests one bounded reader child accepts (agentdb-recall-reader.mjs). */
+export const MAX_EXACT_READS = 32;
+
+export { checkpointMs, checkpointNamespaces, newestCheckpoint };
 
 export function recallBinding({ binding = {}, projectRoot, storePath, prompt } = {}) {
   const allowed = ['projectRoot', 'storePath', 'sessionId', 'workflowId', 'phase', 'workerId', 'requestDigest'];
@@ -140,7 +145,7 @@ export function turnOutcomeExcerpt(value, prompt) {
 /** Quote a substantive exact-value passage, including the remedy in structured lessons. */
 export function evidenceExcerpt(value, key, prompt = '') {
   const text = redactText(value);
-  if (/^project-state-current/i.test(key)) {
+  if (/^project-state-(?:current|auto)/i.test(key)) {
     // Checkpoints often lead with version/hash metadata. Quote one actual field,
     // selected by task terms, instead of spending the evidence budget on identity.
     const first = text.indexOf('{'); const last = text.lastIndexOf('}');
@@ -190,6 +195,8 @@ export function learningObservationExcerpt(raw) {
 export function pickRows(results, limit = 3) {
   const candidates = results.flatMap((r) => r.rows.filter((p) => p.namespace === r.namespace && (!NOISE_KEY.test(p.key) || p.namespace === 'turns' && /^turn[-_]/i.test(p.key) || p.namespace === 'continuity-events' && /^cevt-.*-(?:decision|lesson|open-item)-/i.test(p.key))
     && (!r.family || p.key.toLowerCase().includes(r.family))
+    // State comes only from the newest exact checkpoint read; a semantic hit on an older one is never shown.
+    && (r.family || !/^project-state-/i.test(p.key))
     && Number.isFinite(p.score) && p.score >= MIN_RELEVANCE).map((p) => ({ ...p, storePath: r.storePath, targeted: Boolean(r.family) })));
   const signal = (p) => SIGNAL_NAMESPACES.has(p.namespace) ? 2 : p.namespace === 'turns' ? 1 : p.namespace === LEARNING_NAMESPACE ? -1 : 0;
   const ranked = candidates.sort((a, b) => Number(b.targeted) - Number(a.targeted) || signal(b) - signal(a) || b.score - a.score);
@@ -227,13 +234,14 @@ export function searchDeadlineFor(started, deadline) { return Math.min(deadline,
 async function consequentialRecall({ prompt, root, store, bin, scratch, env, deadline, binding, signal, enumerateKeys, exclusions, rankedSearch = true }) {
   const searchDeadline = searchDeadlineFor(Date.now(), deadline);
   const phaseBinding = recallBinding({ binding, projectRoot: root, storePath: store.path, prompt });
-  const namespaces = [...new Set([path.basename(root), 'default', 'lessons', 'continuity-events'])];
+  const stateNamespaces = checkpointNamespaces(root);
+  const namespaces = [...new Set([...stateNamespaces, 'lessons', 'continuity-events'])];
   const enumeration = await enumerateKeys({ storePath: store.path, namespaces, deadline, signal, env, scratch });
   if (!enumeration?.ok || signal?.aborted || Date.now() >= deadline) return { block: formatBlock({ picks: [], status: 'unavailable structural enumeration' }), picks: [], stores: [store],
     status: { 'memory.db': 'unavailable' }, outcome: signal?.aborted ? 'unavailable' : Date.now() >= deadline ? 'timed-out' : 'unavailable', categories: { state: 'unavailable', decisions: 'unavailable', lessons: 'unavailable' } };
-  const keys = enumeration.value;
-  const stateKeys = keys[path.basename(root)].filter(key => /^project-state-current-\d+$/.test(key) && Number.isSafeInteger(Number(key.split('-').at(-1))))
-    .sort((a, b) => Number(b.split('-').at(-1)) - Number(a.split('-').at(-1)));
+  const keys = Object.fromEntries(namespaces.map(namespace => [namespace, Array.isArray(enumeration.value?.[namespace]) ? enumeration.value[namespace] : []]));
+  // Newest by the epoch-ms in the key, across every namespace spelling: never insertion order, score or one namespace.
+  const latestState = newestCheckpoint(keys, stateNamespaces);
   const decisionNamespaces = namespaces.filter(namespace => namespace !== 'lessons');
   const decisionKeys = decisionNamespaces.flatMap(namespace => keys[namespace].filter(key => /^decision[-_]|^cevt-.*-decision-/i.test(key)).map(key => ({ category: 'decisions', namespace, key })));
   let relevantDecisions = decisionKeys;
@@ -255,13 +263,17 @@ async function consequentialRecall({ prompt, root, store, bin, scratch, env, dea
     }
     if (!relevantDecisions.length) decisionAvailability = 'unavailable'; // semantic miss is not absent history
   }
-  const candidates = [
-    ...stateKeys.slice(0, 1).map(key => ({ category: 'state', namespace: path.basename(root), key })),
-    ...keys.lessons.filter(key => /^lesson[-_]/i.test(key)).map(key => ({ category: 'lessons', namespace: 'lessons', key })),
-    ...relevantDecisions,
-  ];
-  if (candidates.length > 32) return { block: formatBlock({ picks: [], status: 'unavailable bounded category selection' }), picks: [], stores: [store], status: { 'memory.db': 'unavailable' }, outcome: 'unavailable', categories: { state: 'unavailable', decisions: 'unavailable', lessons: 'unavailable' } };
-  const categories = { state: !stateKeys.length && keys[path.basename(root)].includes('project-state-current') ? 'unavailable' : 'ok-empty', decisions: decisionAvailability, lessons: 'ok-empty' };
+  const stateCandidates = latestState ? [{ category: 'state', namespace: latestState.namespace, key: latestState.key }] : [];
+  let lessonCandidates = keys.lessons.filter(key => /^lesson[-_]/i.test(key)).map(key => ({ category: 'lessons', namespace: 'lessons', key }));
+  // The exact-read budget is bounded. Too many lessons must never cost the state record: lessons alone become
+  // unavailable (an honest marker), the newest checkpoint and the decisions are still read.
+  let lessonAvailability = 'ok-empty';
+  if (stateCandidates.length + lessonCandidates.length + relevantDecisions.length > MAX_EXACT_READS) { lessonCandidates = []; lessonAvailability = 'unavailable'; }
+  const candidates = [...stateCandidates, ...lessonCandidates, ...relevantDecisions];
+  if (candidates.length > MAX_EXACT_READS) return { block: formatBlock({ picks: [], status: 'unavailable bounded category selection' }), picks: [], stores: [store], status: { 'memory.db': 'unavailable' }, outcome: 'unavailable', categories: { state: 'unavailable', decisions: 'unavailable', lessons: 'unavailable' } };
+  // Checkpoint keys that exist but none of which carries an orderable epoch-ms: history we cannot date, not absence.
+  const unorderedState = !latestState && stateNamespaces.some(namespace => keys[namespace].some(key => /^project-state-(?:current|auto)/.test(key)));
+  const categories = { state: unorderedState ? 'unavailable' : 'ok-empty', decisions: decisionAvailability, lessons: lessonAvailability };
   const records = [];
   candidates.forEach(candidate => { candidate.storePath = store.path; });
   const exactResults = await exactReads({ candidates, bin, deadline, env, scratch, signal });
@@ -344,7 +356,9 @@ export async function recall({ prompt, projectDir = process.cwd(), env = process
     const query = recallQuery(prompt);
     const scratchFor = scratch || ((storePath) => rufloCwdFor(storePath, { root: rufloScratchRoot(env) }));
     if (consequential) return await consequentialRecall({ prompt, root, store, bin, scratch: scratchFor, env, deadline, binding, signal, enumerateKeys, exclusions });
-    const namespaces = [...new Set(['lessons', 'patterns', 'pattern', 'turns', 'continuity-events', path.basename(root), 'default'])];
+    // Only namespaces something below reads: curated lessons/decisions, the checkpoint namespaces (dirname, its
+    // lowercase form, default) and turns for the single ranked search. Each one is a `ruflo memory list` process.
+    const namespaces = [...new Set(['lessons', 'turns', 'continuity-events', ...checkpointNamespaces(root)])];
     // This machine runs loaded (load average 30-60 measured 2026-10-10) and ranked search spawns one Ruflo process
     // per namespace; run concurrently they starve every other read past the deadline. So: ONE native enumeration
     // (reused for the curated pass and for pruning empty namespaces), then exact curated state/lessons/decisions,
