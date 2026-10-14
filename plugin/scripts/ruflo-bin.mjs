@@ -36,14 +36,76 @@
  * Rule 21 is untouched by this: still ONE ruflo, still the global one, never `npx ruflo@latest`. This
  * resolves WHERE that one global binary is rather than assuming everyone's prefix matches the owner's.
  */
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// WHICH NODE RUNS RUFLO (measured 2026-10-14, ruflo 3.56.9 / better-sqlite3 12.11.1). `ruflo` is
+// `#!/usr/bin/env node`, so the interpreter is whatever is FIRST on the CALLER's PATH — and an
+// installed better-sqlite3 holds ONE native ABI (this machine's was built for node 24). A hook
+// launched with PATH=/opt/homebrew/bin:… got node 26, and `memory store` was refused with
+// "Native memory writer required; refusing whole-image sql.js fallback": 67 failed captures in a day,
+// each one a lost turn record. Same command, only PATH changed: node 26 first → refused, node 24 first
+// → stored. Upstream's guard (ruflo#2219) covers shipping prebuilds for Node 20–26, not one install
+// being run under several nodes, so the choice belongs here, in the one resolver every caller shares.
+//
+// The test is the load itself — open an in-memory database through the SAME better-sqlite3 ruflo
+// will use — never a version string. Healthy machines are untouched: when the PATH node loads the
+// binding, this returns null and the invocation stays exactly `ruflo …`.
+function defaultNodeCandidates(env) {
+  const out = [];
+  for (const dir of String(env.PATH || '').split(path.delimiter)) if (dir) out.push(path.join(dir, 'node'));
+  out.push(process.execPath);
+  try {
+    const opt = '/opt/homebrew/opt';
+    for (const name of fs.readdirSync(opt).filter((n) => /^node(@\d+)?$/.test(n)).sort().reverse()) {
+      out.push(path.join(opt, name, 'bin', 'node'));
+    }
+  } catch { /* no Homebrew opt dir */ }
+  out.push('/opt/homebrew/bin/node', '/usr/local/bin/node');
+  return [...new Set(out)].filter((c) => { try { return fs.statSync(c).isFile(); } catch { return false; } });
+}
+
+const nativeNodeCache = new Map();
+
+/**
+ * The node that can load ruflo's native better-sqlite3, or null when the caller's own PATH node
+ * already can, when ruflo is not a node package we can inspect, or when no candidate can.
+ * Null always means "leave the invocation exactly as it was" — this never makes anything worse.
+ *
+ * @param {string} binary  path to the ruflo bin (symlink or script)
+ * @param {{ env?: Record<string,string|undefined>, candidates?: string[] }} [opts]
+ * @returns {{ node: string, entry: string }|null}
+ */
+export function nativeNodeFor(binary, { env = process.env, candidates } = {}) {
+  let entry;
+  try { entry = fs.realpathSync(binary); } catch { return null; }
+  const addon = path.join(path.dirname(path.dirname(entry)), 'node_modules', 'better-sqlite3');
+  try { if (!fs.statSync(addon).isDirectory()) return null; } catch { return null; }
+
+  const list = candidates ?? defaultNodeCandidates(env);
+  const cacheKey = `${entry}\0${list.join('\0')}`;
+  if (nativeNodeCache.has(cacheKey)) return nativeNodeCache.get(cacheKey);
+
+  const probe = `new (require(${JSON.stringify(addon)}))(':memory:').close()`;
+  let chosen = null;
+  for (let i = 0; i < list.length; i += 1) {
+    const r = spawnSync(list[i], ['-e', probe], { stdio: 'ignore', timeout: 8000, windowsHide: true });
+    if (r.status === 0) { chosen = i === 0 ? null : { node: list[i], entry }; break; }
+  }
+  nativeNodeCache.set(cacheKey, chosen);
+  return chosen;
+}
+
 // npm's Windows .cmd shim cannot be spawned without a shell. Resolve the declared entry
 // inside that same managed installation and pass argv directly to Node instead.
-export function rufloInvocation(binary, args, { platform = process.platform } = {}) {
-  if (platform !== 'win32' || !/\.cmd$/i.test(binary)) return { executable: binary, args };
+export function rufloInvocation(binary, args, { platform = process.platform, env = process.env, nodeCandidates } = {}) {
+  if (platform !== 'win32') {
+    const native = nativeNodeFor(binary, { env, candidates: nodeCandidates });
+    return native ? { executable: native.node, args: [native.entry, ...args] } : { executable: binary, args };
+  }
+  if (!/\.cmd$/i.test(binary)) return { executable: binary, args };
   if (path.basename(binary).toLowerCase() !== 'ruflo.cmd') throw new Error('unsupported managed Ruflo shim');
   const packageRoot = fs.realpathSync(path.join(path.dirname(fs.realpathSync(binary)), 'node_modules', 'ruflo'));
   const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
