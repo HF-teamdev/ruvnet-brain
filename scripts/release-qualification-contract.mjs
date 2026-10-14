@@ -190,8 +190,8 @@ export const RELEASE_REQUIREMENTS = Object.freeze({
         "tests/unit/codex-hook-trust.test.mjs"
       ],
       "platformFiles": {
-        "linux": ["tests/unit/model-weekly-cycle-native-stub.test.mjs"],
-        "macos": ["tests/unit/model-weekly-cycle-native-stub.test.mjs"]
+        "linux": ["tests/unit/model-weekly-cycle-native-stub.test.mjs", "tests/unit/goldie-weekly-path.test.mjs"],
+        "macos": ["tests/unit/model-weekly-cycle-native-stub.test.mjs", "tests/unit/goldie-weekly-path.test.mjs"]
       }
     },
     {
