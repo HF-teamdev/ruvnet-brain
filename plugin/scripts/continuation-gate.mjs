@@ -390,7 +390,9 @@ const completion = (() => {
  * can never close must never be written. Per-turn and total caps; dedupe against open items by
  * normalized text; project + worktree scoped exactly like --commit-to's objective. Fails open.
  */
+const STOP_NUDGES_FULL = String(process.env.RUVNET_STOP_NUDGES || '').toLowerCase() === 'full';
 function promiseBookkeeping() {
+  if (!STOP_NUDGES_FULL) return;
   if (HOST !== 'claude' || !hookInput.session_id || hookInput.session_id === '*') return;
   try {
     const pid = projectIdentity.projectId;
@@ -733,8 +735,17 @@ const promiseWork = HOST === 'claude'
 const deferralWork = deferralState?.v.verdict === 'DEFERRAL' && deferralState.forced < MAX_DEFERRAL_FORCES ? [{
   text: `your answer ends by handing authorized work back ("${deferralState.v.deferral.phrase}") although ${deferralState.v.authorization} authorizes it and no blocker is named. Do that work now`,
   at: new Date(nowMs).toISOString(), derived: true, kind: 'no-deferral' }] : [];
+/**
+ * QUIET BY DEFAULT (owner, 2026-10-15): a Stop hook that talks on ordinary turns teaches people to ignore or
+ * disable the whole product. Unless RUVNET_STOP_NUDGES=full, this gate speaks ONLY for (1) an objective the
+ * user explicitly committed it to, and (2) a RuvNet capability claim contradicted by typed evidence. Promise
+ * nudges, completion-claim corrections, decision-record reminders, deferral nags and "unknown" claims are
+ * dropped. Promises are not even captured in quiet mode: capturing work that is never nudged is only ledger
+ * bloat. `full` restores every nudge (tests and anyone who wants them).
+ */
 const open = [...capabilityClaimWork(), ...completionWork, ...decisionWork, ...deferralWork,
-  ...(objective ? [{ text: objective.text, at: objective.at }] : []), ...promiseWork];
+  ...(objective ? [{ text: objective.text, at: objective.at }] : []), ...promiseWork]
+  .filter((i) => STOP_NUDGES_FULL || !i.kind || (i.kind === 'capability-claim-integrity' && / contradicts /.test(i.text)));
 if (!open.length) process.exit(EXIT_ALLOW);   // nothing outstanding: silence is correct
 
 /**
