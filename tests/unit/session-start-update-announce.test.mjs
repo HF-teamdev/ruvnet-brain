@@ -24,12 +24,12 @@ function beat({ running, active, remote }) {
 
 describe('update announcement vs the active generation', () => {
   it('is silent when the remote version is already active', () => {
-    expect(beat({ running: '4.7.5', active: '4.7.6', remote: '4.7.6' })).toBe('');
+    expect(beat({ running: '3.1.0', active: '3.1.1', remote: '3.1.1' })).toBe('');
   });
   it('is silent when the active generation is newer than the remote', () => {
-    expect(beat({ running: '4.7.5', active: '4.7.7', remote: '4.7.6' })).toBe('');
+    expect(beat({ running: '3.1.0', active: '3.1.2', remote: '3.1.1' })).toBe('');
   });
   it('still announces a remote version newer than the active generation', () => {
-    expect(beat({ running: '4.7.5', active: '4.7.6', remote: '4.7.7' })).toContain('4.7.7');
+    expect(beat({ running: '3.1.0', active: '3.1.1', remote: '3.1.2' })).toContain('3.1.2');
   });
 });
