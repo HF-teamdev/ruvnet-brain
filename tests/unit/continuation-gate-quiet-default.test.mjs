@@ -33,4 +33,19 @@ describe('quiet by default', () => {
   it('the grounding turn gate exits silently', () => {
     expect(stop(TURN, 'Ruflo does everything.', { RUVNET_STOP_NUDGES: '' }).out).toBe('');
   });
+  it('the per-prompt advisory hooks are silent through the shim unless full', () => {
+    const SHIM = path.resolve('plugin/scripts/hook-shim.mjs');
+    for (const id of ['unprompted-speech', 'capacity-aware-parallel-work', 'grounding-turn-gate']) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quiet-shim-'));
+      dirs.push(dir);
+      const run = (nudges) => spawnSync(process.execPath, [SHIM, id], { cwd: dir, encoding: 'utf8',
+        input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: dir, prompt: 'Please research and implement three independent workstreams in parallel: refactor the updater, rewrite the docs, and add tests for the installer, each in separate files' }),
+        env: { ...process.env, HOME: dir, RUVNET_STOP_NUDGES: nudges } });
+      const quiet = run('');
+      expect(quiet.status).toBe(0);
+      expect(quiet.stdout).toBe('');
+      expect(quiet.stderr).toBe('');
+      if (id === 'capacity-aware-parallel-work') expect(run('full').stdout).toContain('Capacity-aware parallel-work advisory');
+    }
+  });
 });
