@@ -8,7 +8,10 @@
     { "store": "cognitum-meta-llm-docs", "repository": "cognitum-one/meta-llm-docs" },
     { "store": "cognitum-meta-proxy-dist", "repository": "cognitum-one/meta-proxy-dist" },
     { "store": "cognitum-one-sensor-primer", "repository": "stuinfla/cognitum-one-sensor-primer" },
-    { "store": "cognitum-ruos", "repository": "cognitum-one/ruOS" },
+    { "store": "cognitum-ruos", "repository": "cognitum-one/ruOS", "ifGone": {
+      "sourceCommit": "b1762a71bb1ad58b9175e2ae78ed454fed47b655", "committedAt": "2026-07-02T11:14:33Z",
+      "pushedAt": "2026-09-10T12:41:13Z", "updatedAt": "2026-09-10T19:25:36Z",
+      "description": "Cross-compile & .deb packaging pipeline for ruvultra Linux distribution. amd64 + arm64." } },
     { "store": "cognitum-support", "repository": "cognitum-one/support" },
     { "store": "ruvnet-brain", "repository": "stuinfla/ruvnet-brain" }
   ]
