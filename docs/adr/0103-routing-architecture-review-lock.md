@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-10-05
 updated: 2026-10-17
 version: 0.1.40
-reviewed_digest: 7ef78a9e8f9d
+reviewed_digest: f0062d103bef
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -363,6 +363,7 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-15 | Reviewed `f480102b6005` against source `75dd2308` (fix on top of 4.7.7 `ba0f9ec3`) and the recorded final working bytes. | 4.7.8 changes no routing behavior. Four governed bytes moved. `package-lock.json`: its two version fields went 4.7.7 to 4.7.8 (from `npm run version:set`). `plugin/scripts/hook-shim.mjs`: three advisory-only hook ids exit silently unless `RUVNET_STOP_NUDGES=full`. `plugin/scripts/agentdb-recall.mjs`: a timed-out or unavailable recall prints nothing by default. `plugin/scripts/decision-gate.mjs`: its budget-exhausted and policy-skipped stderr lines print only on a refusal or under `full`; the outcome ledger is unchanged. No model route, spend, authority or allocation changed. |
 | 2026-10-15 | Reviewed `3766bcde7ff9` against source `f30756df` (fix on top of 4.7.8 `9074cea2`) and the recorded final working bytes. | 4.7.9 changes no routing behavior. Two governed bytes moved. `package-lock.json`: its two version fields went 4.7.8 to 4.7.9 (from `npm run version:set`). `plugin/scripts/continuation-gate.mjs`: the observed-work advisory line is printed only under `RUVNET_STOP_NUDGES=full`. The ungoverned `plugin/scripts/developer-update-lock.mjs` now reclaims a developer-update lock whose owner has been dead for 10+ minutes. No model route, spend, authority or allocation changed. |
 | 2026-10-17 | Reviewed `7ef78a9e8f9d` against source `cea1f713` (fix on top of 4.7.9 `b44f51cc`) and the recorded final working bytes. | 4.7.10 changes no routing behavior. One governed byte moved: `package-lock.json`, its two version fields went 4.7.9 to 4.7.10 (from `npm run version:set`). The ungoverned `scripts/source-coverage.mjs` now carries an external source that GitHub reports gone (HTTP 404/410) at the commit its `kb/external-sources.json` entry records in `ifGone`, instead of failing the corpus observation; other errors still fail it. Every other governed path, including `plugin/scripts/continuation-gate.mjs` and `plugin/hooks/hook-contracts.json`, is byte-identical to 4.7.9 (`git diff --name-only b44f51cc cea1f713` lists no other governed file). No model route, spend, authority or allocation changed. |
+| 2026-10-17 | Reviewed `f0062d103bef` against source `de4b6901` (4.7.10) and the recorded final working bytes. | 4.7.11 changes no routing behavior. One governed byte moved: `package-lock.json`, its two version fields went 4.7.10 to 4.7.11 (from `npm run version:set`). The ungoverned `kb/external-sources.json` `ifGone` entry for `cognitum-ruos` now records the commit the live corpus actually serves (`576dc8c8`, not the older `b1762a71`), so a gone upstream classifies CURRENT and nothing is re-cloned. Every other governed path, including `plugin/scripts/continuation-gate.mjs` and `plugin/hooks/hook-contracts.json`, is byte-identical to 4.7.10 (`git diff --stat origin/main` lists no other governed file). No model route, spend, authority or allocation changed. |
 
 ## Current completion safeguard scope
 
