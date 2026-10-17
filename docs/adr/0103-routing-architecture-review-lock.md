@@ -3,9 +3,9 @@ id: ADR-103
 title: Routing architecture qualification requires a current finite source review
 status: Accepted
 date: 2026-10-05
-updated: 2026-10-15
+updated: 2026-10-17
 version: 0.1.40
-reviewed_digest: 3766bcde7ff9
+reviewed_digest: 7ef78a9e8f9d
 impl: built
 authors: [Stuart Kerr, Codex]
 tags: [routing, governance, review, release, traceability]
@@ -362,6 +362,7 @@ finite release refusal. No paid provider call, model generation or system config
 | 2026-10-15 | Reviewed `ea863c8b1d0c` against source `33e69694` (fix on top of 4.7.6 `1d4ec0b5`) and the recorded final working bytes. | 4.7.7 changes no routing behavior. Three governed bytes moved. `package-lock.json`: its two version fields went 4.7.6 to 4.7.7 (from `npm run version:set`). `plugin/scripts/continuation-gate.mjs`: an assistant promise that can never close (its completion verdict cannot be PASS) was forced at every Stop; it is now forced at most three times, counted beside the ledger, then retained as deferred and never marked completed, and the gate is quiet by default (only an explicit objective or a contradicted capability claim speaks) unless `RUVNET_STOP_NUDGES=full`. `plugin/scripts/grounding-turn-gate.mjs`: exits silently unless `RUVNET_STOP_NUDGES=full`. No model route, spend, authority or allocation changed. |
 | 2026-10-15 | Reviewed `f480102b6005` against source `75dd2308` (fix on top of 4.7.7 `ba0f9ec3`) and the recorded final working bytes. | 4.7.8 changes no routing behavior. Four governed bytes moved. `package-lock.json`: its two version fields went 4.7.7 to 4.7.8 (from `npm run version:set`). `plugin/scripts/hook-shim.mjs`: three advisory-only hook ids exit silently unless `RUVNET_STOP_NUDGES=full`. `plugin/scripts/agentdb-recall.mjs`: a timed-out or unavailable recall prints nothing by default. `plugin/scripts/decision-gate.mjs`: its budget-exhausted and policy-skipped stderr lines print only on a refusal or under `full`; the outcome ledger is unchanged. No model route, spend, authority or allocation changed. |
 | 2026-10-15 | Reviewed `3766bcde7ff9` against source `f30756df` (fix on top of 4.7.8 `9074cea2`) and the recorded final working bytes. | 4.7.9 changes no routing behavior. Two governed bytes moved. `package-lock.json`: its two version fields went 4.7.8 to 4.7.9 (from `npm run version:set`). `plugin/scripts/continuation-gate.mjs`: the observed-work advisory line is printed only under `RUVNET_STOP_NUDGES=full`. The ungoverned `plugin/scripts/developer-update-lock.mjs` now reclaims a developer-update lock whose owner has been dead for 10+ minutes. No model route, spend, authority or allocation changed. |
+| 2026-10-17 | Reviewed `7ef78a9e8f9d` against source `cea1f713` (fix on top of 4.7.9 `b44f51cc`) and the recorded final working bytes. | 4.7.10 changes no routing behavior. One governed byte moved: `package-lock.json`, its two version fields went 4.7.9 to 4.7.10 (from `npm run version:set`). The ungoverned `scripts/source-coverage.mjs` now carries an external source that GitHub reports gone (HTTP 404/410) at the commit its `kb/external-sources.json` entry records in `ifGone`, instead of failing the corpus observation; other errors still fail it. Every other governed path, including `plugin/scripts/continuation-gate.mjs` and `plugin/hooks/hook-contracts.json`, is byte-identical to 4.7.9 (`git diff --name-only b44f51cc cea1f713` lists no other governed file). No model route, spend, authority or allocation changed. |
 
 ## Current completion safeguard scope
 
