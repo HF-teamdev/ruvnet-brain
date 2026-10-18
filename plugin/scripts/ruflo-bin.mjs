@@ -71,7 +71,8 @@ function defaultNodeCandidates(env) {
 // 3.56.10 hoisted nothing (copies nested under @claude-flow/cli, @claude-flow/memory and agentdb), so probing only
 // <ruflo>/node_modules/better-sqlite3 found nothing and node selection silently never ran; ruflo 3.57.0 hoists it.
 // We probe the hoisted copy first, so a machine that has one behaves exactly as before, then the nested layouts.
-// Every candidate is a fixed path under ruflo's own realpath; all copies are built for the same Node ABI.
+// Every candidate is a fixed path under ruflo's own realpath. Copies can differ in version (3.57.0: hoisted 12.11.1,
+// agentdb's nested 11.10.0), so the probed copy is a proxy for the one the writer loads, not proof of it.
 const ADDON_DIRS = [
   ['node_modules', 'better-sqlite3'],
   ['node_modules', '@claude-flow', 'cli', 'node_modules', 'better-sqlite3'],
