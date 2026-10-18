@@ -67,10 +67,11 @@ function defaultNodeCandidates(env) {
   return [...new Set(out)].filter((c) => { try { return fs.statSync(c).isFile(); } catch { return false; } });
 }
 
-// Where ruflo's native better-sqlite3 really lives. Measured 2026-10-17 (ruflo 3.56.10, npm -g): npm does not hoist
-// it to <ruflo>/node_modules; the copies are nested under the packages that depend on it, and the CLI's own
-// memory writer (memory-initializer) resolves the one under @claude-flow/cli. Probing the hoisted path alone found
-// nothing, so node selection silently never ran. Order = the copy the writer would load first.
+// Where ruflo's native better-sqlite3 lives depends on the ruflo release. Measured 2026-10-17 with npm -g: ruflo
+// 3.56.10 hoisted nothing (copies nested under @claude-flow/cli, @claude-flow/memory and agentdb), so probing only
+// <ruflo>/node_modules/better-sqlite3 found nothing and node selection silently never ran; ruflo 3.57.0 hoists it.
+// We probe the hoisted copy first, so a machine that has one behaves exactly as before, then the nested layouts.
+// Every candidate is a fixed path under ruflo's own realpath; all copies are built for the same Node ABI.
 const ADDON_DIRS = [
   ['node_modules', 'better-sqlite3'],
   ['node_modules', '@claude-flow', 'cli', 'node_modules', 'better-sqlite3'],
