@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "brainVersion": "4.7.11",
-  "releaseTag": "v4.7.11",
+  "brainVersion": "4.7.12",
+  "releaseTag": "v4.7.12",
   "stores": {
     "agentdb": {
       "file": "agentdb.big.rvf",
