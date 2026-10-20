@@ -281,10 +281,14 @@ jobs:
           # published no sidecar gives no coverage, so any retirement it claims is rejected.
           seed_has_sidecar="$(node -e "const r=require(process.env.RUNNER_TEMP+'/corpus-seed-release.json');const n=(x)=>(r.assets||[]).filter((a)=>a.name===x).length;console.log(n('CORPUS-COVERAGE.json')===1&&n('coverage-receipt.json')===1?1:0)")"
           if [ "$seed_has_sidecar" = 1 ]; then
-            retry3 gh release download "$SEED_TAG" --repo "$GITHUB_REPOSITORY" \
-              --pattern 'CORPUS-COVERAGE.json' --dir "$RUNNER_TEMP/corpus-seed-download" --clobber
-            retry3 gh release download "$SEED_TAG" --repo "$GITHUB_REPOSITORY" \
-              --pattern 'coverage-receipt.json' --dir "$RUNNER_TEMP/corpus-seed-download" --clobber
+            # Spelled out (not retry3) so this block stays self-contained for the test that executes it alone.
+            for asset in CORPUS-COVERAGE.json coverage-receipt.json; do
+              for attempt in 1 2 3; do
+                gh release download "$SEED_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$RUNNER_TEMP/corpus-seed-download" --clobber && break
+                [ "$attempt" = 3 ] && exit 1
+                sleep $((15 * attempt))
+              done
+            done
           fi
           node --input-type=module <<'NODE'
           import { readDiagnosticAccuracyReport } from './scripts/oracle/retrieval-accuracy.mjs';

@@ -358,7 +358,7 @@ process.stderr.write('not in fixture: ' + args.join(' ')); process.exit(1);
     expect(result.stderr).toBe('');
     expect(result.status).toBe(1);
     expect(result.stdout).toMatch(/\[RED\] promoted-age: customers receive corpus-sha256-1+, 59\.0h old/);
-    expect(result.stdout).toMatch(/^corpus-watchdog RED -- night: stood down at 3:17 a\.m\. ET Sep 29 \(CORPUS_NIGHTLY off, or no install-verified runtime\); customers keep corpus-sha256-1+ \(59\.0h old\)\n {2}judged 1:17 p\.m\. ET Sep 29 \(2026-09-29T17:17:00\.000Z\)\n/);
+    expect(result.stdout).toMatch(/^corpus-watchdog RED -- night: stood down at 3:17 a\.m\. ET Sep 29 \(CORPUS_NIGHTLY off, or no install-verified runtime\); customers keep corpus-sha256-1+ \(59\.0h old\)\n {2}judged 1:17 p\.m\. ET Sep 29 \(2026-09-29T17:17:00\.000Z\)\n/); // sync-version-ignore: NOW is this file's fixture clock, rendered in ET and ISO
     expect(result.stdout).toMatch(/\[RED\] freshness: no night ended published or no-change in the last 48h/);
     expect(result.stdout).toMatch(/\[INFO\] code-aggregate: v9\.8\.7 is 2\.0h old; aggregate pending/);
     expect(result.stdout).toMatch(/\[INFO\] deferral: not observable: .*predates the D6\.2 coverage sidecar/);
