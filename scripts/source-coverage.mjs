@@ -9,6 +9,7 @@ import { readRvfGenerations, sha256File } from './rvf-generation.mjs';
 import { canonicalJson, coverageGenerationFor, digest, validateGistAggregateReceipt } from './coverage-integrity.mjs';
 import { repositoryNames } from '../kb/card-lane.mjs';
 import { rootNeverMaterialized, storeRoot } from '../kb/store-root.mjs';
+import { isTransientText, retryTransient, sleepSync } from './transient-gh.mjs';
 
 export { canonicalJson, digest } from './coverage-integrity.mjs';
 
@@ -52,6 +53,11 @@ function runGh(args) {
   return result.stdout;
 }
 
+// Every observation read below goes through this: a transient failure (rate limit, 5xx, a reset) is retried,
+// bounded, before it can fail the night (scripts/transient-gh.mjs). Applied around the INJECTED `gh`, not
+// inside runGh, so the fault-injection suite exercises the same retry the nightly runs.
+const retryingRead = (gh, sleep) => (args) => retryTransient(() => gh(args), { sleep });
+
 // A fork's disposition depends on how many commits it carries that its upstream does not. The
 // compare is pinned to the two heads THIS observation recorded (never to branch names, which move),
 // and is run against the upstream repository in GitHub's documented cross-fork form
@@ -80,7 +86,8 @@ function observeForkDelta(owner, node, gh) {
   };
 }
 
-export function observeRepositories(owner, { gh = runGh } = {}) {
+export function observeRepositories(owner, { gh: rawGh = runGh, sleep = sleepSync } = {}) {
+  const gh = retryingRead(rawGh, sleep);
   const rows = [];
   const pages = [];
   let cursor = '';
@@ -103,10 +110,11 @@ export function observeRepositories(owner, { gh = runGh } = {}) {
   return { rows: withDeltas, expected, pages };
 }
 
-// The row an external source reports once its upstream is gone: exactly what was last observed, so the
-// stored content classifies CURRENT, nothing is re-ingested, and the row says plainly it is no longer live.
-function goneExternalRow(source) {
-  const gone = source.ifGone;
+// The row an external source reports when its upstream cannot be read: exactly what was last observed (or last
+// ingested), so the stored content classifies CURRENT, nothing is re-ingested, and the row says plainly why.
+// `gone` is the policy's ifGone entry (404/410); for a source unreadable for a moment it is the seed ledger's
+// own commit, with `reason` naming the failure.
+function unavailableExternalRow(source, gone, reason) {
   if (!/^[0-9a-f]{40}$/i.test(String(gone.sourceCommit || ''))) {
     throw new Error(`external source ${source.repository}: ifGone.sourceCommit must be the 40-hex commit last ingested`);
   }
@@ -114,12 +122,19 @@ function goneExternalRow(source) {
     name: source.repository.split('/')[1], fullName: source.repository, storeName: source.store,
     url: `https://github.com/${source.repository}`, description: gone.description ?? null, homepageUrl: null,
     isFork: false, upstreamIsFork: false, isArchived: false, isDisabled: false,
-    updatedAt: gone.updatedAt ?? null, pushedAt: gone.pushedAt ?? null, upstreamUnavailable: true,
+    updatedAt: gone.updatedAt ?? null, pushedAt: gone.pushedAt ?? null, upstreamUnavailable: true, upstreamUnavailableReason: reason,
     defaultBranchRef: { name: gone.defaultBranch || 'HEAD', target: { oid: gone.sourceCommit, committedDate: gone.committedAt ?? null } },
   };
 }
 
-export function observeExternalRepositories(sources, { gh = runGh } = {}) {
+/**
+ * `carriedCommits`: { <store>: <40-hex sourceCommit> } from the seed's own generation ledger. A source whose
+ * read still fails TRANSIENTLY after the bounded retry (rate limit, 5xx, a reset; measured 2026-09-26) is then
+ * carried at that commit for ONE night -- the row says so, the bytes are the last verified ones, the next night
+ * reads it again. Without a prior commit there is nothing honest to carry, and the observation fails.
+ */
+export function observeExternalRepositories(sources, { gh: rawGh = runGh, sleep = sleepSync, carriedCommits = null } = {}) {
+  const gh = retryingRead(rawGh, sleep);
   const rows = [];
   const pages = [];
   for (const source of sources) {
@@ -134,13 +149,21 @@ export function observeExternalRepositories(sources, { gh = runGh } = {}) {
         ? JSON.parse(gh(['api', `repos/${source.repository}/commits/${repo.default_branch}`]))
         : null;
     } catch (error) {
-      // An upstream that GitHub reports gone (404/410) must not stop every night for every customer.
-      // Only a source whose policy entry records `ifGone` (the commit it was last ingested at) may be
-      // carried; anything else -- 403, rate limit, a mistyped repository -- still fails the observation.
-      if (!source.ifGone || !/\(HTTP (404|410)\)/.test(String(error.message))) throw error;
-      process.stderr.write(`[source-coverage] external source ${source.repository} is gone upstream; carrying the last ingested content (${source.ifGone.sourceCommit})\n`);
-      rows.push(goneExternalRow(source));
-      pages.push({ repository: source.repository, responseDigest: digest({ gone: source.repository, ifGone: source.ifGone }), count: 1, terminal: true });
+      // An upstream that GitHub reports gone (404/410) must not stop every night for every customer: a source
+      // whose policy entry records `ifGone` (the commit it was last ingested at) is carried there. A source that
+      // is merely unreadable tonight (still transient after the retry) is carried at the seed's own commit when
+      // it has one. Anything else -- a bare 403, a mistyped repository, no prior bytes -- still fails the observation.
+      const message = String(error.message);
+      const gone = source.ifGone && /\(HTTP (404|410)\)/.test(message);
+      const carried = String(carriedCommits?.[String(source.store).toLowerCase()] || '').toLowerCase();
+      const unreadable = !gone && isTransientText(message) && /^[0-9a-f]{40}$/.test(carried);
+      if (!gone && !unreadable) throw error;
+      const reason = gone ? 'is no longer reachable (HTTP 404/410)'
+        : `was unreadable this observation (${message.replace(/\s+/g, ' ').trim().slice(0, 160)}); it is read again next night`;
+      const at = gone ? source.ifGone : { sourceCommit: carried };
+      process.stderr.write(`[source-coverage] external source ${source.repository} ${reason}; carrying the last ingested content (${at.sourceCommit})\n`);
+      rows.push(unavailableExternalRow(source, at, reason));
+      pages.push({ repository: source.repository, responseDigest: digest({ unavailable: source.repository, at, reason }), count: 1, terminal: true });
       continue;
     }
     const row = {
@@ -164,9 +187,11 @@ export function observeSourceUniverse({
   externalSources = [],
   gh = runGh,
   observedAt = new Date().toISOString(),
+  sleep = sleepSync,
+  carriedCommits = null,
 } = {}) {
-  const primary = observeRepositories(owner, { gh });
-  const external = observeExternalRepositories(externalSources, { gh });
+  const primary = observeRepositories(owner, { gh, sleep });
+  const external = observeExternalRepositories(externalSources, { gh, sleep, carriedCommits });
   const repositoryRows = canonicalRepositoryRows([...primary.rows, ...external.rows]);
   const repositories = sourceSetObservation(repositoryRows, primary.expected + external.expected);
   const repositoryKeys = new Set();
@@ -179,7 +204,7 @@ export function observeSourceUniverse({
     repositoryKeys.add(repositoryKey);
     storeKeys.add(storeKey);
   }
-  const observedGists = observeGists(owner, { gh });
+  const observedGists = observeGists(owner, { gh, sleep });
   const gists = sourceSetObservation(canonicalGistRows(observedGists.rows), observedGists.expected);
   return canonicalSourceObservation({
     schemaVersion: 1,
@@ -222,6 +247,7 @@ export function canonicalRepositoryRows(rows = []) {
     isArchived: repo?.isArchived === true,
     isDisabled: repo?.isDisabled === true,
     ...(repo?.upstreamUnavailable === true ? { upstreamUnavailable: true } : {}),
+    ...(repo?.upstreamUnavailable === true && repo?.upstreamUnavailableReason ? { upstreamUnavailableReason: String(repo.upstreamUnavailableReason) } : {}),
     diskUsage: repo?.diskUsage,
     updatedAt: repo?.updatedAt ?? null,
     pushedAt: repo?.pushedAt ?? null,
@@ -325,7 +351,11 @@ function listGistsUnauthenticated(owner, curl) {
   return pages;
 }
 
-export function observeGists(owner, { gh = runGh, curl = runCurl } = {}) {
+export function observeGists(owner, { gh: rawGh = runGh, curl: rawCurl = runCurl, sleep = sleepSync } = {}) {
+  // A rate limit on either channel (measured 2026-09-26: the gist list) is retried, bounded, before the
+  // integration-token 403 is allowed to fall back to the anonymous list, which is itself rate-limited.
+  const gh = retryingRead(rawGh, sleep);
+  const curl = retryingRead(rawCurl, sleep);
   let pages;
   try {
     const raw = gh(['api', `users/${owner}/gists?per_page=100`, '--paginate', '--slurp']);
@@ -414,7 +444,9 @@ export function classifyRepository(repo, evidence, exclusion = null, outcome = n
     status = 'FAILED';
     reasons.push(outcome.integrity);
   }
-  if (repo.upstreamUnavailable === true) reasons.push(`upstream ${repo.fullName} is no longer reachable (HTTP 404/410); serving the content last ingested at ${upstreamSha}`);
+  if (repo.upstreamUnavailable === true) {
+    reasons.push(`upstream ${repo.fullName} ${repo.upstreamUnavailableReason || 'is no longer reachable (HTTP 404/410)'}; serving the content last ingested at ${upstreamSha}`);
+  }
   const record = {};
   if (disposed && outcome?.carry && status === 'STALE') record.carry = { ...outcome.carry };
   if (disposed && outcome?.failure && status === 'MISSING') record.failure = { ...outcome.failure };
