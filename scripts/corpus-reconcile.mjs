@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { extractZip } from '../kb/zip-extract.mjs';
 import { normalizeUpdaterManifest } from './updater-manifest.mjs';
 import { FULL_HINTS, KEEP_DIRS } from './full-hints.mjs';
-import { TRANSIENT_CARRY_REASON, buildCoverage, observeSourceUniverse, renderMarkdown } from './source-coverage.mjs';
+import { buildCoverage, observeSourceUniverse, renderMarkdown } from './source-coverage.mjs';
 import { promoteArtifactSet } from '../kb/incremental-refresh.mjs';
 import { rebuildCorpusAggregates } from './corpus-aggregates.mjs';
 import { assertCapabilityOnlyStore, isCapabilityOnly, CAPABILITY_RETIRED_SUFFIXES } from '../kb/capability-only.mjs';
@@ -893,12 +893,20 @@ async function observeSourceOnly({ owner, assetsDir }) {
  * for that source exactly as before rather than carrying it forever.
  */
 export function transientCarryCommits({ ledger, priorCoverage = null }) {
-  const alreadyCarried = new Set((priorCoverage?.rows || [])
-    .filter((row) => row?.kind === 'repository' && row.upstreamUnavailableKind === 'transient' && row.carry?.reason === TRANSIENT_CARRY_REASON)
+  // No sealed coverage to read history from (the bootstrap lineage, or an invalid sidecar) = no carry at all:
+  // the allowance exists only where the previous night can prove it was not already spent.
+  if (!Array.isArray(priorCoverage?.rows)) return {};
+  // ANY carried seed row spends it -- a failed refresh last night and an unreadable upstream tonight must not
+  // alternate forever either.
+  const alreadyCarried = new Set(priorCoverage.rows
+    .filter((row) => row?.kind === 'repository' && row.carry)
     .map((row) => String(row.artifact?.store || '').toLowerCase()));
   return Object.fromEntries(Object.entries(ledger?.stores || {})
     .filter(([store, row]) => HEX40.test(String(row?.sourceCommit || '').toLowerCase()) && !alreadyCarried.has(store.toLowerCase()))
-    .map(([store, row]) => [store.toLowerCase(), String(row.sourceCommit).toLowerCase()]));
+    .map(([store, row]) => {
+      const sourceCommit = String(row.sourceCommit).toLowerCase();
+      return [store.toLowerCase(), { sourceCommit, committedAt: carriedCommittedAt({ priorCoverage, store, sourceCommit }) }];
+    }));
 }
 
 export async function acquireCorpusGeneration({ owner = 'ruvnet', assetsDir, workspaceDir,

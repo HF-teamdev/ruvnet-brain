@@ -133,7 +133,7 @@ export const TRANSIENT_UNREADABLE_REASON = 'was unreadable this observation (tra
 export const TRANSIENT_CARRY_REASON = 'transient: upstream unreadable';
 
 /**
- * `carriedCommits`: { <store>: <40-hex sourceCommit> } from the seed's own generation ledger, already stripped
+ * `carriedCommits`: { <store>: { sourceCommit, committedAt } } from the seed's own generation ledger, already stripped
  * of any store the seed's coverage shows was ALREADY carried this way (corpus-reconcile.mjs transientCarryCommits),
  * so the same source is never carried two nights running. A source whose read still fails TRANSIENTLY after the
  * bounded retry (rate limit, 5xx, a reset; measured 2026-09-26) is pinned at that commit for ONE night: its row
@@ -163,14 +163,17 @@ export function observeExternalRepositories(sources, { gh: rawGh = runGh, sleep 
       // it has one. Anything else -- a bare 403, a mistyped repository, no prior bytes -- still fails the observation.
       const message = String(error.message);
       const gone = source.ifGone && /\(HTTP (404|410)\)/.test(message);
-      const carried = String(carriedCommits?.[String(source.store).toLowerCase()] || '').toLowerCase();
+      const prior = carriedCommits?.[String(source.store).toLowerCase()];
+      const carried = String(prior?.sourceCommit ?? prior ?? '').toLowerCase();
       const unreadable = !gone && isTransientText(message) && /^[0-9a-f]{40}$/.test(carried);
       if (!gone && !unreadable) throw error;
       // FIXED shapes, never the error text or a timestamp: the observation digest feeds the no-change decision,
       // so a night that carried one unreadable source and saw nothing else move must still read as unchanged.
       const kind = gone ? 'gone' : 'transient';
       const reason = gone ? 'is no longer reachable (HTTP 404/410)' : TRANSIENT_UNREADABLE_REASON;
-      const at = gone ? source.ifGone : { sourceCommit: carried };
+      // committedAt comes from the seed's own coverage row (corpus-reconcile.mjs carriedCommittedAt), so the customer's
+      // "oldest carried" line dates the pinned commit instead of showing an unknown date.
+      const at = gone ? source.ifGone : { sourceCommit: carried, committedAt: prior?.committedAt ?? null };
       process.stderr.write(`[source-coverage] external source ${source.repository} ${reason}; carrying the last ingested content (${at.sourceCommit})`
         + `${gone ? '' : ` -- ${message.replace(/\s+/g, ' ').trim().slice(0, 200)}`}\n`);
       rows.push({ ...unavailableExternalRow(source, at, reason), upstreamUnavailableKind: kind });

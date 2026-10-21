@@ -60,6 +60,8 @@ describe('an external source rate-limited or unreadable for a moment (TRANSIENT,
     expect(eligibleRepositoryStanding(classified)).toBe('shipped');
     // The validator admits that shape ONLY with upstreamUnavailable and the carried commit pinned as upstream.
     expect(eligibleRepositoryStanding({ ...classified, upstreamUnavailable: undefined })).toBeNull();
+    expect(eligibleRepositoryStanding({ ...classified, upstreamUnavailableKind: 'gone' })).toBeNull();
+    expect(eligibleRepositoryStanding({ ...classified, carry: { ...classified.carry, reason: 'qa: forge-refresh failed' } })).toBeNull();
     expect(eligibleRepositoryStanding({ ...classified, upstream: { ...classified.upstream, sha: LIVE } })).toBeNull();
     // The carried bytes must BE the seed's: a ledger at another commit is STALE with NO record, and fails closed.
     const mismatched = classifyRepository(row, evidenceAt(LIVE));
@@ -82,18 +84,48 @@ describe('an external source rate-limited or unreadable for a moment (TRANSIENT,
     expect(canonicalJson(a.rows[0])).not.toMatch(/429|503|03:14/);
   });
 
-  it('a SECOND consecutive carry of the same source is refused: the seed coverage already shows it carried transiently', () => {
+  it('a SECOND consecutive carry of the same source is refused: the seed coverage already shows it carried (either way)', () => {
     const ledger = { stores: { 'cognitum-ruos': { sourceCommit: SHA }, ruflo: { sourceCommit: LIVE }, broken: { sourceCommit: 'main' } } };
+    const clean = { rows: [{ kind: 'repository', artifact: { store: 'cognitum-ruos' }, upstream: { sha: SHA, committedAt: '2026-09-16T08:51:41Z' } }] };
     const carriedLastNight = { rows: [{ kind: 'repository', artifact: { store: 'cognitum-ruos' }, upstreamUnavailable: true, upstreamUnavailableKind: 'transient',
       carry: { reason: TRANSIENT_CARRY_REASON } }] };
-    expect(transientCarryCommits({ ledger, priorCoverage: null })).toEqual({ 'cognitum-ruos': SHA, ruflo: LIVE });
-    expect(transientCarryCommits({ ledger, priorCoverage: carriedLastNight })).toEqual({ ruflo: LIVE });
-    // A gone (404) row or an ordinary refresh carry last night does not spend the transient allowance.
-    const goneLastNight = { rows: [{ kind: 'repository', artifact: { store: 'cognitum-ruos' }, upstreamUnavailable: true, upstreamUnavailableKind: 'gone' }] };
-    expect(transientCarryCommits({ ledger, priorCoverage: goneLastNight })).toEqual({ 'cognitum-ruos': SHA, ruflo: LIVE });
-    // Fed to the observation: the second night fails for that source exactly as before.
+    const refreshFailedLastNight = { rows: [{ kind: 'repository', artifact: { store: 'cognitum-ruos' }, upstream: { sha: LIVE },
+      carry: { reason: 'qa: forge-refresh failed', carriedSourceCommit: SHA, missedUpstream: LIVE, attempts: 1 } }] };
+    // Dated from the seed's own coverage row (carriedCommittedAt), never estimated.
+    expect(transientCarryCommits({ ledger, priorCoverage: clean })).toEqual({ 'cognitum-ruos': { sourceCommit: SHA, committedAt: '2026-09-16T08:51:41Z' }, ruflo: { sourceCommit: LIVE, committedAt: null } });
+    // FAIL CLOSED: no sealed coverage to prove the allowance is unspent (bootstrap lineage, invalid sidecar) = no carry.
+    expect(transientCarryCommits({ ledger, priorCoverage: null })).toEqual({});
+    expect(transientCarryCommits({ ledger, priorCoverage: { rows: 'not-an-array' } })).toEqual({});
+    // ANY carry last night spends it: transient OR a failed refresh, so the two can never alternate forever.
+    expect(transientCarryCommits({ ledger, priorCoverage: carriedLastNight })).toEqual({ ruflo: { sourceCommit: LIVE, committedAt: null } });
+    expect(transientCarryCommits({ ledger, priorCoverage: refreshFailedLastNight })).toEqual({ ruflo: { sourceCommit: LIVE, committedAt: null } });
+    // A gone (404) row last night is not a carry and does not spend it.
+    const goneLastNight = { rows: [{ kind: 'repository', artifact: { store: 'cognitum-ruos' }, upstreamUnavailable: true, upstreamUnavailableKind: 'gone', upstream: { sha: SHA } }] };
+    expect(transientCarryCommits({ ledger, priorCoverage: goneLastNight })['cognitum-ruos']).toEqual({ sourceCommit: SHA, committedAt: null });
+    // Fed to the observation: the second night fails for that source exactly as before; a clean night carries, dated.
     expect(() => observeExternalRepositories([ruos], { gh: flaky(Array(6).fill('HTTP 429')).gh, sleep: quiet,
       carriedCommits: transientCarryCommits({ ledger, priorCoverage: carriedLastNight }) })).toThrow(/429/);
+    const { rows } = observeExternalRepositories([ruos], { gh: flaky(Array(6).fill('HTTP 429')).gh, sleep: quiet,
+      carriedCommits: transientCarryCommits({ ledger, priorCoverage: clean }) });
+    expect(classifyRepository(canonicalRepositoryRows(rows)[0], evidenceAt(SHA)).carry.carriedCommittedAt).toBe('2026-09-16T08:51:41Z');
+  });
+
+  it('the bound is shared by transient and failed-refresh carries: exactly at the bound seals, one over fails', () => {
+    const filler = Array.from({ length: 20 }, (_, i) => ({ kind: 'repository', disposition: 'eligible', status: 'CURRENT', artifact: { store: `s${i}` } }));
+    const refreshCarry = (s) => ({ kind: 'repository', disposition: 'eligible', status: 'STALE', artifact: { store: s, sourceCommit: SHA, bytesVerified: true, passagesPresent: true },
+      upstream: { sha: LIVE }, carry: { reason: 'qa: forge-refresh failed', carriedSourceCommit: SHA, missedUpstream: LIVE, attempts: 1, carriedCommittedAt: null } });
+    const transientCarry = (s) => ({ kind: 'repository', disposition: 'eligible', status: 'STALE', upstreamUnavailable: true, upstreamUnavailableKind: 'transient',
+      artifact: { store: s, sourceCommit: SHA, bytesVerified: true, passagesPresent: true }, upstream: { sha: SHA },
+      carry: { reason: TRANSIENT_CARRY_REASON, carriedSourceCommit: SHA, missedUpstream: null, attempts: 1, carriedCommittedAt: null } });
+    // 23 eligible -> bound max(3, 1) = 3: one failed refresh + two unreadable upstreams is exactly the bound.
+    const atBound = assessCandidateCoverage({ rows: [...filler, refreshCarry('a'), transientCarry('b'), transientCarry('c')] });
+    expect(atBound.carried.map((r) => r.store).sort()).toEqual(['a', 'b', 'c']);
+    expect(atBound.bound).toBe(3);
+    // 24 eligible, bound still 3: one over, whichever kind the fourth is.
+    expect(() => assessCandidateCoverage({ rows: [...filler, refreshCarry('a'), refreshCarry('b'), transientCarry('c'), transientCarry('d')] }))
+      .toThrow(/4 carried \+ 0 missing store\(s\) exceed max\(3, 5% of 24 eligible\) = 3/);
+    expect(() => assessCandidateCoverage({ rows: [...filler, refreshCarry('a'), transientCarry('b'), transientCarry('c'), transientCarry('d')] }))
+      .toThrow(/4 carried \+ 0 missing store\(s\) exceed max\(3, 5% of 24 eligible\) = 3/);
   });
 
   it('the acquisition loop treats a transiently carried row as resolved (one attempt, not three then failure)', async () => {

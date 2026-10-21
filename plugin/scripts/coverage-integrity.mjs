@@ -299,7 +299,8 @@ export function eligibleRepositoryStanding(row) {
     // at the carried commit, says `upstreamUnavailable`, and missedUpstream is null -- unknown, never invented.
     const missed = String(carry.missedUpstream || '').toLowerCase();
     const upstreamKnown = HEX40.test(missed) && missed === upstream && carried !== missed;
-    const upstreamUnread = carry.missedUpstream === null && row.upstreamUnavailable === true && carried === upstream;
+    const upstreamUnread = carry.missedUpstream === null && row.upstreamUnavailable === true && row.upstreamUnavailableKind === 'transient'
+      && carry.reason === 'transient: upstream unreadable' && carried === upstream;
     const shipped = typeof carry.reason === 'string' && carry.reason.length > 0
       && HEX40.test(carried) && carried === String(row.artifact?.sourceCommit || '').toLowerCase()
       && (upstreamKnown || upstreamUnread)
