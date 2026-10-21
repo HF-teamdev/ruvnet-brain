@@ -160,8 +160,15 @@ second schedule (11:17 UTC, `RETRY_CRON`) re-dispatches only when every run of t
 reached no outcome), none is running, and no retry has happened (`decideRetry`); a published, no-change,
 superseded or canary-rejected night is an answer and is never redone, the kill switch and the approved-runtime
 resolution still apply, and a content-addressed tag that already exists is refused, so nothing is published
-twice. The watchdog's first line is the night's verdict, result first, in Eastern time (`summarizeNight`):
-published, no-change, degraded with the stores named, or failed with the stage named.
+twice. A source that stays unreadable after the retry is pinned at the seed commit as STALE with a `carry`
+(`missedUpstream` null: unread, not invented), counts toward the bound, and is refused a second consecutive
+carry. The watchdog's first line is the night's verdict, result first, in Eastern time (`summarizeNight`):
+published, no-change, degraded with the stores named, or failed with the stage named. When each piece takes
+effect: the dispatcher, retry slot, `corpus-authorize`, canary, watchdog and the YAML retries run from `main` and
+take effect on merge; the script-level retries and carries in `source-coverage.mjs`, `corpus-reconcile.mjs`,
+`gist-receipts.mjs`, `corpus-next-seed.mjs`, `approved-runtime.mjs` and `release.mjs` take effect only once a
+code release containing them is the approved (install-verified) runtime, because prepare, publish and promote
+check out that release's commit.
 **Releasing code that carries the newest corpus (ADR-0091 D6) — three rules learned the hard way (4.3.37).**
 1. *Stamp the census before you push.* `release-qe` requires the committed claim surfaces (README, `explainer/*`)
    to state the candidate KB's exact chunk and public-store counts. Assemble the candidate the way `release-qe`

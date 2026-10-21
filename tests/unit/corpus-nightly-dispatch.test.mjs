@@ -244,6 +244,8 @@ process.stderr.write('retry-slot fake gh: ' + args.join(' ')); process.exit(9);
       [[{ conclusion: 'failure' }, { conclusion: 'failure' }], /bound is 2 per night/],
       [[], /dispatched no corpus run/],
       [[{ conclusion: 'failure', jobs: [{ name: 'protected-corpus-publisher', conclusion: 'success' }, { name: 'customer-canary', conclusion: 'failure' }] }], /ended canary-rejected/],
+      // Every job green yet no outcome: a workflow defect, not weather -- never retried.
+      [[{ conclusion: 'success', jobs: [{ name: 'protected-corpus-publisher', conclusion: 'skipped' }] }], /ended unknown/],
     ];
     for (const [runs, reason] of cases) {
       const result = runStep({ resolver: armedRelease, eventSchedule: RETRY_CRON, gh: fakeRunHistory(runs) });

@@ -10,9 +10,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { canonicalRepositoryRows, classifyRepository, observeExternalRepositories, observeGists, observeRepositories } from '../../scripts/source-coverage.mjs';
+import { TRANSIENT_CARRY_REASON, TRANSIENT_UNREADABLE_REASON, canonicalJson, canonicalRepositoryRows, classifyRepository,
+  observeExternalRepositories, observeGists, observeRepositories } from '../../scripts/source-coverage.mjs';
 import { captureGistSources } from '../../scripts/gist-receipts.mjs';
-import { executeReconciliation, TRANSIENT_RETRY_DELAY_MS } from '../../scripts/corpus-reconcile.mjs';
+import { acquireSealedGeneration, assessCandidateCoverage, executeReconciliation, transientCarryCommits, TRANSIENT_RETRY_DELAY_MS } from '../../scripts/corpus-reconcile.mjs';
+import { storeFreshness } from '../../scripts/corpus-canary.mjs';
+import { eligibleRepositoryStanding } from '../../plugin/scripts/coverage-integrity.mjs';
 import { CORPUS_QA_FAILED_EXIT } from '../../scripts/corpus-store-failure.mjs';
 import { MAX_CORPUS_RUNS_PER_NIGHT, RETRY_CRON, RETRY_WINDOW_MS, decideRetry } from '../../scripts/corpus-dispatch-decision.mjs';
 
@@ -39,18 +42,88 @@ describe('an external source rate-limited or unreadable for a moment (TRANSIENT,
     expect(calls.filter((call) => call === 'api repos/cognitum-one/ruOS')).toHaveLength(3);
   });
 
-  it('still unreadable after the bound: carried ONE night at the seed ledger commit, the row and the coverage reason say so', () => {
+  it('still unreadable after the bound: pinned ONE night at the seed ledger commit as STALE + carry, never CURRENT', () => {
     const { gh } = flaky(Array(6).fill('API rate limit exceeded (HTTP 403)'));
     const { rows } = observeExternalRepositories([ruos], { gh, sleep: quiet, carriedCommits: { 'cognitum-ruos': SHA } });
     const [row] = canonicalRepositoryRows(rows);
     expect(row.upstreamUnavailable).toBe(true);
-    expect(row.upstreamUnavailableReason).toMatch(/^was unreadable this observation \(.*rate limit.*\); it is read again next night$/);
+    expect(row.upstreamUnavailableKind).toBe('transient');
+    expect(row.upstreamUnavailableReason).toBe(TRANSIENT_UNREADABLE_REASON);
     expect(row.defaultBranchRef.target.oid).toBe(SHA);
     const classified = classifyRepository(row, evidenceAt(SHA));
-    expect(classified.status).toBe('CURRENT');
+    // THE REVIEWED BUG: a source nobody read tonight must not look fresh. It is STALE with a recorded carry whose
+    // missedUpstream is null (unknown), accepted by the shipped validator, and it counts as a degraded store.
+    expect(classified.status).toBe('STALE');
+    expect(classified.upstreamUnavailableKind).toBe('transient');
+    expect(classified.carry).toEqual({ reason: TRANSIENT_CARRY_REASON, carriedSourceCommit: SHA, missedUpstream: null, attempts: 1, carriedCommittedAt: null });
     expect(classified.reasons.join(' ')).toMatch(/was unreadable this observation .*serving the content last ingested at b1762a71/);
-    // The carried bytes must BE the seed's: a ledger at another commit makes the row STALE, never dressed up.
-    expect(classifyRepository(row, evidenceAt(LIVE)).status).toBe('STALE');
+    expect(eligibleRepositoryStanding(classified)).toBe('shipped');
+    // The validator admits that shape ONLY with upstreamUnavailable and the carried commit pinned as upstream.
+    expect(eligibleRepositoryStanding({ ...classified, upstreamUnavailable: undefined })).toBeNull();
+    expect(eligibleRepositoryStanding({ ...classified, upstream: { ...classified.upstream, sha: LIVE } })).toBeNull();
+    // The carried bytes must BE the seed's: a ledger at another commit is STALE with NO record, and fails closed.
+    const mismatched = classifyRepository(row, evidenceAt(LIVE));
+    expect(mismatched.status).toBe('STALE');
+    expect(mismatched.carry).toBeUndefined();
+    expect(eligibleRepositoryStanding(mismatched)).toBeNull();
+    // It counts toward max(3, 5% of eligible) with every other carried store.
+    const filler = Array.from({ length: 20 }, (_, i) => ({ kind: 'repository', disposition: 'eligible', status: 'CURRENT', artifact: { store: `s${i}` } }));
+    expect(assessCandidateCoverage({ rows: [...filler, classified] }).carried.map((r) => r.store)).toEqual(['cognitum-ruos']);
+    const three = ['x', 'y', 'z'].map((s) => ({ kind: 'repository', disposition: 'eligible', status: 'STALE', artifact: { store: s, sourceCommit: SHA, bytesVerified: true, passagesPresent: true },
+      upstream: { sha: LIVE }, carry: { reason: 'qa: forge-refresh failed', carriedSourceCommit: SHA, missedUpstream: LIVE, attempts: 1, carriedCommittedAt: null } }));
+    expect(() => assessCandidateCoverage({ rows: [...filler, ...three, classified] })).toThrow(/4 carried \+ 0 missing store\(s\) exceed max\(3, 5% of 24 eligible\) = 3/);
+  });
+
+  it('the observation digest is a FIXED shape: two nights with different error texts seal identically (no-change stays reachable)', () => {
+    const a = observeExternalRepositories([ruos], { gh: flaky(Array(6).fill('HTTP 429')).gh, sleep: quiet, carriedCommits: { 'cognitum-ruos': SHA } });
+    const b = observeExternalRepositories([ruos], { gh: flaky(Array(6).fill('gh: Service Unavailable (HTTP 503) at 03:14:15')).gh, sleep: quiet, carriedCommits: { 'cognitum-ruos': SHA } });
+    expect(canonicalJson(canonicalRepositoryRows(a.rows))).toBe(canonicalJson(canonicalRepositoryRows(b.rows)));
+    expect(a.pages[0].responseDigest).toBe(b.pages[0].responseDigest);
+    expect(canonicalJson(a.rows[0])).not.toMatch(/429|503|03:14/);
+  });
+
+  it('a SECOND consecutive carry of the same source is refused: the seed coverage already shows it carried transiently', () => {
+    const ledger = { stores: { 'cognitum-ruos': { sourceCommit: SHA }, ruflo: { sourceCommit: LIVE }, broken: { sourceCommit: 'main' } } };
+    const carriedLastNight = { rows: [{ kind: 'repository', artifact: { store: 'cognitum-ruos' }, upstreamUnavailable: true, upstreamUnavailableKind: 'transient',
+      carry: { reason: TRANSIENT_CARRY_REASON } }] };
+    expect(transientCarryCommits({ ledger, priorCoverage: null })).toEqual({ 'cognitum-ruos': SHA, ruflo: LIVE });
+    expect(transientCarryCommits({ ledger, priorCoverage: carriedLastNight })).toEqual({ ruflo: LIVE });
+    // A gone (404) row or an ordinary refresh carry last night does not spend the transient allowance.
+    const goneLastNight = { rows: [{ kind: 'repository', artifact: { store: 'cognitum-ruos' }, upstreamUnavailable: true, upstreamUnavailableKind: 'gone' }] };
+    expect(transientCarryCommits({ ledger, priorCoverage: goneLastNight })).toEqual({ 'cognitum-ruos': SHA, ruflo: LIVE });
+    // Fed to the observation: the second night fails for that source exactly as before.
+    expect(() => observeExternalRepositories([ruos], { gh: flaky(Array(6).fill('HTTP 429')).gh, sleep: quiet,
+      carriedCommits: transientCarryCommits({ ledger, priorCoverage: carriedLastNight }) })).toThrow(/429/);
+  });
+
+  it('the acquisition loop treats a transiently carried row as resolved (one attempt, not three then failure)', async () => {
+    // A plain repository store (cognitum-ruos is capability-only and is always re-planned).
+    const carriedRow = { kind: 'repository', disposition: 'eligible', status: 'STALE', name: 'ruos-fixture', key: 'repo:cognitum-one/ruos', url: 'https://github.com/cognitum-one/ruOS',
+      upstream: { sha: SHA }, upstreamUnavailable: true, upstreamUnavailableKind: 'transient', reasons: [],
+      artifact: { store: 'ruos-fixture', sourceCommit: SHA, bytesVerified: true, passagesPresent: true },
+      carry: { reason: TRANSIENT_CARRY_REASON, carriedSourceCommit: SHA, missedUpstream: null, attempts: 1, carriedCommittedAt: null } };
+    const build = async () => ({ schemaVersion: 1, coverageGeneration: 'g', rows: [carriedRow] });
+    const execute = async () => ({ refreshed: [], carried: [], missing: [], integrityFailures: [] });
+    const result = await acquireSealedGeneration({ maxAttempts: 3, assetsDir: null, observe: async () => ({ observationSha256: 'a'.repeat(64) }), build,
+      readLedger: () => ({ stores: { 'ruos-fixture': { sourceCommit: SHA } } }), execute, prune: async () => ({ pruned: [] }), rebuild: async () => ({ rebuilt: [] }) });
+    expect(result.attempts).toHaveLength(1);
+    expect(assessCandidateCoverage(result.coverage).carried.map((r) => r.store)).toEqual(['ruos-fixture']);
+  });
+
+  it('the customer canary names a transiently carried store, like any other carried store', () => {
+    const after = { observedAt: new Date(Date.now() - 3_600_000).toISOString(), rows: [
+      { key: 'repo:a', kind: 'repository', status: 'STALE', upstream: { sha: SHA }, upstreamUnavailable: true, upstreamUnavailableKind: 'transient',
+        artifact: { store: 'cognitum-ruos', sourceCommit: SHA, bytesVerified: true, passagesPresent: true },
+        carry: { reason: TRANSIENT_CARRY_REASON, carriedSourceCommit: SHA, missedUpstream: null, attempts: 1, carriedCommittedAt: null } },
+      { key: 'repo:b', kind: 'repository', status: 'CURRENT', upstream: { sha: LIVE }, artifact: { store: 'ruflo', sourceCommit: LIVE } }] };
+    const fresh = storeFreshness({ after, now: Date.now() });
+    expect(fresh.ok).toBe(true);
+    expect(fresh.detail).toMatch(/0 stale, 1 carried at their last verified bytes with a recorded reason: cognitum-ruos/);
+    // The same row with its record stripped is an unrecorded stale store and still FAILS.
+    const stripped = { ...after, rows: [(({ carry: _c, ...rest }) => rest)(after.rows[0]), after.rows[1]] };
+    expect(storeFreshness({ after: stripped, now: Date.now() }).ok).toBe(true); // pinned == built: nothing to call stale...
+    const moved = { ...stripped, rows: [{ ...stripped.rows[0], upstream: { sha: LIVE } }, after.rows[1]] };
+    expect(storeFreshness({ after: moved, now: Date.now() })).toMatchObject({ ok: false, detail: expect.stringMatching(/no recorded carry: cognitum-ruos/) });
   });
 
   it('GLOBAL stays closed: no prior bytes to carry, a bare 403 (a permission answer), or a 404 without ifGone all fail the observation', () => {
@@ -173,10 +246,12 @@ describe("git's credential prompt on a clone (2026-10-17: 'could not read Userna
 });
 
 describe('the whole-night safety net: one retry, never a loop, never a double publish', () => {
-  const run = (id, outcome) => ({ id, outcome });
-  it('retries exactly when the only run of the night failed (or reached no outcome)', () => {
+  const run = (id, outcome, conclusion = 'failure') => ({ id, outcome, conclusion });
+  it('retries exactly when the only run of the night failed, or reached no outcome WITHOUT concluding success', () => {
     expect(decideRetry({ runs: [run(1, 'failed')] })).toMatchObject({ verdict: 'retry', reason: expect.stringMatching(/run 1 failed/) });
-    expect(decideRetry({ runs: [run(1, 'unknown')] }).verdict).toBe('retry');
+    expect(decideRetry({ runs: [run(1, 'unknown', 'cancelled')] }).verdict).toBe('retry');
+    // A GREEN run that reached no outcome is a workflow defect (corpus-terminal-outcome fails it loudly), not weather.
+    expect(decideRetry({ runs: [run(1, 'unknown', 'success')] })).toMatchObject({ verdict: 'stand-down', reason: /run 1 ended unknown/ });
   });
   it.each(['published', 'no-change', 'superseded', 'canary-rejected'])('%s is an answer: stand down even beside a failed run', (outcome) => {
     expect(decideRetry({ runs: [run(1, 'failed'), run(2, outcome)] })).toMatchObject({ verdict: 'stand-down', reason: expect.stringMatching(new RegExp(`run 2 ended ${outcome}`)) });

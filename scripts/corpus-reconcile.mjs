@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { extractZip } from '../kb/zip-extract.mjs';
 import { normalizeUpdaterManifest } from './updater-manifest.mjs';
 import { FULL_HINTS, KEEP_DIRS } from './full-hints.mjs';
-import { buildCoverage, observeSourceUniverse, renderMarkdown } from './source-coverage.mjs';
+import { TRANSIENT_CARRY_REASON, buildCoverage, observeSourceUniverse, renderMarkdown } from './source-coverage.mjs';
 import { promoteArtifactSet } from '../kb/incremental-refresh.mjs';
 import { rebuildCorpusAggregates } from './corpus-aggregates.mjs';
 import { assertCapabilityOnlyStore, isCapabilityOnly, CAPABILITY_RETIRED_SUFFIXES } from '../kb/capability-only.mjs';
@@ -353,8 +353,10 @@ export async function acquireSealedGeneration({ maxAttempts = 3, assetsDir = nul
     const settled = await build(observation, storeOutcomes);
     const remaining = planReconciliation({ coverage: settled, ledger: currentLedger(), assetsDir })
       .filter((item) => !recorded(item.store));
+    // A repository row the shipped validator accepts WITH a carry -- a transiently unreadable source pinned at its
+    // seed commit (source-coverage.mjs) -- is resolved for this generation, exactly like a recorded store outcome.
     const unresolved = settled.rows.filter((row) => row.disposition === 'eligible' && row.status !== 'CURRENT'
-      && !(row.kind === 'repository' && recorded(row.artifact?.store)));
+      && !(row.kind === 'repository' && (recorded(row.artifact?.store) || (row.carry && eligibleRepositoryStanding(row) === 'shipped'))));
     attempts.push({ attempt, plan, ...reconciliation, ...pruning, ...aggregates,
       remainingArtifacts: remaining.length, unresolvedSources: unresolved.length });
     if (!remaining.length && !unresolved.length) {
@@ -878,14 +880,25 @@ async function observeSourceOnly({ owner, assetsDir }) {
   const externalFile = path.join(assets, 'external-sources.json');
   const policy = fs.existsSync(externalFile) ? readJson(externalFile, 'external source policy') : { sources: [] };
   if (!Array.isArray(policy.sources)) fail('external source policy has no sources array');
-  // The seed's own commits, per store: what an external source unreadable tonight is carried at (one night,
-  // named in its row) instead of failing the whole observation. Read from the seed ledger, never invented.
   const ledgerFile = path.join(assets, 'RVF-GENERATIONS.json');
   const ledger = fs.existsSync(ledgerFile) ? readJson(ledgerFile, 'RVF generation ledger') : { stores: {} };
-  const carriedCommits = Object.fromEntries(Object.entries(ledger.stores || {})
-    .filter(([, row]) => HEX40.test(String(row?.sourceCommit || '').toLowerCase()))
+  return observeSourceUniverse({ owner, externalSources: policy.sources,
+    carriedCommits: transientCarryCommits({ ledger, priorCoverage: readPriorCoverage(assets) }) });
+}
+
+/**
+ * The seed's own commits, per store: what an external source unreadable tonight is pinned at (one night, STALE
+ * with a carry) instead of failing the whole observation. Read from the seed ledger, never invented -- and a store
+ * the SEED's sealed coverage already shows carried this way is left out, so the second consecutive night fails
+ * for that source exactly as before rather than carrying it forever.
+ */
+export function transientCarryCommits({ ledger, priorCoverage = null }) {
+  const alreadyCarried = new Set((priorCoverage?.rows || [])
+    .filter((row) => row?.kind === 'repository' && row.upstreamUnavailableKind === 'transient' && row.carry?.reason === TRANSIENT_CARRY_REASON)
+    .map((row) => String(row.artifact?.store || '').toLowerCase()));
+  return Object.fromEntries(Object.entries(ledger?.stores || {})
+    .filter(([store, row]) => HEX40.test(String(row?.sourceCommit || '').toLowerCase()) && !alreadyCarried.has(store.toLowerCase()))
     .map(([store, row]) => [store.toLowerCase(), String(row.sourceCommit).toLowerCase()]));
-  return observeSourceUniverse({ owner, externalSources: policy.sources, carriedCommits });
 }
 
 export async function acquireCorpusGeneration({ owner = 'ruvnet', assetsDir, workspaceDir,

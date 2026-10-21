@@ -127,11 +127,19 @@ function unavailableExternalRow(source, gone, reason) {
   };
 }
 
+/** The one reason a transient carry records; scripts/corpus-reconcile.mjs refuses a second consecutive one by it. */
+export const TRANSIENT_UNREADABLE_REASON = 'was unreadable this observation (transient failure after the bounded retry); it is read again next night';
+/** The carry record a transiently unreadable source ships: STALE, not CURRENT, and counted toward the degraded bound. */
+export const TRANSIENT_CARRY_REASON = 'transient: upstream unreadable';
+
 /**
- * `carriedCommits`: { <store>: <40-hex sourceCommit> } from the seed's own generation ledger. A source whose
- * read still fails TRANSIENTLY after the bounded retry (rate limit, 5xx, a reset; measured 2026-09-26) is then
- * carried at that commit for ONE night -- the row says so, the bytes are the last verified ones, the next night
- * reads it again. Without a prior commit there is nothing honest to carry, and the observation fails.
+ * `carriedCommits`: { <store>: <40-hex sourceCommit> } from the seed's own generation ledger, already stripped
+ * of any store the seed's coverage shows was ALREADY carried this way (corpus-reconcile.mjs transientCarryCommits),
+ * so the same source is never carried two nights running. A source whose read still fails TRANSIENTLY after the
+ * bounded retry (rate limit, 5xx, a reset; measured 2026-09-26) is pinned at that commit for ONE night: its row
+ * classifies STALE with a `carry` record (nobody read upstream tonight, so it is not called current), it counts
+ * toward max(3, 5% of eligible) with every other carried store, and the next night reads it again. Without a prior
+ * commit there is nothing honest to carry, and the observation fails.
  */
 export function observeExternalRepositories(sources, { gh: rawGh = runGh, sleep = sleepSync, carriedCommits = null } = {}) {
   const gh = retryingRead(rawGh, sleep);
@@ -158,12 +166,16 @@ export function observeExternalRepositories(sources, { gh: rawGh = runGh, sleep 
       const carried = String(carriedCommits?.[String(source.store).toLowerCase()] || '').toLowerCase();
       const unreadable = !gone && isTransientText(message) && /^[0-9a-f]{40}$/.test(carried);
       if (!gone && !unreadable) throw error;
-      const reason = gone ? 'is no longer reachable (HTTP 404/410)'
-        : `was unreadable this observation (${message.replace(/\s+/g, ' ').trim().slice(0, 160)}); it is read again next night`;
+      // FIXED shapes, never the error text or a timestamp: the observation digest feeds the no-change decision,
+      // so a night that carried one unreadable source and saw nothing else move must still read as unchanged.
+      const kind = gone ? 'gone' : 'transient';
+      const reason = gone ? 'is no longer reachable (HTTP 404/410)' : TRANSIENT_UNREADABLE_REASON;
       const at = gone ? source.ifGone : { sourceCommit: carried };
-      process.stderr.write(`[source-coverage] external source ${source.repository} ${reason}; carrying the last ingested content (${at.sourceCommit})\n`);
-      rows.push(unavailableExternalRow(source, at, reason));
-      pages.push({ repository: source.repository, responseDigest: digest({ unavailable: source.repository, at, reason }), count: 1, terminal: true });
+      process.stderr.write(`[source-coverage] external source ${source.repository} ${reason}; carrying the last ingested content (${at.sourceCommit})`
+        + `${gone ? '' : ` -- ${message.replace(/\s+/g, ' ').trim().slice(0, 200)}`}\n`);
+      rows.push({ ...unavailableExternalRow(source, at, reason), upstreamUnavailableKind: kind });
+      pages.push({ repository: source.repository, responseDigest: digest(gone ? { gone: source.repository, ifGone: source.ifGone }
+        : { unavailable: source.repository, kind, at: carried }), count: 1, terminal: true });
       continue;
     }
     const row = {
@@ -248,6 +260,7 @@ export function canonicalRepositoryRows(rows = []) {
     isDisabled: repo?.isDisabled === true,
     ...(repo?.upstreamUnavailable === true ? { upstreamUnavailable: true } : {}),
     ...(repo?.upstreamUnavailable === true && repo?.upstreamUnavailableReason ? { upstreamUnavailableReason: String(repo.upstreamUnavailableReason) } : {}),
+    ...(repo?.upstreamUnavailable === true && repo?.upstreamUnavailableKind ? { upstreamUnavailableKind: String(repo.upstreamUnavailableKind) } : {}),
     diskUsage: repo?.diskUsage,
     updatedAt: repo?.updatedAt ?? null,
     pushedAt: repo?.pushedAt ?? null,
@@ -448,6 +461,15 @@ export function classifyRepository(repo, evidence, exclusion = null, outcome = n
     reasons.push(`upstream ${repo.fullName} ${repo.upstreamUnavailableReason || 'is no longer reachable (HTTP 404/410)'}; serving the content last ingested at ${upstreamSha}`);
   }
   const record = {};
+  // A source nobody could read tonight is never CURRENT: its bytes are pinned at the last commit the seed carried,
+  // and the row ships a carry record (missedUpstream null -- the upstream head is unknown, not merely different)
+  // that eligibleRepositoryStanding accepts only together with upstreamUnavailable. A `gone` source stays CURRENT:
+  // its upstream was READ and is final.
+  if (disposed && repo.upstreamUnavailableKind === 'transient' && status === 'CURRENT') {
+    status = 'STALE';
+    record.carry = { reason: TRANSIENT_CARRY_REASON, carriedSourceCommit: upstreamSha, missedUpstream: null,
+      attempts: 1, carriedCommittedAt: repo.defaultBranchRef?.target?.committedDate || null };
+  }
   if (disposed && outcome?.carry && status === 'STALE') record.carry = { ...outcome.carry };
   if (disposed && outcome?.failure && status === 'MISSING') record.failure = { ...outcome.failure };
   return {
@@ -460,6 +482,7 @@ export function classifyRepository(repo, evidence, exclusion = null, outcome = n
     disposition,
     archived: repo.isArchived === true,
     ...(repo.upstreamUnavailable === true ? { upstreamUnavailable: true } : {}),
+    ...(repo.upstreamUnavailable === true && repo.upstreamUnavailableKind ? { upstreamUnavailableKind: repo.upstreamUnavailableKind } : {}),
     ...(repo.forkDelta ? { forkDelta: { ...repo.forkDelta } } : {}),
     upstream: { sha: upstreamSha, committedAt: repo.defaultBranchRef?.target?.committedDate || null,
       pushedAt: repo.pushedAt, updatedAt: repo.updatedAt },

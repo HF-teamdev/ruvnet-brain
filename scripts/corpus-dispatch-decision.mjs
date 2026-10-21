@@ -41,7 +41,9 @@ export const RETRY_CRON = '17 11 * * *';
 /** How far back the retry slot looks for the night's runs: past the 07:17 UTC first slot, never into yesterday. */
 export const RETRY_WINDOW_MS = 10 * 3_600_000;
 export const MAX_CORPUS_RUNS_PER_NIGHT = 2;
-const RETRYABLE_OUTCOMES = new Set(['failed', 'unknown']);
+// `unknown` (every job green, no outcome) is retried only when the run itself did NOT conclude success: a green
+// run that reached no outcome is a workflow defect the terminal-outcome job already fails loudly, not weather.
+const retryable = (run) => run.outcome === 'failed' || (run.outcome === 'unknown' && run.conclusion !== 'success');
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
 const HEX40 = /^[0-9a-f]{40}$/;
 const CODE_TAG = /^v\d+\.\d+\.\d+$/;
@@ -109,7 +111,7 @@ export function decideRetry({ runs = [], maxRuns = MAX_CORPUS_RUNS_PER_NIGHT } =
   if (!runs.length) return { verdict: 'stand-down', reason: 'the first slot dispatched no corpus run tonight (it stood down or failed); the watchdog judges that, a retry would not' };
   const running = runs.find((run) => run.outcome === 'in-progress');
   if (running) return { verdict: 'stand-down', reason: `corpus run ${running.id} is still in progress` };
-  const settled = runs.find((run) => !RETRYABLE_OUTCOMES.has(run.outcome));
+  const settled = runs.find((run) => !retryable(run));
   if (settled) return { verdict: 'stand-down', reason: `corpus run ${settled.id} ended ${settled.outcome}; that is the night's answer, not weather` };
   if (runs.length >= maxRuns) return { verdict: 'stand-down', reason: `${runs.length} corpus run(s) already failed tonight; the bound is ${maxRuns} per night, so this is not retried again` };
   return { verdict: 'retry', reason: `corpus run ${runs.map((run) => run.id).join(', ')} failed and nothing published; dispatching the night's one retry` };

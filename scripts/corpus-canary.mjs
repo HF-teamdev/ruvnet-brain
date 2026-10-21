@@ -152,9 +152,11 @@ export function storeFreshness({ after, before = null, now }) {
     const upstream = row.upstream?.sha || null;
     const built = row.artifact?.sourceCommit || null;
     if (!upstream || !built) continue;
+    // Named either way: a refresh that failed (upstream read, differs) or an upstream nobody could read tonight
+    // (pinned at the carried commit, `upstreamUnavailable`). Both are carried with a record the validator accepts.
+    if (row.kind === 'repository' && row.carry && eligibleRepositoryStanding(row) === 'shipped') { carried.push(row.artifact?.store || row.key); continue; }
     if (upstream !== built) {
-      if (row.kind === 'repository' && row.carry && eligibleRepositoryStanding(row) === 'shipped') carried.push(row.artifact?.store || row.key);
-      else stale.push(row.artifact?.store || row.key);
+      stale.push(row.artifact?.store || row.key);
       continue;
     }
     if (before && priorCommit.get(row.key) !== upstream) moved += 1;
