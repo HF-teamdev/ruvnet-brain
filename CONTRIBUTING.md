@@ -520,7 +520,10 @@ contradicts a principle is wrong, and the contradiction is the finding.
 The policy uses native AgentDB through the global Ruflo CLI only (`ruflo memory store|retrieve|list|search`),
 canonical project identity and explicit namespaces. Every write is acknowledged only after exact-key
 readback; a failed write is reported in `hook-failures.jsonl` and is not retried by any local queue
-(owner ruling 2026-10-12). Explicit project/path opt-out and content exclusions win. A project without a
+(owner ruling 2026-10-12). Observation writes are idempotent (a key already holding the identical bytes is
+success, not a failure) and load-shed: at most two detached writers per Brain home, an identical observation is
+not re-sent within ten minutes, and dropped observations are one aggregated ledger row per ten minutes, never
+a queue. Explicit project/path opt-out and content exclusions win. A project without a
 store records nothing until it adopts one (persisted opt-in, or `ruflo memory store` creating it).
 Prompt recall supplies bounded relevant untrusted evidence through one `ruflo memory list` per curated
 namespace, exact `ruflo memory retrieve` reads and at most ONE supplementary `ruflo memory search`, and
