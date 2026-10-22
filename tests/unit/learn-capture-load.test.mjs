@@ -11,6 +11,7 @@ import { slowRuflo, ledgerRows, storedRows, presetRows, until } from '../helpers
 import { acquireObserveSlot, releaseObserveSlot, recentlyCaptured, markCaptured, OBSERVE_SLOTS, SLOT_STALE_MS, COALESCE_MS, SHED_ERROR } from '../../plugin/scripts/learn-capture.mjs';
 import { recordLearningObservation, observationKey } from '../../plugin/scripts/learning-store.mjs';
 import { learningContext } from '../../plugin/scripts/runtime-preferences.mjs';
+import { createHash } from 'node:crypto';
 import { recordHookFailure, failureLine, REPEAT_WINDOW_MS } from '../../plugin/scripts/hook-failures.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -166,6 +167,21 @@ describe('5. the ledger counts repeats of one failure inside a window on one row
       expect(failureLine(brainHome, { advance: false }), bad).toBe(''); // the summary advanced; the file was rewritten as a valid window file
       expect(JSON.parse(fs.readFileSync(path.join(brainHome, 'hook-failures.window.json'), 'utf8')), bad).toEqual({});
     }
+  });
+  it('entries a Date cannot hold, non-integer or zero counts, and missing hook/error are dropped; the legitimate ones are kept and reported', () => {
+    const brainHome = tmp('agg-badentry-bh-');
+    const now = Date.now();
+    const good = { at: now - 1000, count: 3, hook: 'checkpoint', event: 'SessionEnd', error: 'store failed: timed out' };
+    const bad = { hook: 'x', event: 'Stop', error: 'bad' };
+    fs.writeFileSync(path.join(brainHome, 'hook-failures.window.json'), JSON.stringify({
+      ok: good, neg: { ...bad, at: -1e300, count: 3 }, huge: { ...bad, at: 1e300, count: 3 }, never: { ...bad, at: 8.64e15 + 1, count: 3 },
+      frac: { ...bad, at: now, count: 2.5 }, zero: { ...bad, at: now, count: 0 }, nohook: { at: now, count: 2, error: 'e' }, noerror: { at: now, count: 2, hook: 'x' },
+    }));
+    expect(recordHookFailure({ hook: 'other', event: 'Stop', error: 'fresh' }, { brainHome, now })).toBe(true);
+    const kept = JSON.parse(fs.readFileSync(path.join(brainHome, 'hook-failures.window.json'), 'utf8'));
+    expect(Object.keys(kept).sort()).toEqual(['ok', createHash('sha256').update('other\0Stop\0fresh').digest('hex').slice(0, 16)].sort());
+    let line; expect(() => { line = failureLine(brainHome, { now }); }).not.toThrow();
+    expect(line).toMatch(/\] 3 advisory hook run\(s\).*checkpoint ×2 \(store failed: timed out\).*other ×1/); // fresh ×1 + the kept window's 2 repeats (its first row predates this fixture)
   });
   it('a first row that cannot be appended leaves no window claiming it was written', () => {
     const brainHome = tmp('agg-noappend-bh-');

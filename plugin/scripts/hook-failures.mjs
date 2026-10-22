@@ -62,12 +62,18 @@ function appendRow(brainHome, row) {
 /** Hashes and long numbers vary per row (`workflow-<sha>`, pids, ms, timestamps); short ones (exit codes, counts) are the error. */
 export const normalizeFailure = (text) => String(text || '').replace(/[0-9a-f]{16,}/gi, '*').replace(/\d{5,}/g, 'N').slice(0, 160);
 const windowFile = (brainHome) => path.join(brainHome, WINDOW_FILE);
-/** Only a plain object of `{ at: number, count: number }` entries is a window file; any other shape is an empty one. */
-function loadWindows(brainHome) {
+/**
+ * A window entry must be one this module could have written: a real epoch `at` no later than one window ahead (a
+ * Date cannot hold -1e300 or 1e300, and 8.64e15+1 never expires), an integer count ≥ 1, string hook and error.
+ * Entries failing that are dropped, the rest kept; any other file shape is an empty window file.
+ */
+const validWindow = (w, now) => w && typeof w === 'object' && !Array.isArray(w) && Number.isFinite(w.at) && w.at >= 0 && w.at <= now + REPEAT_WINDOW_MS
+  && Number.isInteger(w.count) && w.count >= 1 && typeof w.hook === 'string' && typeof w.error === 'string';
+function loadWindows(brainHome, now) {
   try {
     const parsed = JSON.parse(fs.readFileSync(windowFile(brainHome), 'utf8'));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).filter(([, w]) => w && typeof w === 'object' && !Array.isArray(w) && Number.isFinite(w.at) && Number.isFinite(w.count)));
+    return Object.fromEntries(Object.entries(parsed).filter(([, w]) => validWindow(w, now)));
   } catch { return {}; }
 }
 function saveWindows(brainHome, windows) { // rename, so a concurrent reader never sees a torn file
@@ -82,11 +88,12 @@ function closeWindow(brainHome, w, now) {
 
 /** Close the expired windows; `all` closes the open ones too (SessionStart reports now). Returns the windows left open. */
 function flushRepeats(brainHome, now, { all = false } = {}) {
-  const windows = loadWindows(brainHome);
+  const windows = loadWindows(brainHome, now);
   let changed = false;
   for (const [sig, w] of Object.entries(windows)) {
     if (!all && now - w.at < REPEAT_WINDOW_MS) continue;
-    closeWindow(brainHome, w, now); delete windows[sig]; changed = true;
+    try { closeWindow(brainHome, w, now); } catch { /* one bad window must not stop the others being reported */ }
+    delete windows[sig]; changed = true;
   }
   if (changed) try { saveWindows(brainHome, windows); } catch { /* the rows are written; the window file is a cache */ }
   return windows;
