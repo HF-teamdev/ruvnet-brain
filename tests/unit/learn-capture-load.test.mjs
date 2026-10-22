@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, tmp } from '../helpers/continuity-fixture.mjs';
 import { slowRuflo, ledgerRows, storedRows, presetRows, until } from '../helpers/slow-ruflo.mjs';
-import { acquireObserveSlot, releaseObserveSlot, recentlyCaptured, markCaptured, OBSERVE_SLOTS, SLOT_STALE_MS, COALESCE_MS } from '../../plugin/scripts/learn-capture.mjs';
+import { acquireObserveSlot, releaseObserveSlot, recentlyCaptured, markCaptured, OBSERVE_SLOTS, SLOT_STALE_MS, COALESCE_MS, SHED_ERROR } from '../../plugin/scripts/learn-capture.mjs';
 import { recordLearningObservation, observationKey } from '../../plugin/scripts/learning-store.mjs';
 import { learningContext } from '../../plugin/scripts/runtime-preferences.mjs';
 import { recordHookFailure, failureLine, REPEAT_WINDOW_MS } from '../../plugin/scripts/hook-failures.mjs';
@@ -71,12 +71,13 @@ describe('2. at most OBSERVE_SLOTS detached children; the rest are shed and coun
     const pids = slotPids(l.brainHome);
     expect(pids).toHaveLength(2);
     for (const pid of pids) expect(alive(pid), `slot pid ${pid} is a live child`).toBe(true);
-    const shed = ledgerRows(l.brainHome);
-    expect(shed).toEqual([expect.objectContaining({ hook: 'learn-capture', event: 'PostToolUse', error: 'shed 1 observations (load)', count: 1 })]);
-    expect(JSON.parse(fs.readFileSync(path.join(l.brainHome, 'learn-capture', 'shed.json'), 'utf8')).count).toBe(1); // the second shed is counted, not a row
+    // Every shed is recorded; the ledger's own window keeps them on ONE row and SessionStart reports the true total.
+    expect(ledgerRows(l.brainHome)).toEqual([expect.objectContaining({ hook: 'learn-capture', event: 'PostToolUse', error: SHED_ERROR })]);
+    expect(fs.existsSync(path.join(l.brainHome, 'learn-capture', 'shed.json'))).toBe(false);
     expect(await until(() => Object.keys(storedRows(l.stubDir)).length === 2, 15_000)).toBe(true);
     expect(await until(() => fs.readdirSync(path.join(l.brainHome, 'learn-capture', 'slots')).length === 0, 10_000), 'children release their slots').toBe(true);
     expect(ledgerRows(l.brainHome)).toHaveLength(1); // the two stores succeeded; shedding stayed one row
+    expect(failureLine(l.brainHome)).toMatch(/\] 2 advisory hook run\(s\).*learn-capture ×2 \(shed observation \(load\)\)/); // both sheds counted
   }, 40_000);
 
   it('a slot held by a dead pid, or older than SLOT_STALE_MS, is reclaimed; a live fresh one is not', () => {
@@ -147,6 +148,31 @@ describe('5. the ledger counts repeats of one failure inside a window on one row
     const line = failureLine(brainHome, { now: t0 + REPEAT_WINDOW_MS + 2 });
     expect(line).toMatch(/\] 7 advisory hook run\(s\)/); // 1 + 4 repeats + ruflo not found + the new first row
     expect(line).toMatch(/learn-capture ×7 \(ruflo memory store refused the observati, ruflo not found\)/); // two reasons, the count row adds none
+  });
+  it('short numbers stay verbatim: exit 1 and exit 137 are distinct rows; long ids and hashes collapse', () => {
+    const brainHome = tmp('agg-exit-bh-');
+    for (const error of ['exit 1', 'exit 137', 'exit 1', 'pid 48213 timed out', 'pid 90117 timed out']) recordHookFailure({ hook: 'x', event: 'Stop', error }, { brainHome });
+    expect(ledgerRows(brainHome).map((r) => r.error)).toEqual(['exit 1', 'exit 137', 'pid 48213 timed out']);
+    expect(failureLine(brainHome)).toMatch(/\] 5 advisory hook run\(s\)/);
+  });
+  it('a window file of the wrong shape is treated as empty: recording keeps working and the reader does not throw', () => {
+    for (const bad of ['"str"', '[1,2]', '42', 'null', '{"x":null}', '{"a":{"at":"x","count":1},"b":{"at":1,"count":"2"},"c":[1]}']) {
+      const brainHome = tmp('agg-bad-bh-');
+      fs.writeFileSync(path.join(brainHome, 'hook-failures.window.json'), bad);
+      expect(recordHookFailure({ hook: 'x', event: 'Stop', error: 'boom' }, { brainHome }), bad).toBe(true);
+      expect(recordHookFailure({ hook: 'x', event: 'Stop', error: 'boom' }, { brainHome }), bad).toBe(true);
+      expect(ledgerRows(brainHome), bad).toHaveLength(1);
+      expect(() => failureLine(brainHome), bad).not.toThrow();
+      expect(failureLine(brainHome, { advance: false }), bad).toBe(''); // the summary advanced; the file was rewritten as a valid window file
+      expect(JSON.parse(fs.readFileSync(path.join(brainHome, 'hook-failures.window.json'), 'utf8')), bad).toEqual({});
+    }
+  });
+  it('a first row that cannot be appended leaves no window claiming it was written', () => {
+    const brainHome = tmp('agg-noappend-bh-');
+    fs.mkdirSync(path.join(brainHome, 'hook-failures.jsonl')); // a directory where the ledger should be: appendFileSync throws
+    expect(recordHookFailure({ hook: 'x', event: 'Stop', error: 'boom' }, { brainHome })).toBe(false);
+    let windows = {}; try { windows = JSON.parse(fs.readFileSync(path.join(brainHome, 'hook-failures.window.json'), 'utf8')); } catch { /* never written */ }
+    expect(windows).toEqual({});
   });
   it('SessionStart reports the repeats still inside an open window', () => {
     const brainHome = tmp('agg-open-bh-');

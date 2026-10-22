@@ -16,7 +16,6 @@ import { recordHookFailure } from './hook-failures.mjs';
 export const OBSERVE_SLOTS = 2;           // detached --observe children alive at once, per Brain home
 export const SLOT_STALE_MS = 60_000;      // a slot older than this, or held by a dead pid, is reclaimed
 export const COALESCE_MS = 10 * 60_000;   // an identical observation key inside this window does not spawn again
-export const SHED_REPORT_MS = 10 * 60_000; // shed observations are one aggregated ledger row per window
 const defaultBrainHome = (env) => env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain');
 const learnDir = (brainHome, sub) => { const dir = path.join(brainHome, 'learn-capture', sub); fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); return dir; };
 
@@ -55,17 +54,10 @@ export function releaseObserveSlot(slot, pid = process.pid) {
   try { if (JSON.parse(fs.readFileSync(slot, 'utf8')).pid === pid) fs.unlinkSync(slot); } catch { /* reclaimed already */ }
 }
 
-/** Shedding is counted in `learn-capture/shed.json` and reported as ONE row per SHED_REPORT_MS, never per observation. */
-export function shedObservation(brainHome, now = Date.now()) {
-  const file = path.join(learnDir(brainHome, ''), 'shed.json');
-  let state = { count: 0, reportedAt: 0 };
-  try { state = { ...state, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* first shed */ }
-  state.count += 1;
-  if (now - state.reportedAt >= SHED_REPORT_MS) {
-    recordHookFailure({ hook: 'learn-capture', event: 'PostToolUse', error: `shed ${state.count} observations (load)`, count: state.count }, { brainHome, now });
-    state = { count: 0, reportedAt: now };
-  }
-  try { fs.writeFileSync(file, JSON.stringify(state), { mode: 0o600 }); } catch { /* counted next time */ }
+/** Every shed is one fixed-string ledger call; hook-failures.mjs's own window counts the repeats on one row. */
+export const SHED_ERROR = 'shed observation (load)';
+export function shedObservation(brainHome) {
+  recordHookFailure({ hook: 'learn-capture', event: 'PostToolUse', error: SHED_ERROR }, { brainHome });
   return false;
 }
 

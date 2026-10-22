@@ -23,7 +23,7 @@ const MAX_WINDOWS = 64;
 export function failureLine(brainHome, { advance = true, now = Date.now() } = {}) {
   const file = path.join(brainHome, FAILURE_FILE);
   const cursorFile = path.join(brainHome, CURSOR_FILE);
-  flushRepeats(brainHome, now, { all: true }); // the report is now: every counted repeat becomes its row first
+  try { flushRepeats(brainHome, now, { all: true }); } catch { /* the rows already on disk are still reported */ } // the report is now
   let size;
   try { size = fs.statSync(file).size; } catch { return ''; }
   let offset = 0;
@@ -59,10 +59,17 @@ function appendRow(brainHome, row) {
   fs.appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
 }
 
-/** Hashes and numbers vary per row (`workflow-<sha>`, pids, ms); the same failure must sign the same. */
-export const normalizeFailure = (text) => String(text || '').replace(/[0-9a-f]{16,}/gi, '*').replace(/\d+/g, 'N').slice(0, 160);
+/** Hashes and long numbers vary per row (`workflow-<sha>`, pids, ms, timestamps); short ones (exit codes, counts) are the error. */
+export const normalizeFailure = (text) => String(text || '').replace(/[0-9a-f]{16,}/gi, '*').replace(/\d{5,}/g, 'N').slice(0, 160);
 const windowFile = (brainHome) => path.join(brainHome, WINDOW_FILE);
-function loadWindows(brainHome) { try { return JSON.parse(fs.readFileSync(windowFile(brainHome), 'utf8')) || {}; } catch { return {}; } }
+/** Only a plain object of `{ at: number, count: number }` entries is a window file; any other shape is an empty one. */
+function loadWindows(brainHome) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(windowFile(brainHome), 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, w]) => w && typeof w === 'object' && !Array.isArray(w) && Number.isFinite(w.at) && Number.isFinite(w.count)));
+  } catch { return {}; }
+}
 function saveWindows(brainHome, windows) { // rename, so a concurrent reader never sees a torn file
   const tmp = `${windowFile(brainHome)}.${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(windows), { mode: 0o600 }); fs.renameSync(tmp, windowFile(brainHome));
@@ -93,8 +100,10 @@ function flushRepeats(brainHome, now, { all = false } = {}) {
  * REPEATS ARE COUNTED, NOT APPENDED (measured 2026-10-21: 1,162 rows, 826 of them one learn-capture failure
  * repeated, so the real failures were invisible). The first occurrence of (hook, event, normalized error)
  * is a row at once; repeats inside REPEAT_WINDOW_MS only increment a count in hook-failures.window.json,
- * and the window closes as ONE row carrying `count`. Distinct errors keep distinct rows. Two writers racing on
- * the window file can lose an increment; the ledger is a signal, never an audit.
+ * and the window closes as ONE row carrying `count`. Distinct errors keep distinct rows. The window file has no
+ * lock: two writers racing can lose an increment (under-count), and two processes closing the same expired window
+ * can both write its count row (over-count). Tolerated: the ledger is a signal, never an audit. The first row is
+ * appended BEFORE its window is saved, so a failed append never leaves a window claiming a row that is not there.
  */
 export function recordHookFailure(fields, { brainHome = process.env.RUVNET_BRAIN_HOME || path.join(os.homedir(), '.cache', 'ruvnet-brain'), now = Date.now() } = {}) {
   try {
@@ -103,11 +112,11 @@ export function recordHookFailure(fields, { brainHome = process.env.RUVNET_BRAIN
     const error = normalizeFailure(fields.error ?? fields.note ?? (fields.signal || `exit ${fields.status}`));
     const sig = createHash('sha256').update(`${fields.hook}\0${fields.event || ''}\0${error}`).digest('hex').slice(0, 16);
     if (windows[sig]) { windows[sig].count += 1; saveWindows(brainHome, windows); return true; }
+    appendRow(brainHome, { at: new Date(now).toISOString(), ...fields });
     windows[sig] = { at: now, count: 1, hook: fields.hook, event: fields.event || '', error };
     const oldest = Object.keys(windows).sort((a, b) => windows[a].at - windows[b].at).slice(0, Math.max(0, Object.keys(windows).length - MAX_WINDOWS));
     for (const old of oldest) { closeWindow(brainHome, windows[old], now); delete windows[old]; } // bounded: the oldest close early
-    saveWindows(brainHome, windows);
-    appendRow(brainHome, { at: new Date(now).toISOString(), ...fields });
+    try { saveWindows(brainHome, windows); } catch { /* the row is on disk; the next repeat starts a fresh window */ }
     return true;
   } catch { return false; }
 }
