@@ -74,6 +74,34 @@ describe('nightlyModuleCurrency reads the registration against the installed mod
     expect(fs.readFileSync(path.join(target, 'automatic-update.mjs'), 'utf8')).toBe('// tampered\n');
   });
 
+  it('an older registration WITHOUT an environment field is refreshed byte-identical except updateModules — never rewritten with {}', () => {
+    const w = staleWorld();
+    const stripped = JSON.parse(fs.readFileSync(w.registration.recordPath, 'utf8'));
+    delete stripped.environment;
+    fs.writeFileSync(w.registration.recordPath, `${JSON.stringify(stripped, null, 2)}\n`);
+    expect(readNightlyRegistration({ brainHome: w.brainHome }).ok).toBe(true);
+    const result = refreshNightlyModules({ brainHome: w.brainHome, runnerSource: RUNNER });
+    expect(result.state).toBe('refreshed');
+    const after = JSON.parse(fs.readFileSync(w.registration.recordPath, 'utf8'));
+    expect(after).not.toHaveProperty('environment');
+    const { updateModules: _a, ...restAfter } = after; const { updateModules: _b, ...restBefore } = stripped;
+    expect(JSON.stringify(restAfter)).toBe(JSON.stringify(restBefore)); // same fields, same order, same bytes
+    expect(digestOf(after)).toBe(result.registered);
+  });
+
+  it('a candidate that would change a scheduler-visible field is refused BEFORE any write: the file is byte-identical afterwards', () => {
+    const w = staleWorld();
+    const before = fs.readFileSync(w.registration.recordPath);
+    const schedulerDir = fs.readdirSync(path.join(w.brainHome, 'scheduler')).sort();
+    const build = (plan) => ({ ...installNightlyRunner({ ...plan, dryRun: true }), nodePath: '/other/node' });
+    const result = refreshNightlyModules({ brainHome: w.brainHome, runnerSource: RUNNER, build });
+    expect(result.state).toBe('refused');
+    expect(result.reason).toMatch(/would change nodePath/);
+    expect(result.fix).toBe(NIGHTLY_ENABLE_FIX);
+    expect(fs.readFileSync(w.registration.recordPath).equals(before)).toBe(true);
+    expect(fs.readdirSync(path.join(w.brainHome, 'scheduler')).sort()).toEqual(schedulerDir); // no new update-modules dir either
+  });
+
   it('no registration → unregistered, nothing written', () => {
     const brainHome = tmp('nmr-none-');
     expect(nightlyModuleCurrency({ brainHome, runnerSource: RUNNER }).state).toBe('unregistered');

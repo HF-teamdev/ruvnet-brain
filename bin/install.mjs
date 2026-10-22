@@ -4464,13 +4464,17 @@ async function runUpdate() {
  * advisory naming the fix. Advisory and fail-open: it never fails an otherwise good update.
  */
 export function reconcileNightlyModules({ brainHome, refreshReceipt = null, runnerSource = path.join(REPO_ROOT, 'bin', 'nightly-refresh.mjs') } = {}) {
-  const advise = (status, detail) => { if (refreshReceipt) recordRefreshAdvisory(refreshReceipt, 'nightly-modules', status, detail); return { status, ...detail }; };
+  const advise = (status, detail) => { // the advisory write itself must never escape this step
+    try { if (refreshReceipt) recordRefreshAdvisory(refreshReceipt, 'nightly-modules', status, detail); } catch { /* the receipt is evidence, not the gate */ }
+    return { status, ...detail };
+  };
   try {
     const nightly = refreshNightlyModules({ brainHome, runnerSource });
     if (nightly.state === 'refreshed') ok(`nightly scheduler now runs the installed update modules (${nightly.registered.slice(0, 16)}…)`);
     else if (nightly.state === 'runner-changed') warn(`nightly scheduler runs an older runner; the LaunchAgent changes only on explicit enablement — run  ${c.bold(nightly.fix)}`);
-    return advise(nightly.state === 'runner-changed' ? 'SKIP' : 'PASS',
-      { state: nightly.state, registered: nightly.registered ?? null, current: nightly.current ?? null, ...(nightly.fix ? { fix: nightly.fix } : {}) });
+    else if (nightly.state === 'refused') warn(`nightly module snapshot was not refreshed: ${nightly.reason} — run  ${c.bold(nightly.fix)}`);
+    return advise(['runner-changed', 'refused'].includes(nightly.state) ? 'SKIP' : 'PASS',
+      { state: nightly.state, registered: nightly.registered ?? null, current: nightly.current ?? null, ...(nightly.reason ? { reason: nightly.reason } : {}), ...(nightly.fix ? { fix: nightly.fix } : {}) });
   } catch (error) {
     warn(`nightly module snapshot was not refreshed (${error.message}); the scheduler registration was left as it was`);
     return advise('FAIL', { state: 'error', reason: error.message });
