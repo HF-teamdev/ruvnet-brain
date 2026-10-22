@@ -147,10 +147,16 @@ const BRIDGED_UPDATE_MODULES = [...HISTORICAL_UPDATE_MODULES, 'developer-update-
 const LEGACY_UPDATE_MODULES = [...BRIDGED_UPDATE_MODULES, 'developer-update-policy.mjs'];
 const PREVIOUS_DEVELOPER_MODULES = [...BRIDGED_UPDATE_MODULES, ...EXECUTION_MODULES.filter(name => name !== 'plugin-artifact-proof.mjs')];
 const DEVELOPER_UPDATE_MODULES = [...new Set([...LEGACY_UPDATE_MODULES, ...EXECUTION_MODULES])];
-function updateModules(directory, sourceDir = path.dirname(fileURLToPath(import.meta.url)), developerSuite = true) {
+/** The shipped module set and the content digest it is registered under (`update-modules-<digest>`); reads only. */
+function readModuleSet(sourceDir, developerSuite) {
   const files = developerSuite ? DEVELOPER_UPDATE_MODULES : LEGACY_UPDATE_MODULES;
   const bytes = Object.fromEntries(files.map(file => [file, fs.readFileSync(path.join(sourceDir, file))]));
-  const digest = sha256(Buffer.concat(files.flatMap(file => [Buffer.from(file), bytes[file]])));
+  return { files, bytes, digest: sha256(Buffer.concat(files.flatMap(file => [Buffer.from(file), bytes[file]]))) };
+}
+const registeredModuleDigest = (record) => /^update-modules-([a-f0-9]{64})$/.exec(path.basename(path.dirname(record.updateModules?.['automatic-update.mjs']?.path || '')))?.[1] || null;
+
+function updateModules(directory, sourceDir = path.dirname(fileURLToPath(import.meta.url)), developerSuite = true) {
+  const { files, bytes, digest } = readModuleSet(sourceDir, developerSuite);
   const target = path.join(directory, `update-modules-${digest}`);
   fs.mkdirSync(target, { recursive: true });
   return Object.fromEntries(files.map(file => {
@@ -175,7 +181,7 @@ function verifyUpdateModules(modules) {
 }
 
 export function installNightlyRunner({ brainHome, source, nodePath = process.execPath,
-  identity = NIGHTLY_LABEL, packageTarget, bundleTarget, env = {}, moduleSource, developerSuite = !NIGHTLY_PROOF_LABEL.test(identity) } = {}) {
+  identity = NIGHTLY_LABEL, packageTarget, bundleTarget, env = {}, environment, moduleSource, developerSuite = !NIGHTLY_PROOF_LABEL.test(identity) } = {}) {
   validateIdentity(identity);
   if (!source || !fs.existsSync(source)) throw new Error(`nightly runner source is missing: ${source || '(unset)'}`);
   const bytes = fs.readFileSync(source);
@@ -190,13 +196,50 @@ export function installNightlyRunner({ brainHome, source, nodePath = process.exe
   const modules = updateModules(dir, moduleSource, developerSuite);
   const record = { updateModules: modules, ...(developerSuite ? { mode: 'developer-suite' } : {}), schemaVersion: 2, kind: 'ruvnet-brain-nightly-scheduler', identity,
     nodePath: path.resolve(nodePath), runnerPath, runnerSha256: digest, argv: [],
-    environment: Object.fromEntries(NIGHTLY_ENV_ALLOWLIST.filter(key => env[key] !== undefined).map(key => [key, key === 'PATH' ? automaticPath({ nodePath, home: homeOf(env), env }) : String(env[key])])),
+    // `environment` verbatim is the refresh path keeping an existing registration's values; otherwise derive from env.
+    environment: environment ?? Object.fromEntries(NIGHTLY_ENV_ALLOWLIST.filter(key => env[key] !== undefined).map(key => [key, key === 'PATH' ? automaticPath({ nodePath, home: homeOf(env), env }) : String(env[key])])),
     packageTarget: normalizePackageTarget(packageTarget), bundleTarget: normalizeBundleTarget(bundleTarget, identity) };
   const recordPath = path.join(dir, registrationName(identity));
   const tmp = `${recordPath}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
   fs.renameSync(tmp, recordPath);
   return { ...record, recordPath };
+}
+
+export const NIGHTLY_ENABLE_FIX = 'npx ruvnet-brain@latest --enable-nightly';
+export const NIGHTLY_UPDATE_FIX = 'npx ruvnet-brain@latest --update';
+/**
+ * Does the registered nightly run the code installed now? The scheduler executes a content-addressed snapshot of
+ * the update modules that only --enable-nightly used to refresh (measured 2026-10-22: the 4.7.15 developer-update
+ * fix shipped to disk and the 03:30 job still ran the old module). Pure read: `current`, `stale` (modules only;
+ * --update refreshes them), `runner-changed` (the LaunchAgent command would change: explicit enablement only),
+ * or `unregistered`.
+ */
+export function nightlyModuleCurrency({ brainHome, identity = NIGHTLY_LABEL, moduleSource = path.dirname(fileURLToPath(import.meta.url)), runnerSource } = {}) {
+  const registration = readNightlyRegistration({ brainHome, identity });
+  if (!registration.ok) return { state: 'unregistered', why: registration.why };
+  const record = registration.record;
+  const registered = registeredModuleDigest(record);
+  if (!registered) return { state: 'unregistered', why: 'registration carries no module snapshot', fix: NIGHTLY_ENABLE_FIX };
+  const current = readModuleSet(moduleSource, record.mode === 'developer-suite').digest;
+  if (runnerSource && sha256(fs.readFileSync(runnerSource)) !== record.runnerSha256) return { state: 'runner-changed', registered, current, record, fix: NIGHTLY_ENABLE_FIX };
+  return registered === current ? { state: 'current', registered, current, record } : { state: 'stale', registered, current, record, fix: NIGHTLY_UPDATE_FIX };
+}
+
+/**
+ * After a successful --update: re-point a stale registration at the installed module set. Same identity, node,
+ * runner bytes, environment and targets, so only registration.json and a new update-modules-<digest> dir change
+ * and the LaunchAgent command stays exactly what it was; anything else is refused and left as it was.
+ */
+export function refreshNightlyModules(options = {}) {
+  const currency = nightlyModuleCurrency(options);
+  if (currency.state !== 'stale') return currency;
+  const { record } = currency;
+  const refreshed = installNightlyRunner({ brainHome: options.brainHome, identity: record.identity, source: record.runnerPath, nodePath: record.nodePath,
+    packageTarget: record.packageTarget, bundleTarget: record.bundleTarget, environment: record.environment, moduleSource: options.moduleSource, developerSuite: record.mode === 'developer-suite' });
+  const same = (key) => JSON.stringify(refreshed[key] ?? null) === JSON.stringify(record[key] ?? null);
+  if (!['identity', 'nodePath', 'runnerPath', 'runnerSha256', 'argv', 'environment', 'packageTarget', 'bundleTarget', 'mode'].every(same)) throw new Error('nightly registration refresh changed a scheduler-visible field');
+  return { ...currency, state: 'refreshed', registered: registeredModuleDigest(refreshed), fix: undefined };
 }
 
 export function readNightlyRegistration({ brainHome, identity = NIGHTLY_LABEL,
