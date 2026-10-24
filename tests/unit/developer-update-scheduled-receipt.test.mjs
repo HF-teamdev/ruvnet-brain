@@ -125,3 +125,25 @@ test('a terminal retention failure records failed latest evidence rather than a 
     await f.run({ mode: 'check' }); assert.equal(f.health().state, 'failed');
   } finally { spy?.mockRestore(); fs.rmSync(f.home, { recursive: true, force: true }); }
 });
+// 2026-10-24: a session-start --update re-pointed the nightly's module snapshot and doctor then said "nightly refresh
+// FAILED — the brain is not updating" all day, about a night that had succeeded on the code the update replaced.
+test('a night that ran on the module set an update just replaced stays proof until the next night', async () => {
+  const f = fixture();
+  try {
+    await f.run(); assert.equal(f.health().state, 'ok');
+    const swap = (record, refreshedAt) => {
+      const changed = structuredClone(record.updateModules);
+      changed['developer-update.mjs'] = { ...changed['developer-update.mjs'], sha256: 'f'.repeat(64) };
+      return { ...record, updateModules: changed, previousUpdateModules: record.updateModules, modulesRefreshedAt: refreshedAt };
+    };
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const ok = developerRunHealth({ brainHome: f.paths.brainHome, registration: swap(f.record, later) });
+    assert.equal(ok.state, 'ok'); assert.match(ok.evidence, /next night runs the update/);
+    // A receipt written AFTER the swap must bind to the current modules; the previous set no longer excuses it.
+    const earlier = new Date(Date.now() - 3_600_000).toISOString();
+    assert.equal(developerRunHealth({ brainHome: f.paths.brainHome, registration: swap(f.record, earlier) }).state, 'failed');
+    // Without a recorded previous set, the old strict answer stands.
+    const { previousUpdateModules, modulesRefreshedAt, ...strict } = swap(f.record, later);
+    assert.equal(developerRunHealth({ brainHome: f.paths.brainHome, registration: strict }).state, 'failed');
+  } finally { fs.rmSync(f.home, { recursive: true, force: true }); }
+});

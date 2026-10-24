@@ -186,7 +186,8 @@ function verifyUpdateModules(modules) {
  * the allowlisted values from env; an object is kept verbatim; null omits the field (an older registration without it).
  */
 export function installNightlyRunner({ brainHome, source, nodePath = process.execPath,
-  identity = NIGHTLY_LABEL, packageTarget, bundleTarget, env = {}, environment, moduleSource, developerSuite = !NIGHTLY_PROOF_LABEL.test(identity), dryRun = false } = {}) {
+  identity = NIGHTLY_LABEL, packageTarget, bundleTarget, env = {}, environment, moduleSource, developerSuite = !NIGHTLY_PROOF_LABEL.test(identity), dryRun = false,
+  previousUpdateModules = null, modulesRefreshedAt = null } = {}) {
   validateIdentity(identity);
   if (!source || !fs.existsSync(source)) throw new Error(`nightly runner source is missing: ${source || '(unset)'}`);
   const bytes = fs.readFileSync(source);
@@ -204,7 +205,8 @@ export function installNightlyRunner({ brainHome, source, nodePath = process.exe
   const record = { updateModules: modules, ...(developerSuite ? { mode: 'developer-suite' } : {}), schemaVersion: 2, kind: 'ruvnet-brain-nightly-scheduler', identity,
     nodePath: path.resolve(nodePath), runnerPath, runnerSha256: digest, argv: [],
     ...(environment === null ? {} : { environment: environment ?? Object.fromEntries(NIGHTLY_ENV_ALLOWLIST.filter(key => env[key] !== undefined).map(key => [key, key === 'PATH' ? automaticPath({ nodePath, home: homeOf(env), env }) : String(env[key])])) }),
-    packageTarget: normalizePackageTarget(packageTarget), bundleTarget: normalizeBundleTarget(bundleTarget, identity) };
+    packageTarget: normalizePackageTarget(packageTarget), bundleTarget: normalizeBundleTarget(bundleTarget, identity),
+    ...(previousUpdateModules && modulesRefreshedAt ? { previousUpdateModules, modulesRefreshedAt } : {}) };
   const recordPath = path.join(dir, registrationName(identity));
   if (dryRun) return { ...record, recordPath };
   const tmp = `${recordPath}.tmp-${process.pid}`;
@@ -250,7 +252,9 @@ export function refreshNightlyModules(options = {}) {
   const candidate = (options.build || ((p) => installNightlyRunner({ ...p, dryRun: true })))(plan);
   const differs = SCHEDULER_VISIBLE_FIELDS.filter((key) => JSON.stringify(candidate[key] ?? null) !== JSON.stringify(record[key] ?? null));
   if (differs.length) return { ...currency, state: 'refused', reason: `refresh would change ${differs.join(', ')}; registration left as it was`, fix: NIGHTLY_ENABLE_FIX };
-  const refreshed = installNightlyRunner(plan);
+  // Remember the module set this replaces: the receipt of the night that ran on it stays valid evidence until the next
+  // night (2026-10-24: doctor said "nightly refresh FAILED" all day after a session-start update re-pointed the modules).
+  const refreshed = installNightlyRunner({ ...plan, previousUpdateModules: record.updateModules, modulesRefreshedAt: new Date().toISOString() });
   return { ...currency, state: 'refreshed', registered: registeredModuleDigest(refreshed), fix: undefined };
 }
 
@@ -329,10 +333,16 @@ export function developerRunHealth({ brainHome, registration, now = Date.now(), 
   } catch (error) { return { state: 'failed', evidence: `Coordinated update receipt unreadable or refused: ${error.message}`, receipt: null }; }
   if (!receipt) return { state: 'never-ran', evidence: 'No coordinated update receipt exists yet.', receipt: null };
   const validDigest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
-  const bound = validDigest(receipt.sourceSha256) && receipt.kind === 'nightly-suite-update' && receipt.schemaVersion === 1
-    && receipt.sourceSha256 === registration.updateModules?.['developer-update.mjs']?.sha256
-    && Object.entries(receipt.sourceSnapshot || {}).every(([name, digest]) => validDigest(digest) && digest === registration.updateModules?.[name]?.sha256)
-    && EXECUTION_MODULES.filter(name => name !== 'plugin-artifact-proof.mjs' || registration.updateModules?.[name]).every(name => validDigest(receipt.sourceSnapshot?.[name]) && receipt.sourceSnapshot[name] === registration.updateModules?.[name]?.sha256);
+  const boundTo = modules => Boolean(modules) && validDigest(receipt.sourceSha256) && receipt.kind === 'nightly-suite-update' && receipt.schemaVersion === 1
+    && receipt.sourceSha256 === modules['developer-update.mjs']?.sha256
+    && Object.entries(receipt.sourceSnapshot || {}).every(([name, digest]) => validDigest(digest) && digest === modules[name]?.sha256)
+    && EXECUTION_MODULES.filter(name => name !== 'plugin-artifact-proof.mjs' || modules[name]).every(name => validDigest(receipt.sourceSnapshot?.[name]) && receipt.sourceSnapshot[name] === modules[name]?.sha256);
+  // A receipt from the module set an update just replaced is still the night's proof, but only one that FINISHED before
+  // the replacement: the next scheduled run must bind to the current set.
+  const refreshedAt = Date.parse(registration.modulesRefreshedAt || '');
+  const ranOnPrevious = !boundTo(registration.updateModules) && Number.isFinite(refreshedAt)
+    && Date.parse(receipt.finishedAt || receipt.startedAt || '') <= refreshedAt && boundTo(registration.previousUpdateModules);
+  const bound = boundTo(registration.updateModules) || ranOnPrevious;
   const ageHours = (now - Date.parse(receipt.finishedAt || receipt.startedAt || '')) / 3_600_000;
   const times = [receipt.startedAt, receipt.finishedAt].filter(value => value !== undefined).map(value => Date.parse(value));
   const timestampsValid = times.length > 0 && times.every(value => Number.isFinite(value) && value <= now)
@@ -349,7 +359,7 @@ export function developerRunHealth({ brainHome, registration, now = Date.now(), 
   if (receipt.state !== 'completed') return { state: 'failed', ageHours, receipt, evidence: 'Coordinated update terminal state is unverified.' };
   if (ageHours > maxAgeHours) return { state: 'stale', ageHours, receipt, evidence: `Last coordinated update is ${ageHours.toFixed(1)}h old.` };
   const verification = { ok: bound && receipt.mode === 'apply' && receipt.schedulerIdentity === registration.identity && receipt.state === 'completed' && receipt.ok === true && ageHours >= 0 && ageHours <= maxAgeHours };
-  return { state: verification.ok ? 'ok' : 'failed', verification, ageHours, receipt, evidence: verification.ok ? `Coordinated updates completed ${ageHours.toFixed(1)}h ago; ${receipt.config?.scope || 'unknown'} scope.` : 'Coordinated update timestamp or terminal evidence is invalid.' };
+  return { state: verification.ok ? 'ok' : 'failed', verification, ageHours, receipt, evidence: verification.ok ? `Coordinated updates completed ${ageHours.toFixed(1)}h ago; ${receipt.config?.scope || 'unknown'} scope.${ranOnPrevious ? ' That run used the code an update replaced since; the next night runs the update.' : ''}` : 'Coordinated update timestamp or terminal evidence is invalid.' };
 }
 
 export function refreshRunHealth({ brainHome, identity = NIGHTLY_LABEL, now = Date.now(), maxAgeHours = 30,

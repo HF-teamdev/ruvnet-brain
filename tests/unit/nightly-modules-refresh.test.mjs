@@ -52,6 +52,9 @@ describe('nightlyModuleCurrency reads the registration against the installed mod
     expect(after.ok, after.why).toBe(true);
     expect(digestOf(after.record)).toBe(before.current);
     expect(scalar(after.record)).toBe(scalar(w.registration)); // nothing the LaunchAgent reads changed
+    // The replaced set is kept so last night's receipt stays proof until the next night (2026-10-24 false alarm).
+    expect(after.record.previousUpdateModules).toEqual(w.registration.updateModules);
+    expect(Date.parse(after.record.modulesRefreshedAt)).toBeGreaterThan(Date.now() - 60_000);
     expect(nightlyModuleCurrency({ brainHome: w.brainHome, runnerSource: RUNNER }).state).toBe('current');
     // A changed runner is never applied from here: the LaunchAgent command would change.
     const otherRunner = path.join(tmp('runner-'), 'nightly-refresh.mjs');
@@ -84,7 +87,8 @@ describe('nightlyModuleCurrency reads the registration against the installed mod
     expect(result.state).toBe('refreshed');
     const after = JSON.parse(fs.readFileSync(w.registration.recordPath, 'utf8'));
     expect(after).not.toHaveProperty('environment');
-    const { updateModules: _a, ...restAfter } = after; const { updateModules: _b, ...restBefore } = stripped;
+    // updateModules moves, and the replaced set is recorded beside it (previousUpdateModules, modulesRefreshedAt); nothing else.
+    const { updateModules: _a, previousUpdateModules: _p, modulesRefreshedAt: _t, ...restAfter } = after; const { updateModules: _b, ...restBefore } = stripped;
     expect(JSON.stringify(restAfter)).toBe(JSON.stringify(restBefore)); // same fields, same order, same bytes
     expect(digestOf(after)).toBe(result.registered);
   });
