@@ -241,6 +241,12 @@ export function nightlyModuleCurrency({ brainHome, identity = NIGHTLY_LABEL, mod
  * and the LaunchAgent command stays exactly what it was; anything else is refused and left as it was.
  */
 export const SCHEDULER_VISIBLE_FIELDS = Object.freeze(['identity', 'nodePath', 'runnerPath', 'runnerSha256', 'argv', 'environment', 'packageTarget', 'bundleTarget', 'mode']);
+/** The replaced-module history after replacing `record.updateModules` now: newest first, last 48 h, at most 20. */
+export function nextReplacedSets(record, now = Date.now()) {
+  return [{ updateModules: record.updateModules, replacedAt: new Date(now).toISOString() },
+    ...(Array.isArray(record.replacedUpdateModules) ? record.replacedUpdateModules : [])]
+    .filter((entry) => now - Date.parse(entry?.replacedAt || '') <= 48 * 3_600_000).slice(0, 20);
+}
 export function refreshNightlyModules(options = {}) {
   const currency = nightlyModuleCurrency(options);
   if (currency.state !== 'stale') return currency;
@@ -254,11 +260,9 @@ export function refreshNightlyModules(options = {}) {
   if (differs.length) return { ...currency, state: 'refused', reason: `refresh would change ${differs.join(', ')}; registration left as it was`, fix: NIGHTLY_ENABLE_FIX };
   // Remember the module set this replaces: the receipt of the night that ran on it stays valid evidence until the next
   // night (2026-10-24: doctor said "nightly refresh FAILED" all day after a session-start update re-pointed the modules).
-  // Newest first, at most three: two refreshes before the next night (4.7.18 and 4.7.19 on one day) must not lose the set
-  // last night actually ran on (review 2026-10-24).
-  const replaced = [{ updateModules: record.updateModules, replacedAt: new Date().toISOString() },
-    ...(Array.isArray(record.replacedUpdateModules) ? record.replacedUpdateModules : [])].slice(0, 3);
-  const refreshed = installNightlyRunner({ ...plan, replacedUpdateModules: replaced });
+  // Newest first, every set replaced in the last 48 h (a receipt older than the 30 h health window is stale anyway), at
+  // most 20: any number of refreshes before the next night keeps the set that night ran on (reviews 2026-10-24).
+  const refreshed = installNightlyRunner({ ...plan, replacedUpdateModules: nextReplacedSets(record) });
   return { ...currency, state: 'refreshed', registered: registeredModuleDigest(refreshed), fix: undefined };
 }
 
@@ -343,10 +347,12 @@ export function developerRunHealth({ brainHome, registration, now = Date.now(), 
     && EXECUTION_MODULES.filter(name => name !== 'plugin-artifact-proof.mjs' || modules[name]).every(name => validDigest(receipt.sourceSnapshot?.[name]) && receipt.sourceSnapshot[name] === modules[name]?.sha256);
   // A receipt from the module set an update just replaced is still the night's proof, but only one that FINISHED before
   // the replacement: the next scheduled run must bind to the current set.
-  const finished = Date.parse(receipt.finishedAt || receipt.startedAt || '');
+  // Judged by LAUNCH time: a night's own knowledge step can install a release and re-point the modules before the run
+  // records finishedAt (cross-model review 2026-10-24). A run launched after its set was replaced must bind to the new one.
+  const launched = Date.parse(receipt.startedAt || receipt.finishedAt || '');
   const ranOnPrevious = !boundTo(registration.updateModules) && Array.isArray(registration.replacedUpdateModules)
     && registration.replacedUpdateModules.some((entry) => Number.isFinite(Date.parse(entry?.replacedAt || ''))
-      && finished <= Date.parse(entry.replacedAt) && boundTo(entry.updateModules));
+      && launched <= Date.parse(entry.replacedAt) && boundTo(entry.updateModules));
   const bound = boundTo(registration.updateModules) || ranOnPrevious;
   const ageHours = (now - Date.parse(receipt.finishedAt || receipt.startedAt || '')) / 3_600_000;
   const times = [receipt.startedAt, receipt.finishedAt].filter(value => value !== undefined).map(value => Date.parse(value));

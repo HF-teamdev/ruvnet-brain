@@ -153,3 +153,16 @@ describe('reconcileVerifiedCodexHookTrust on Codex 0.164 composite hashes', () =
     expect(other.edits).toEqual([]);
   });
 });
+
+describe('release commands stay in the shape the generated-skill check reads', () => {
+  it('every plugin command declares a double-quoted description (Codex parses full YAML; the check parses this form)', () => {
+    const dir = path.resolve('plugin', 'commands');
+    const bad = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).filter((f) => {
+      const text = fs.readFileSync(path.join(dir, f), 'utf8');
+      const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+      return !fm || !/^description:\s*"(?:[^"\\]|\\.)*"\s*$/m.test(fm[1]);
+    });
+    // A command outside this form is still never approved blindly (the check refuses); this keeps the repair working.
+    expect(bad).toEqual([]);
+  });
+});

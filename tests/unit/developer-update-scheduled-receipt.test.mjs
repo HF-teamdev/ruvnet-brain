@@ -143,6 +143,12 @@ test('a night that ran on the module set an update just replaced stays proof unt
     const twice = { ...f.record, updateModules: fake(f.record, 'e'),
       replacedUpdateModules: [{ updateModules: fake(f.record, 'f'), replacedAt: later }, { updateModules: f.record.updateModules, replacedAt: later }] };
     assert.equal(developerRunHealth({ brainHome: f.paths.brainHome, registration: twice }).state, 'ok');
+    // A night whose own update step re-pointed the modules mid-run: launched before the swap, finished after it.
+    const receipt = JSON.parse(fs.readFileSync(f.paths.scheduledReceipt));
+    const midRun = new Date(Date.parse(receipt.startedAt) + 1).toISOString();
+    if (Date.parse(receipt.finishedAt) > Date.parse(midRun)) {
+      assert.equal(developerRunHealth({ brainHome: f.paths.brainHome, registration: swap(f.record, midRun) }).state, 'ok');
+    }
     // Without a recorded replaced set, the old strict answer stands.
     const { replacedUpdateModules, ...strict } = swap(f.record, later);
     assert.equal(developerRunHealth({ brainHome: f.paths.brainHome, registration: strict }).state, 'failed');
