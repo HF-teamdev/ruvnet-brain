@@ -187,7 +187,7 @@ function verifyUpdateModules(modules) {
  */
 export function installNightlyRunner({ brainHome, source, nodePath = process.execPath,
   identity = NIGHTLY_LABEL, packageTarget, bundleTarget, env = {}, environment, moduleSource, developerSuite = !NIGHTLY_PROOF_LABEL.test(identity), dryRun = false,
-  previousUpdateModules = null, modulesRefreshedAt = null } = {}) {
+  replacedUpdateModules = null } = {}) {
   validateIdentity(identity);
   if (!source || !fs.existsSync(source)) throw new Error(`nightly runner source is missing: ${source || '(unset)'}`);
   const bytes = fs.readFileSync(source);
@@ -206,7 +206,7 @@ export function installNightlyRunner({ brainHome, source, nodePath = process.exe
     nodePath: path.resolve(nodePath), runnerPath, runnerSha256: digest, argv: [],
     ...(environment === null ? {} : { environment: environment ?? Object.fromEntries(NIGHTLY_ENV_ALLOWLIST.filter(key => env[key] !== undefined).map(key => [key, key === 'PATH' ? automaticPath({ nodePath, home: homeOf(env), env }) : String(env[key])])) }),
     packageTarget: normalizePackageTarget(packageTarget), bundleTarget: normalizeBundleTarget(bundleTarget, identity),
-    ...(previousUpdateModules && modulesRefreshedAt ? { previousUpdateModules, modulesRefreshedAt } : {}) };
+    ...(Array.isArray(replacedUpdateModules) && replacedUpdateModules.length ? { replacedUpdateModules } : {}) };
   const recordPath = path.join(dir, registrationName(identity));
   if (dryRun) return { ...record, recordPath };
   const tmp = `${recordPath}.tmp-${process.pid}`;
@@ -254,7 +254,11 @@ export function refreshNightlyModules(options = {}) {
   if (differs.length) return { ...currency, state: 'refused', reason: `refresh would change ${differs.join(', ')}; registration left as it was`, fix: NIGHTLY_ENABLE_FIX };
   // Remember the module set this replaces: the receipt of the night that ran on it stays valid evidence until the next
   // night (2026-10-24: doctor said "nightly refresh FAILED" all day after a session-start update re-pointed the modules).
-  const refreshed = installNightlyRunner({ ...plan, previousUpdateModules: record.updateModules, modulesRefreshedAt: new Date().toISOString() });
+  // Newest first, at most three: two refreshes before the next night (4.7.18 and 4.7.19 on one day) must not lose the set
+  // last night actually ran on (review 2026-10-24).
+  const replaced = [{ updateModules: record.updateModules, replacedAt: new Date().toISOString() },
+    ...(Array.isArray(record.replacedUpdateModules) ? record.replacedUpdateModules : [])].slice(0, 3);
+  const refreshed = installNightlyRunner({ ...plan, replacedUpdateModules: replaced });
   return { ...currency, state: 'refreshed', registered: registeredModuleDigest(refreshed), fix: undefined };
 }
 
@@ -339,9 +343,10 @@ export function developerRunHealth({ brainHome, registration, now = Date.now(), 
     && EXECUTION_MODULES.filter(name => name !== 'plugin-artifact-proof.mjs' || modules[name]).every(name => validDigest(receipt.sourceSnapshot?.[name]) && receipt.sourceSnapshot[name] === modules[name]?.sha256);
   // A receipt from the module set an update just replaced is still the night's proof, but only one that FINISHED before
   // the replacement: the next scheduled run must bind to the current set.
-  const refreshedAt = Date.parse(registration.modulesRefreshedAt || '');
-  const ranOnPrevious = !boundTo(registration.updateModules) && Number.isFinite(refreshedAt)
-    && Date.parse(receipt.finishedAt || receipt.startedAt || '') <= refreshedAt && boundTo(registration.previousUpdateModules);
+  const finished = Date.parse(receipt.finishedAt || receipt.startedAt || '');
+  const ranOnPrevious = !boundTo(registration.updateModules) && Array.isArray(registration.replacedUpdateModules)
+    && registration.replacedUpdateModules.some((entry) => Number.isFinite(Date.parse(entry?.replacedAt || ''))
+      && finished <= Date.parse(entry.replacedAt) && boundTo(entry.updateModules));
   const bound = boundTo(registration.updateModules) || ranOnPrevious;
   const ageHours = (now - Date.parse(receipt.finishedAt || receipt.startedAt || '')) / 3_600_000;
   const times = [receipt.startedAt, receipt.finishedAt].filter(value => value !== undefined).map(value => Date.parse(value));

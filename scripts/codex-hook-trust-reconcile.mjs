@@ -9,57 +9,99 @@ import zlib from 'node:zlib';
 import { codexHookIdentities, codexPluginContentHash } from './codex-hook-trust.mjs';
 
 /**
- * sha256 of every regular file under package/plugin/ in a verified npm tarball, read in memory (ustar + pax `path`
- * records; nothing is extracted or written). Since Codex 0.164 a plugin hook's approval also pins a fingerprint of the
- * whole installed plugin folder, so trusting it is safe only when that folder holds exactly these bytes.
+ * sha256 of every regular file under package/plugin/ in a verified npm tarball, read in memory (ustar with pax `path`
+ * records; nothing is extracted or written). Strict: a bad header checksum, a non-octal size, a body past the end, or
+ * any entry type other than file, directory or pax is refused rather than guessed (review 2026-10-24).
  */
 export function publishedPluginFiles(archive) {
   const tar = zlib.gunzipSync(archive);
   const files = new Map();
-  const str = (b) => b.toString('utf8').replace(/\0[\s\S]*$/, '');
-  let pax = null;
-  for (let off = 0; off + 512 <= tar.length;) {
+  const field = (b) => { const i = b.indexOf(0); return (i < 0 ? b : b.subarray(0, i)).toString('utf8'); };
+  const octal = (b, what) => { const t = field(b).trim(); if (!/^[0-7]+$/.test(t)) throw new Error(`Published archive has a non-octal ${what}`); return parseInt(t, 8); };
+  const paxRecords = (body) => {
+    const out = {}; let i = 0;
+    while (i < body.length) {
+      const space = body.indexOf(0x20, i);
+      if (space < 0) throw new Error('Published archive has a malformed pax record');
+      const len = Number(body.subarray(i, space).toString('ascii'));
+      if (!Number.isSafeInteger(len) || len <= space - i || i + len > body.length || body[i + len - 1] !== 0x0a) throw new Error('Published archive has a malformed pax record');
+      const rec = body.subarray(space + 1, i + len - 1).toString('utf8');
+      const eq = rec.indexOf('=');
+      if (eq < 1) throw new Error('Published archive has a malformed pax record');
+      out[rec.slice(0, eq)] = rec.slice(eq + 1);
+      i += len;
+    }
+    return out;
+  };
+  let pax = null; let off = 0;
+  for (; off + 512 <= tar.length;) {
     const header = tar.subarray(off, off + 512);
     if (header.every((b) => b === 0)) break;
-    const size = parseInt(str(header.subarray(124, 136)).trim() || '0', 8);
-    const type = String.fromCharCode(header[156] || 48);
-    const prefix = str(header.subarray(345, 500));
-    let name = pax?.path || (prefix ? `${prefix}/${str(header.subarray(0, 100))}` : str(header.subarray(0, 100)));
+    const sum = header.reduce((n, b, i) => n + (i >= 148 && i < 156 ? 32 : b), 0);
+    if (octal(header.subarray(148, 156), 'checksum') !== sum) throw new Error('Published archive header checksum mismatch');
+    const size = octal(header.subarray(124, 136), 'size');
+    const type = header[156] === 0 ? '0' : String.fromCharCode(header[156]);
+    const prefix = field(header.subarray(345, 500));
+    const name = pax?.path ?? (prefix ? `${prefix}/${field(header.subarray(0, 100))}` : field(header.subarray(0, 100)));
+    if (off + 512 + size > tar.length) throw new Error('Published archive entry runs past the end');
     const body = tar.subarray(off + 512, off + 512 + size);
     off += 512 + Math.ceil(size / 512) * 512;
-    if (type === 'x') {
-      pax = {};
-      for (const m of body.toString('utf8').matchAll(/\d+ ([^=]+)=([^\n]*)\n/g)) pax[m[1]] = m[2];
-      continue;
-    }
+    if (type === 'x') { pax = paxRecords(body); continue; }
+    if (type === 'g') { pax = null; continue; }
     pax = null;
-    if ((type === '0' || type === '\0') && name.startsWith('package/plugin/')) {
-      files.set(name.slice('package/plugin/'.length), digest(body));
-    }
+    if (type === '5') continue;
+    if (type !== '0') throw new Error(`Published archive has an unsupported entry type ${JSON.stringify(type)}`);
+    if (name.startsWith('package/plugin/')) files.set(name.slice('package/plugin/'.length), digest(body));
   }
   if (!files.size) throw new Error('Published archive carries no plugin files');
   return files;
 }
 
-// Codex writes this under the installed plugin itself (migrated slash commands); it is not release bytes.
-const CODEX_GENERATED = /^\.codex-plugin\/migrated-command-skills(\/|$)/;
-/** Installed plugin root equals the verified release's plugin/ exactly, apart from Codex's own generated folder. */
-export function installedPluginMatchesRelease(root, pluginFiles) {
-  const seen = new Set();
-  const walk = (rel) => {
-    const full = rel ? path.join(root, rel) : root;
-    const st = fs.lstatSync(full);
-    if (st.isSymbolicLink()) throw new Error(`Installed plugin entry is a link: ${rel}`);
-    if (st.isDirectory()) { for (const e of fs.readdirSync(full)) { const r = rel ? `${rel}/${e}` : e; if (!CODEX_GENERATED.test(r)) walk(r); } return; }
-    if (!st.isFile()) throw new Error(`Installed plugin entry is not a file: ${rel}`);
-    if (pluginFiles.get(rel) !== digest(fs.readFileSync(full))) throw new Error(`Installed plugin file differs from the verified release: ${rel}`);
+// Codex writes this under the installed plugin itself: one SKILL.md per migrated slash command (openai/codex
+// rust-v0.164.0 codex-rs/core-plugins/src/command_migration.rs render_command_skill). It is not release bytes, so it is
+// accepted only when every byte is what that template renders from the release's own verified command file.
+const CODEX_GENERATED = 'migrated-command-skills';
+function commandParts(text) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(text);
+  if (!m) return null;
+  const d = /^description:\s*"((?:[^"\\]|\\.)*)"\s*$/m.exec(m[1]);
+  return d ? { description: JSON.parse(`"${d[1]}"`).trim(), body: m[2] } : null;
+}
+function expectedGeneratedSkill(skillName, sourceName, commandText) {
+  const parts = commandParts(commandText);
+  if (!parts || !parts.description) return null;
+  const body = parts.body.trim() || 'No command template body was found.';
+  return `---\nname: ${JSON.stringify(skillName)}\ndescription: ${JSON.stringify(parts.description)}\n---\n\n# ${skillName}\n\n`
+    + `Use this skill when the user asks to run the migrated source command \`${sourceName}\`.\n\n## Command Template\n\n${body}\n`;
+}
+
+/**
+ * ONE pass over the installed plugin: each file's bytes are checked against the verified release (or, for Codex's own
+ * generated skills, against the template rendered from the verified command file) and the SAME bytes feed the content
+ * fingerprint returned. Throws on any changed, extra or missing file, link, or generated file that is not exactly
+ * Codex's rendering.
+ */
+export function verifiedPluginContentHash(root, pluginFiles, { platform = process.platform } = {}) {
+  const seen = new Set(); const commands = new Map(); const generated = new Map();
+  const genPrefix = `.codex-plugin/${CODEX_GENERATED}/`;
+  const hash = codexPluginContentHash(root, { platform, onFile: (rel, bytes) => {
+    if (rel.startsWith(genPrefix)) { generated.set(rel.slice(genPrefix.length), bytes); return; }
+    if (pluginFiles.get(rel) !== digest(bytes)) throw new Error(`Installed plugin file differs from the verified release: ${rel}`);
     seen.add(rel);
-  };
-  walk('');
+    if (/^commands\/[^/]+\.md$/.test(rel)) commands.set(rel.slice('commands/'.length, -3), bytes.toString('utf8'));
+  } });
   const missing = [...pluginFiles.keys()].filter((k) => !seen.has(k));
   if (missing.length) throw new Error(`Installed plugin lacks ${missing.length} released file(s), e.g. ${missing[0]}`);
-  return true;
+  for (const [rel, bytes] of generated) {
+    const m = /^source-command-([a-z0-9-]+)\/SKILL\.md$/.exec(rel);
+    const source = m && commands.get(m[1]);
+    const expected = source && expectedGeneratedSkill(`source-command-${m[1]}`, m[1], source);
+    if (!expected || bytes.toString('utf8') !== expected) throw new Error(`Codex-generated file is not the rendering of a verified release command: ${rel}`);
+  }
+  return hash;
 }
+/** Kept for callers that only need the yes/no: the installed plugin is the verified release. */
+export function installedPluginMatchesRelease(root, pluginFiles) { verifiedPluginContentHash(root, pluginFiles); return true; }
 
 /** Authenticate exact published package bytes before reading one archive member. No extraction/install. */
 export async function obtainVerifiedPublishedHookIdentity({ version, fetch: fetcher = globalThis.fetch,
@@ -248,7 +290,7 @@ export async function reconcileVerifiedCodexHookTrust({ releaseIdentity, install
     const pluginRoot = path.dirname(path.dirname(hooksPath));
     let contentHash = null;
     if (releaseIdentity.pluginFiles instanceof Map) {
-      try { installedPluginMatchesRelease(pluginRoot, releaseIdentity.pluginFiles); contentHash = codexPluginContentHash(pluginRoot); }
+      try { contentHash = verifiedPluginContentHash(pluginRoot, releaseIdentity.pluginFiles); }
       catch (error) { contentHash = null; contentRefusal = error.message; }
     }
     if (!suppliedRpc) client = await nativeClient(nativeBinary, cwd, Date.now() + Math.min(timeoutMs, 20000), configPath);

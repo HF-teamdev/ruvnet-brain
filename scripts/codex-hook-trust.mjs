@@ -104,17 +104,19 @@ export const CODEX_TRUST_ACTION = 'Start Codex (interactive, in any project). At
  * hashes its root-relative path (u64 LE length + bytes), then "directory", or "file" + u64 LE size + contents.
  * Anything that is neither (a symlink) throws, as it does in Codex.
  */
-export function codexPluginContentHash(root, { fsImpl = null } = {}) {
+export function codexPluginContentHash(root, { fsImpl = null, onFile = null, platform = process.platform } = {}) {
   const fs = fsImpl || nodeFs;
   const u64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
   if (!fs.lstatSync(root).isDirectory()) throw new Error('plugin root is not a directory');
   const hash = crypto.createHash('sha256').update('codex-plugin-bundle-v1');
+  // Rust hashes the OS-native relative path bytes: '\\' separators on Windows (review 2026-10-24).
+  const sep = platform === 'win32' ? '\\' : '/';
   const pending = [''];
   while (pending.length) {
     const rel = pending.pop();
     const base = rel.split('/').pop();
     if (rel && (base === '__pycache__' || base === '.venv' || base.endsWith('.pyc') || base.endsWith('.egg-info'))) continue;
-    const name = Buffer.from(rel);
+    const name = Buffer.from(rel.split('/').join(sep));
     hash.update(u64(name.length)).update(name);
     const full = rel ? `${root}/${rel}` : root;
     const st = fs.lstatSync(full);
@@ -125,6 +127,9 @@ export function codexPluginContentHash(root, { fsImpl = null } = {}) {
     } else if (st.isFile()) {
       const bytes = fs.readFileSync(full);
       if (bytes.length !== st.size) throw new Error('plugin file changed while fingerprinting');
+      // The caller sees exactly the bytes that enter the fingerprint: one read, so nothing can change between a check
+      // and the hash it approves (review 2026-10-24: a separate verification pass was a swap window).
+      onFile?.(rel, bytes);
       hash.update('file').update(u64(st.size)).update(bytes);
     } else {
       throw new Error(`unsupported plugin entry type: ${full}`);
