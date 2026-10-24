@@ -2028,25 +2028,50 @@ export function codexMarketplaceRows(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function runCodexJson(args, {
+// Codex refuses EVERY plugin command while any configured marketplace snapshot fails to load, including one that is
+// not the Brain's. Measured 2026-10-23: a 7:21 p.m. ET update failed host convergence on "`claude-code-plugins` at
+// ~/.codex/.tmp/marketplaces/claude-code-plugins: marketplace root does not contain a supported manifest" while Codex
+// was refreshing that Git snapshot; the same step passed at 5 a.m. Reproduced with a snapshot missing its manifest:
+// `codex plugin list` exits 1, and `codex plugin marketplace upgrade <name>` repairs it (codex-cli 0.164.0).
+const CODEX_SNAPSHOT_FAILURE = /failed to load configured marketplace snapshot/i;
+export function codexBrokenMarketplaces(text) {
+  return [...String(text || '').matchAll(/^- `([^`]+)` at /gm)].map((m) => m[1]);
+}
+const sleepSync = (ms) => { if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
+export function runCodexJson(args, {
   codexBin = process.env.CODEX_BIN || 'codex',
   codexHome = codexHomeDir(),
   cwd = process.cwd(),
+  run = runHostCli,
+  waitMs = 5_000,
 } = {}) {
-  const r = runHostCli(codexBin, args, {
-    stdio: 'pipe',
-    shell: false,
-    cwd,
-    env: { ...process.env, CODEX_HOME: codexHome },
-    encoding: 'utf8',
-    timeout: 30_000,
-    maxBuffer: 20 * 1024 * 1024,
-  });
+  const options = { stdio: 'pipe', shell: false, cwd, env: { ...process.env, CODEX_HOME: codexHome }, encoding: 'utf8',
+    timeout: 30_000, maxBuffer: 20 * 1024 * 1024 };
+  const snapshotFailure = (res) => !res.missingBinary && res.status !== 0 && CODEX_SNAPSHOT_FAILURE.test(String(res.stderr || res.stdout || ''));
+  let r = run(codexBin, args, options);
+  // One wait covers a refresh Codex is finishing; then refresh only the OTHER Git marketplaces it named (the Brain's
+  // own local snapshot is repaired by prepareCodexMarketplace), once, and ask again. Bounded: at most three asks.
+  const repaired = [];
+  if (snapshotFailure(r)) { sleepSync(waitMs); r = run(codexBin, args, options); }
+  if (snapshotFailure(r)) {
+    for (const name of codexBrokenMarketplaces(r.stderr || r.stdout).filter((n) => n !== CODEX_MARKETPLACE)) {
+      const up = run(codexBin, ['plugin', 'marketplace', 'upgrade', name, '--json'], options);
+      repaired.push(`${name}: ${up.status === 0 ? 'refreshed' : `refresh failed (exit ${up.status})`}`);
+    }
+    if (repaired.length) r = run(codexBin, args, options);
+  }
   if (r.missingBinary) return { ok: false, error: r.message };
   if (r.error || r.status !== 0) {
-    const detail = String(r.stderr || r.stdout || r.error?.message || `exit ${r.status}`).trim();
-    return { ok: false, error: detail };
+    let detail = String(r.stderr || r.stdout || r.error?.message || `exit ${r.status}`).trim();
+    if (snapshotFailure(r)) {
+      const names = codexBrokenMarketplaces(r.stderr || r.stdout);
+      detail += ` — Codex cannot load its ${names.map((n) => `\`${n}\``).join(', ') || 'configured'} marketplace snapshot`
+        + `${repaired.length ? ` (tried: ${repaired.join('; ')})` : ''}; repair with: ${names.map((n) => `codex plugin marketplace upgrade ${n}`).join(' && ') || 'codex plugin marketplace upgrade'}`;
+    }
+    return { ok: false, error: detail, ...(repaired.length ? { repaired } : {}) };
   }
+  if (repaired.length && !TEST_MODE) info(`  Codex marketplace snapshot repaired before the Brain step (${repaired.join('; ')})`);
   try { return { ok: true, value: JSON.parse(r.stdout || 'null') }; }
   catch { return { ok: false, error: `Codex returned non-JSON output for ${args.join(' ')}` }; }
 }
@@ -3874,7 +3899,9 @@ export function syncHostsAfterUpdate(cacheDir = resolvedKbDir(), {
   const fail = (detail = {}) => {
     runtimeTransaction.rollback();
     hostLock.release();
-    return { ok: false, results, ...detail };
+    // Three paths below returned no error at all, so the refresh receipt recorded `state: null, error: null` and the
+    // failure could not be diagnosed afterwards (2026-10-23 7:21 p.m. ET). Every failure now carries its reason.
+    return { ok: false, results, ...detail, error: detail.error || hostFailureReason(results) };
   };
 
   try {
@@ -4035,6 +4062,18 @@ export function classifyHostConvergence(receipt, expectedVersion = PACKAGE_VERSI
 }
 
 /** Activation and host readiness are independent; never claim a rollback from a host refusal. */
+/** Why host synchronization stopped, from the per-host results it had gathered; null when nothing says. */
+export function hostFailureReason(results = {}) {
+  const firstLines = (text) => String(text || '').trim().split('\n').slice(0, 3).join(' ');
+  if (results.claude?.host && !results.claude.wired) {
+    return `Claude Code plugin ${results.claude.action || 'wiring failed'}${results.claude.version ? ` (installed ${results.claude.version}, required ${results.claude.expectedVersion || PACKAGE_VERSION})` : ''}`;
+  }
+  if (results.codex && !['unchanged', 'installed', 'updated', 'disabled'].includes(results.codex.action)) {
+    return `Codex plugin ${results.codex.action || 'failed'}${results.codex.error ? `: ${firstLines(results.codex.error)}` : ''}`;
+  }
+  return null;
+}
+
 export function hostSynchronizationFailureMessage(convergence, active, expectedVersion = PACKAGE_VERSION) {
   const verified = active?.version === expectedVersion && Number.isSafeInteger(active.generation) && active.generation > 0
     && active.codeRoot === `versions/${expectedVersion}`;
@@ -4093,11 +4132,34 @@ function refuseOverSetAsideBrain() {
   return true;
 }
 
+/**
+ * An installer OLDER than the runtime already installed cannot apply a newer release: it downloads ~736 MB and then
+ * refuses on "staged ReleaseCoverage failed integrity — release version 4.7.17 differs from 4.5.2" (measured
+ * 2026-10-23: `npx ruvnet-brain --update` run inside a stale source checkout resolves that checkout's own bin).
+ * Say so before the download, with the command that works. Null when this installer is current or newer.
+ */
+export function olderInstallerRefusal({ brainHome, packageVersion = PACKAGE_VERSION, repoRoot = REPO_ROOT } = {}) {
+  let installed;
+  try { installed = JSON.parse(fs.readFileSync(path.join(brainHome, 'active.json'), 'utf8'))?.version; } catch { return null; }
+  if (!/^\d+\.\d+\.\d+$/.test(String(installed || ''))) return null;
+  try { if (cmpVersion(installed, packageVersion) <= 0) return null; } catch { return null; }
+  const checkout = fs.existsSync(path.join(repoRoot, '.git'));
+  return `this is ruvnet-brain ${packageVersion} (${checkout ? 'a source checkout' : 'an installer copy'} at ${repoRoot}), `
+    + `older than the ${installed} already installed here, and an older installer cannot apply a newer release. `
+    + `Run  npx ruvnet-brain@latest --update  from any other folder${checkout ? ', or bring this checkout up to date first (git pull)' : ''}.`;
+}
+
 async function runUpdate() {
   printBanner('update');
   refuseUnmountedBrain();
   const kbDir = resolvedKbDir();
   const brainHome = process.env.RUVNET_BRAIN_HOME || path.dirname(kbDir);
+  const olderInstaller = olderInstallerRefusal({ brainHome });
+  if (olderInstaller) {
+    console.error(`\n${c.red('✗ update stopped before downloading:')} ${olderInstaller}\n`);
+    process.exitCode = 1;
+    return;
+  }
   if (FLAG_HOST_SYNC_ONLY) {
     info(c.dim('repairing host shells and managed model catalog without mutating KB bytes…\n'));
     const convergence = syncHostsAfterUpdate(kbDir);
@@ -5650,7 +5712,7 @@ const rufloProbeRun = (args, cli = 'ruflo', timeoutMs = 10_000) => {
   // (verified live: ~/.npm-global/lib/node_modules/ruflo/node_modules/@claude-flow/cli/dist/src/
   // services/daemon-autostart.js:85) — a read-only health probe must not leave one running.
   const result = spawnSync(cli, args, { cwd: process.cwd(), encoding: 'utf8', timeout: timeoutMs, shell: IS_WIN && /\.(?:cmd|bat)$/i.test(cli),
-    env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0' } });
+    env: { ...process.env, RUFLO_DAEMON_AUTOSTART: '0', CLAUDE_FLOW_AUTO_UPDATE: 'false' } });
   // A spawn failure or a timeout is marked, so it can never pass for an (empty, "healthy") answer.
   return `${result.stdout || ''}\n${result.stderr || ''}${result.error ? `\n[ruflo-probe-error] ${result.error.code || result.error.message}` : ''}`;
 };
