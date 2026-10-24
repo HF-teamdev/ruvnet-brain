@@ -5,7 +5,61 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { codexHookIdentities } from './codex-hook-trust.mjs';
+import zlib from 'node:zlib';
+import { codexHookIdentities, codexPluginContentHash } from './codex-hook-trust.mjs';
+
+/**
+ * sha256 of every regular file under package/plugin/ in a verified npm tarball, read in memory (ustar + pax `path`
+ * records; nothing is extracted or written). Since Codex 0.164 a plugin hook's approval also pins a fingerprint of the
+ * whole installed plugin folder, so trusting it is safe only when that folder holds exactly these bytes.
+ */
+export function publishedPluginFiles(archive) {
+  const tar = zlib.gunzipSync(archive);
+  const files = new Map();
+  const str = (b) => b.toString('utf8').replace(/\0[\s\S]*$/, '');
+  let pax = null;
+  for (let off = 0; off + 512 <= tar.length;) {
+    const header = tar.subarray(off, off + 512);
+    if (header.every((b) => b === 0)) break;
+    const size = parseInt(str(header.subarray(124, 136)).trim() || '0', 8);
+    const type = String.fromCharCode(header[156] || 48);
+    const prefix = str(header.subarray(345, 500));
+    let name = pax?.path || (prefix ? `${prefix}/${str(header.subarray(0, 100))}` : str(header.subarray(0, 100)));
+    const body = tar.subarray(off + 512, off + 512 + size);
+    off += 512 + Math.ceil(size / 512) * 512;
+    if (type === 'x') {
+      pax = {};
+      for (const m of body.toString('utf8').matchAll(/\d+ ([^=]+)=([^\n]*)\n/g)) pax[m[1]] = m[2];
+      continue;
+    }
+    pax = null;
+    if ((type === '0' || type === '\0') && name.startsWith('package/plugin/')) {
+      files.set(name.slice('package/plugin/'.length), digest(body));
+    }
+  }
+  if (!files.size) throw new Error('Published archive carries no plugin files');
+  return files;
+}
+
+// Codex writes this under the installed plugin itself (migrated slash commands); it is not release bytes.
+const CODEX_GENERATED = /^\.codex-plugin\/migrated-command-skills(\/|$)/;
+/** Installed plugin root equals the verified release's plugin/ exactly, apart from Codex's own generated folder. */
+export function installedPluginMatchesRelease(root, pluginFiles) {
+  const seen = new Set();
+  const walk = (rel) => {
+    const full = rel ? path.join(root, rel) : root;
+    const st = fs.lstatSync(full);
+    if (st.isSymbolicLink()) throw new Error(`Installed plugin entry is a link: ${rel}`);
+    if (st.isDirectory()) { for (const e of fs.readdirSync(full)) { const r = rel ? `${rel}/${e}` : e; if (!CODEX_GENERATED.test(r)) walk(r); } return; }
+    if (!st.isFile()) throw new Error(`Installed plugin entry is not a file: ${rel}`);
+    if (pluginFiles.get(rel) !== digest(fs.readFileSync(full))) throw new Error(`Installed plugin file differs from the verified release: ${rel}`);
+    seen.add(rel);
+  };
+  walk('');
+  const missing = [...pluginFiles.keys()].filter((k) => !seen.has(k));
+  if (missing.length) throw new Error(`Installed plugin lacks ${missing.length} released file(s), e.g. ${missing[0]}`);
+  return true;
+}
 
 /** Authenticate exact published package bytes before reading one archive member. No extraction/install. */
 export async function obtainVerifiedPublishedHookIdentity({ version, fetch: fetcher = globalThis.fetch,
@@ -43,7 +97,9 @@ export async function obtainVerifiedPublishedHookIdentity({ version, fetch: fetc
       { input: archive, timeout: Math.min(remaining, 3000), maxBuffer: 256 * 1024 });
     if (result.error || result.status !== 0 || !result.stdout?.length) throw new Error('Platform tar cannot read exact published hooks entry');
     if (!codexHookIdentities(JSON.parse(result.stdout)).size) throw new Error('Published native hooks are invalid');
-    return { state: 'verified', releaseIdentity: { version, integrity, hooksSha256: digest(result.stdout) },
+    let pluginFiles = null;
+    try { pluginFiles = publishedPluginFiles(archive); } catch { pluginFiles = null; /* content trust is then refused, never guessed */ }
+    return { state: 'verified', releaseIdentity: { version, integrity, hooksSha256: digest(result.stdout), pluginFiles },
       metadataUrl, tarballUrl, archiveBytes: archive.length };
   } catch (error) { return blocked(error.message); }
 }
@@ -142,9 +198,14 @@ const rowsFor = (response) => {
   if (!Array.isArray(response?.data)) throw new Error('Native hook registry unavailable');
   return response.data.flatMap((r) => r.hooks || []).filter((r) => r.pluginId === OWNER);
 };
-function assertRegistry(rows, identities) {
+// Codex <0.164: currentHash is the declaration hash. 0.164+: "<declaration hash>/<plugin content hash>" (discovery.rs).
+const splitHash = (current) => { const [declaration, content = null] = String(current || '').split('/'); return { declaration, content }; };
+function assertRegistry(rows, identities, contentHash = null) {
   if (rows.length !== identities.size || new Set(rows.map((r) => r.key)).size !== identities.size
-    || rows.some((row) => identities.get(row.key) !== row.currentHash)) throw new Error('Native registry differs from verified released artifact');
+    || rows.some((row) => identities.get(row.key) !== splitHash(row.currentHash).declaration)) throw new Error('Native registry differs from verified released artifact');
+  if (rows.some((row) => splitHash(row.currentHash).content !== null && splitHash(row.currentHash).content !== contentHash)) {
+    throw new Error('Native plugin content fingerprint differs from the verified installed plugin');
+  }
 }
 
 function otherSettings(config, keys) {
@@ -153,6 +214,7 @@ function otherSettings(config, keys) {
     const state = clone?.hooks?.state?.[key];
     if (state && typeof state === 'object') {
       delete state.trusted_hash;
+      delete state.trusted_content_hash;
       if (!Object.keys(state).length) delete clone.hooks.state[key];
     }
   }
@@ -170,7 +232,7 @@ function otherSettings(config, keys) {
 export async function reconcileVerifiedCodexHookTrust({ releaseIdentity, installedVersion, hooksPath,
   configPath, nativeBinary, cwd = process.cwd(), backupDir = path.join(path.dirname(configPath || ''), 'backups'),
   rpc: suppliedRpc, timeoutMs = 10000 } = {}) {
-  let client; let wrote = false; let writeAttempted = false; let backupPath;
+  let client; let wrote = false; let writeAttempted = false; let backupPath; let contentRefusal = 'Verified release plugin files unavailable';
   try {
     if (!releaseIdentity || !/^\d+\.\d+\.\d+$/.test(releaseIdentity.version || '')
       || installedVersion !== releaseIdentity.version || !/^[a-f0-9]{64}$/.test(releaseIdentity.hooksSha256 || '')
@@ -181,9 +243,19 @@ export async function reconcileVerifiedCodexHookTrust({ releaseIdentity, install
     if (digest(bytes) !== releaseIdentity.hooksSha256) return blocked('Installed hooks differ from verified release');
     const identities = codexHookIdentities(JSON.parse(bytes));
     if (!identities.size) return blocked('Verified artifact has no native hooks');
+    // Codex 0.164+ also pins the installed plugin folder. Approve that fingerprint only for a folder that holds exactly
+    // the verified release's plugin/ bytes (Codex's own generated migrations aside); otherwise refuse, never guess.
+    const pluginRoot = path.dirname(path.dirname(hooksPath));
+    let contentHash = null;
+    if (releaseIdentity.pluginFiles instanceof Map) {
+      try { installedPluginMatchesRelease(pluginRoot, releaseIdentity.pluginFiles); contentHash = codexPluginContentHash(pluginRoot); }
+      catch (error) { contentHash = null; contentRefusal = error.message; }
+    }
     if (!suppliedRpc) client = await nativeClient(nativeBinary, cwd, Date.now() + Math.min(timeoutMs, 20000), configPath);
     const rpc = suppliedRpc || client.rpc;
-    const before = rowsFor(await rpc('hooks/list', { cwds: [cwd] })); assertRegistry(before, identities);
+    const before = rowsFor(await rpc('hooks/list', { cwds: [cwd] }));
+    if (!contentHash && before.some((row) => splitHash(row.currentHash).content !== null)) return blocked(contentRefusal);
+    assertRegistry(before, identities, contentHash);
     const disabled = before.filter((r) => r.enabled === false).map((r) => r.key).sort();
     if (before.some((r) => !['trusted', 'modified', 'untrusted', 'managed'].includes(r.trustStatus))) return blocked('Unknown native trust state');
     const pending = before.filter((r) => r.enabled === true && ['modified', 'untrusted'].includes(r.trustStatus));
@@ -194,8 +266,11 @@ export async function reconcileVerifiedCodexHookTrust({ releaseIdentity, install
     // Config stays memory-only except the private backup. No logging of effective config values.
     const prior = fs.readFileSync(configPath);
     backupPath = privateBackup(configPath, prior, backupDir);
-    const edits = pending.map((r) => ({ keyPath: `hooks.state.${JSON.stringify(r.key)}.trusted_hash`,
-      value: identities.get(r.key), mergeStrategy: 'replace' }));
+    const edits = pending.flatMap((r) => [{ keyPath: `hooks.state.${JSON.stringify(r.key)}.trusted_hash`,
+      value: identities.get(r.key), mergeStrategy: 'replace' },
+      // The second approval Codex 0.164 stores separately (plugin_trust.rs matches_hash).
+      ...(splitHash(r.currentHash).content !== null ? [{ keyPath: `hooks.state.${JSON.stringify(r.key)}.trusted_content_hash`,
+        value: contentHash, mergeStrategy: 'replace' }] : [])]);
     writeAttempted = true;
     await rpc('config/batchWrite', { filePath: configPath, expectedVersion: users[0].version, reloadUserConfig: true, edits });
     wrote = true;
@@ -203,7 +278,7 @@ export async function reconcileVerifiedCodexHookTrust({ releaseIdentity, install
     const afterUsers = (afterRead.layers || []).filter((r) => r.name?.type === 'user' && r.name.file === configPath);
     if (afterUsers.length !== 1 || otherSettings(users[0].config, pending.map((r) => r.key))
       !== otherSettings(afterUsers[0].config, pending.map((r) => r.key))) throw new Error('Unrelated config changed; no whole-file rollback attempted');
-    const after = rowsFor(await rpc('hooks/list', { cwds: [cwd] })); assertRegistry(after, identities);
+    const after = rowsFor(await rpc('hooks/list', { cwds: [cwd] })); assertRegistry(after, identities, contentHash);
     if (JSON.stringify(after.filter((r) => r.enabled === false).map((r) => r.key).sort()) !== JSON.stringify(disabled)
       || after.some((r) => r.enabled === true && !['trusted', 'managed'].includes(r.trustStatus))) throw new Error('Native trust repair verification incomplete');
     return { state: 'registry-verified', changed: true, editedTrustHashes: edits.length,
