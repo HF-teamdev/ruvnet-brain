@@ -69,6 +69,14 @@ describe('Codex marketplace snapshot race (fault 1)', () => {
     expect(r.error).toMatch(/repair with: codex plugin marketplace upgrade claude-code-plugins$/);
   });
 
+  it('the Brain install/update path (wireCodexPlugin) is the one caller that opts into repair', () => {
+    const codexDir = tmp(); const seen = [];
+    const runJson = (args, options) => { seen.push(options?.repair); return { ok: false, error: 'stop here' }; };
+    mod.wireCodexPlugin({ codexDir, codexHome: codexDir, expectedVersion: '1.2.3', runJson, announce: false });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((r) => r === true)).toBe(true);
+  });
+
   it('an ordinary failure is returned once, untouched, with no wait or repair', () => {
     let n = 0;
     const r = mod.runCodexJson(['plugin', 'list', '--json'], { run: () => { n += 1; return { status: 2, stdout: '', stderr: 'boom' }; }, waitMs: 0 });
@@ -124,6 +132,14 @@ describe('every Brain ruflo spawn turns ruflo\'s in-cwd self-update off (fault 4
     }
     expect(offenders).toEqual([]);
     expect(files.length).toBeGreaterThan(50); // the census actually looked
+  });
+
+  it('a file that builds a ruflo call with rufloInvocation carries the off switch (the spawn scanner cannot see `spawn(inv.executable)`)', () => {
+    const files = execFileSync('git', ['ls-files', 'bin', 'plugin', 'scripts'], { cwd: ROOT, encoding: 'utf8' }).split('\n')
+      .filter((f) => /\.mjs$/.test(f) && !/\.test\./.test(f) && f !== 'plugin/scripts/ruflo-bin.mjs');
+    const users = files.filter((f) => /\brufloInvocation(?:OrPlain)?\s*\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+    expect(users.length).toBeGreaterThan(5);
+    expect(users.filter((f) => !/CLAUDE_FLOW_AUTO_UPDATE(: 'false'|=false)/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')))).toEqual([]);
   });
 
   it('the git-push durability probe runs ruflo in a private scratch dir with both switches, never in the caller\'s project', async () => {
