@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runDeveloperUpdate, readDeveloperUpdateConfig } from '../plugin/scripts/developer-update.mjs';
-import { FAMILY, PLUGIN_MARKETPLACES, cmpVersion, pickTargetTag, normalizeNpmDistTags, normalizeNpmTimes, needsPublishTimes } from '../plugin/scripts/developer-update-policy.mjs';
+import { FAMILY, PLUGIN_MARKETPLACES, cmpVersion, pickTargetTag, normalizeNpmDistTags, normalizeNpmTimes, needsPublishTimes, wantedTag } from '../plugin/scripts/developer-update-policy.mjs';
 export { FAMILY, PLUGIN_MARKETPLACES, cmpVersion, pickTargetTag, normalizeNpmDistTags } from '../plugin/scripts/developer-update-policy.mjs';
 
 const HOME = os.homedir();
@@ -235,11 +235,11 @@ export function classify(pkgs, { channel = readDeveloperUpdateConfig().channel }
     if (p.source === 'plugin') {
       return { ...p, tag: 'plugin', target: null, state: p.installed ? 'INSTALLED_UNVERIFIED' : 'BROKEN', evidence: 'local install record only; marketplace revision not checked' };
     }
-    const want = p.name === '@pacphi/agentic-kit' ? 'next' : channel === 'alpha' && FAMILY.test(p.name) ? 'alpha' : DEFAULT_TAG;
+    const want = wantedTag(p.name, channel);
     const tags = registryTags(p.name);
     // Newest of {policy tag, latest} — see pickTargetTag: "track @alpha" alone pinned the core behind
     // @latest on 2026-07-18. A package with no alpha tag falls through to latest.
-    const published = needsPublishTimes(tags, want) ? registryTimes(p.name) : null;
+    const published = needsPublishTimes(tags, want) ? (registryTimes(p.name) || {}) : null;
     const { tag, target } = pickTargetTag(tags, want, 'latest', { published });
     let state;
     if (!p.installed) state = 'BROKEN';

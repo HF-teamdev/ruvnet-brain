@@ -6,7 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { cmpVersion as compare, selectTag, needsPublishTimes, normalizeNpmDistTags, FAMILY, PLUGIN_MARKETPLACES, REVIEWED_INSTALL_SCRIPTS, EXECUTION_MODULES } from './developer-update-policy.mjs';
+import { cmpVersion as compare, selectTag, needsPublishTimes, normalizeNpmDistTags, wantedTag, FAMILY, PLUGIN_MARKETPLACES, REVIEWED_INSTALL_SCRIPTS, EXECUTION_MODULES } from './developer-update-policy.mjs';
 import { acquireDeveloperLock, sharedLockStatus } from './developer-update-lock.mjs';
 import { maintenance } from './developer-update-maintenance.mjs';
 import { cleanupNpxDuplicates } from './developer-update-cleanup.mjs';
@@ -422,12 +422,17 @@ export async function runDeveloperUpdate({ mode = 'check', home = os.homedir(), 
     persistReceipt();
     for (const before of receipt.before) {
       const tags = before.localSource ? {} : JSON.parse(run(npm, ['view', before.name, 'dist-tags', '--json'], { timeout: 90_000 }));
-      // The alpha channel needs publish times to tell a newer pre-release from an abandoned one (developer-update-policy
-      // pickTargetTag); fetched only when the alpha and latest tags name different versions.
+      // A tracked non-latest tag (alpha, Kit's next) needs publish times to tell a newer pre-release from an abandoned
+      // one (developer-update-policy pickTargetTag); fetched only when that tag and latest name different versions. A
+      // failed lookup is {} — required but unknown — so the pre-release is skipped, never installed blind.
       let published = null;
-      if (!before.localSource && config.channel === 'alpha' && FAMILY.test(before.name)) {
-        try { if (needsPublishTimes(normalizeNpmDistTags(tags), 'alpha')) published = JSON.parse(run(npm, ['view', before.name, 'time', '--json'], { timeout: 90_000 })); }
-        catch { published = null; /* without times, ordering is by version as before */ }
+      if (!before.localSource) {
+        let needed = false;
+        try { needed = needsPublishTimes(normalizeNpmDistTags(tags), wantedTag(before.name, config.channel)); } catch { needed = false; }
+        if (needed) {
+          try { published = JSON.parse(run(npm, ['view', before.name, 'time', '--json'], { timeout: 90_000 })); }
+          catch { published = {}; }
+        }
       }
       receipt.steps.push(upgradePackage(before, tags, REVIEWED_INSTALL_SCRIPTS, { run, dryRun: mode === 'check', channel: config.channel, npm, preservePackages: config.preservePackages, published }));
       persistReceipt();

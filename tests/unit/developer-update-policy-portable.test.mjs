@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { cmpVersion, needsPublishTimes, normalizeNpmDistTags, selectTag } from '../../plugin/scripts/developer-update-policy.mjs';
+import { cmpVersion, needsPublishTimes, normalizeNpmDistTags, selectTag, wantedTag } from '../../plugin/scripts/developer-update-policy.mjs';
 
 it('uses the selected published channel without downgrading an installed release', () => {
   expect(selectTag('ruflo', '2.0.0', { latest: '1.9.0', alpha: '2.1.0-alpha.1' })).toMatchObject({ tag: 'latest', upgrade: false, ahead: true });
@@ -33,9 +33,18 @@ it('the alpha channel skips a pre-release published BEFORE latest (an abandoned 
   expect(selectTag('agentic-flow', '2.1.4', tags, 'alpha', { published })).toMatchObject({ tag: 'latest', version: '2.1.4', upgrade: false });
   expect(selectTag('ruflo', '3.61.1', { latest: '3.61.1', alpha: '3.62.0-alpha.1' }, 'alpha',
     { published: { '3.61.1': '2026-10-24T00:00:00Z', '3.62.0-alpha.1': '2026-10-24T05:00:00Z' } })).toMatchObject({ tag: 'alpha', upgrade: true });
-  // Without times (or with unreadable ones) ordering is by version, exactly as before.
+  // A caller that did not ask for times keeps version ordering, exactly as before.
   expect(selectTag('agentic-flow', '2.1.4', tags, 'alpha').tag).toBe('alpha');
-  expect(selectTag('agentic-flow', '2.1.4', tags, 'alpha', { published: [{}, {}] }).tag).toBe('alpha');
+  // Times REQUIRED but the lookup failed or came back unreadable/incomplete: never install the pre-release blind.
+  for (const failed of [{}, [{}, {}], 'garbage', { '3.0.0-alpha.2': '2026-03-25T22:09:45Z' }]) {
+    expect(selectTag('agentic-flow', '2.1.4', tags, 'alpha', { published: failed })).toMatchObject({ tag: 'latest', upgrade: false });
+  }
+  // One tag-choice function for the updater and the notice, Kit's `next` included.
+  expect(wantedTag('@pacphi/agentic-kit', 'latest')).toBe('next');
+  expect(wantedTag('agentic-flow', 'alpha')).toBe('alpha');
+  expect(wantedTag('unrelated-cli', 'alpha')).toBe('latest');
+  expect(selectTag('@pacphi/agentic-kit', '4.0.0-alpha.61', { latest: '3.9.0', next: '4.0.0-alpha.62' }, 'latest',
+    { published: { '3.9.0': '2026-10-20T00:00:00Z', '4.0.0-alpha.62': '2026-09-01T00:00:00Z' } }).tag).toBe('latest');
   expect(needsPublishTimes(tags, 'alpha')).toBe(true);
   expect(needsPublishTimes({ latest: '1.0.0', alpha: '1.0.0' }, 'alpha')).toBe(false);
   expect(needsPublishTimes(tags, 'latest')).toBe(false);
