@@ -45,7 +45,7 @@ describe('Codex marketplace snapshot race (fault 1)', () => {
     const calls = [];
     const replies = [BROKEN('claude-code-plugins'), BROKEN('claude-code-plugins'), OK({ upgradedRoots: ['x'] }), OK({ installed: [] })];
     const run = (_bin, args) => { calls.push(args.join(' ')); return replies.shift(); };
-    const r = mod.runCodexJson(['plugin', 'list', '--json'], { run, waitMs: 0 });
+    const r = mod.runCodexJson(['plugin', 'list', '--json'], { run, waitMs: 0, repair: true });
     expect(r.ok).toBe(true);
     expect(calls).toEqual(['plugin list --json', 'plugin list --json', 'plugin marketplace upgrade claude-code-plugins --json', 'plugin list --json']);
   });
@@ -53,13 +53,20 @@ describe('Codex marketplace snapshot race (fault 1)', () => {
   it('never "repairs" the Brain\'s own marketplace this way, and a lasting failure names the exact repair', () => {
     const calls = [];
     const run = (_bin, args) => { calls.push(args.join(' ')); return args[1] === 'marketplace' ? { status: 1, stdout: '', stderr: 'net down' } : BROKEN('claude-code-plugins'); };
-    const r = mod.runCodexJson(['plugin', 'list', '--json'], { run, waitMs: 0 });
+    const r = mod.runCodexJson(['plugin', 'list', '--json'], { run, waitMs: 0, repair: true });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/Codex cannot load its `claude-code-plugins` marketplace snapshot \(tried: claude-code-plugins: refresh failed \(exit 1\)\); repair with: codex plugin marketplace upgrade claude-code-plugins$/);
     expect(calls.filter((c) => c.includes('upgrade'))).toHaveLength(1); // bounded: one repair attempt
     const own = [];
-    mod.runCodexJson(['plugin', 'list', '--json'], { run: (_b, args) => { own.push(args.join(' ')); return BROKEN('ruvnet-brain'); }, waitMs: 0 });
+    mod.runCodexJson(['plugin', 'list', '--json'], { run: (_b, args) => { own.push(args.join(' ')); return BROKEN('ruvnet-brain'); }, waitMs: 0, repair: true });
     expect(own.some((c) => c.includes('upgrade'))).toBe(false);
+  });
+
+  it('read-only callers (--doctor, listings) never refresh another marketplace; they report it', () => {
+    const calls = [];
+    const r = mod.runCodexJson(['plugin', 'list', '--json'], { run: (_b, args) => { calls.push(args.join(' ')); return BROKEN('claude-code-plugins'); }, waitMs: 0 });
+    expect(calls).toEqual(['plugin list --json', 'plugin list --json']);
+    expect(r.error).toMatch(/repair with: codex plugin marketplace upgrade claude-code-plugins$/);
   });
 
   it('an ordinary failure is returned once, untouched, with no wait or repair', () => {
@@ -72,8 +79,8 @@ describe('Codex marketplace snapshot race (fault 1)', () => {
 
 describe('a failed host sync always says why (fault 2)', () => {
   it('derives the reason from the per-host results', () => {
-    expect(mod.hostFailureReason({ claude: { host: true, wired: false, action: 'verification-failed', version: '4.7.16', expectedVersion: '4.7.18' } }))
-      .toBe('Claude Code plugin verification-failed (installed 4.7.16, required 4.7.18)');
+    expect(mod.hostFailureReason({ claude: { host: true, wired: false, action: 'verification-failed', version: '4.7.16', expectedVersion: '4.7.99' } }))
+      .toBe('Claude Code plugin verification-failed (installed 4.7.16, required 4.7.99)');
     expect(mod.hostFailureReason({ claude: { host: true, wired: true }, codex: { action: 'codex-unavailable', error: 'Error: failed to load\n- `x` at y\nmore\nmore' } }))
       .toBe('Codex plugin codex-unavailable: Error: failed to load - `x` at y more');
     expect(mod.hostFailureReason({ claude: { host: true, wired: true }, codex: { action: 'updated' } })).toBeNull();
@@ -86,15 +93,20 @@ describe('an older installer stops before downloading (fault 3)', () => {
     fs.writeFileSync(path.join(home, 'active.json'), JSON.stringify({ version: '4.7.17' }));
     fs.mkdirSync(path.join(repo, '.git'));
     const msg = mod.olderInstallerRefusal({ brainHome: home, packageVersion: '4.5.2', repoRoot: repo });
-    expect(msg).toMatch(/ruvnet-brain 4\.5\.2 \(a source checkout at .*\), older than the 4\.7\.17 already installed/);
+    expect(msg).toMatch(/ruvnet-brain 4\.5\.2, a source checkout at .*, older than the 4\.7\.17 already installed/);
     expect(msg).toMatch(/npx ruvnet-brain@latest --update {2}from any other folder, or bring this checkout up to date first \(git pull\)\.$/);
+  });
+  it('never blocks a published installer that is older than active.json (release window, candidate install)', () => {
+    const home = tmp(); const npxCopy = tmp();
+    fs.writeFileSync(path.join(home, 'active.json'), JSON.stringify({ version: '4.7.17' }));
+    expect(mod.olderInstallerRefusal({ brainHome: home, packageVersion: '4.7.16', repoRoot: npxCopy })).toBeNull();
   });
   it('allows a current or newer installer, and a machine with no recorded runtime', () => {
     const home = tmp();
     expect(mod.olderInstallerRefusal({ brainHome: home, packageVersion: '4.7.17', repoRoot: home })).toBeNull();
     fs.writeFileSync(path.join(home, 'active.json'), JSON.stringify({ version: '4.7.17' }));
     expect(mod.olderInstallerRefusal({ brainHome: home, packageVersion: '4.7.17', repoRoot: home })).toBeNull();
-    expect(mod.olderInstallerRefusal({ brainHome: home, packageVersion: '4.7.18', repoRoot: home })).toBeNull();
+    expect(mod.olderInstallerRefusal({ brainHome: home, packageVersion: '4.7.99', repoRoot: home })).toBeNull();
   });
 });
 

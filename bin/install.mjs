@@ -2045,6 +2045,9 @@ export function runCodexJson(args, {
   cwd = process.cwd(),
   run = runHostCli,
   waitMs = 5_000,
+  // Refreshing another tool's marketplace is a network write; only an install/update that is about to change the
+  // Brain's Codex plugin opts in. --doctor and listings report the broken snapshot and change nothing (review 2026-10-24).
+  repair = false,
 } = {}) {
   const options = { stdio: 'pipe', shell: false, cwd, env: { ...process.env, CODEX_HOME: codexHome }, encoding: 'utf8',
     timeout: 30_000, maxBuffer: 20 * 1024 * 1024 };
@@ -2054,7 +2057,7 @@ export function runCodexJson(args, {
   // own local snapshot is repaired by prepareCodexMarketplace), once, and ask again. Bounded: at most three asks.
   const repaired = [];
   if (snapshotFailure(r)) { sleepSync(waitMs); r = run(codexBin, args, options); }
-  if (snapshotFailure(r)) {
+  if (repair && snapshotFailure(r)) {
     for (const name of codexBrokenMarketplaces(r.stderr || r.stdout).filter((n) => n !== CODEX_MARKETPLACE)) {
       const up = run(codexBin, ['plugin', 'marketplace', 'upgrade', name, '--json'], options);
       repaired.push(`${name}: ${up.status === 0 ? 'refreshed' : `refresh failed (exit ${up.status})`}`);
@@ -2130,7 +2133,7 @@ export function wireCodexPlugin({
   aliasHome,
 } = {}) {
   if (!fs.existsSync(codexDir)) return { host: false, action: 'no-host' };
-  const options = { codexBin, codexHome, cwd };
+  const options = { codexBin, codexHome, cwd, repair: true };
   // Codex loads every configured marketplace before it can report plugin state. Repair only an
   // absent/malformed Brain-owned snapshot before that probe, or the probe can fail before its own
   // repair path is reachable. A healthy current cache stays byte-untouched, and plugin enablement
@@ -4133,20 +4136,22 @@ function refuseOverSetAsideBrain() {
 }
 
 /**
- * An installer OLDER than the runtime already installed cannot apply a newer release: it downloads ~736 MB and then
- * refuses on "staged ReleaseCoverage failed integrity — release version 4.7.17 differs from 4.5.2" (measured
- * 2026-10-23: `npx ruvnet-brain --update` run inside a stale source checkout resolves that checkout's own bin).
- * Say so before the download, with the command that works. Null when this installer is current or newer.
+ * A SOURCE CHECKOUT older than the runtime already installed cannot apply the current release: it downloads ~736 MB
+ * and then refuses on "staged ReleaseCoverage failed integrity — release version 4.7.17 differs from 4.5.2" (measured
+ * 2026-10-23: `npx ruvnet-brain --update` run inside a stale checkout resolves that checkout's own bin). Say so
+ * before the download, with the command that works. Only a checkout: a published installer can legitimately be
+ * older than active.json (a plugin seeded from main during a release window, a release candidate installed from a
+ * checkout), and the nightly and self-heal `@latest` updates must keep working then (review, 2026-10-24).
  */
 export function olderInstallerRefusal({ brainHome, packageVersion = PACKAGE_VERSION, repoRoot = REPO_ROOT } = {}) {
   let installed;
   try { installed = JSON.parse(fs.readFileSync(path.join(brainHome, 'active.json'), 'utf8'))?.version; } catch { return null; }
   if (!/^\d+\.\d+\.\d+$/.test(String(installed || ''))) return null;
   try { if (cmpVersion(installed, packageVersion) <= 0) return null; } catch { return null; }
-  const checkout = fs.existsSync(path.join(repoRoot, '.git'));
-  return `this is ruvnet-brain ${packageVersion} (${checkout ? 'a source checkout' : 'an installer copy'} at ${repoRoot}), `
-    + `older than the ${installed} already installed here, and an older installer cannot apply a newer release. `
-    + `Run  npx ruvnet-brain@latest --update  from any other folder${checkout ? ', or bring this checkout up to date first (git pull)' : ''}.`;
+  if (!fs.existsSync(path.join(repoRoot, '.git'))) return null;
+  return `this is ruvnet-brain ${packageVersion}, a source checkout at ${repoRoot}, older than the ${installed} already `
+    + 'installed here, and an older checkout cannot apply the current release. '
+    + 'Run  npx ruvnet-brain@latest --update  from any other folder, or bring this checkout up to date first (git pull).';
 }
 
 async function runUpdate() {
