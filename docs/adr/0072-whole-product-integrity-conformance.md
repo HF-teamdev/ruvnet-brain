@@ -6,7 +6,7 @@ date: 2026-08-21
 updated: 2026-10-24
 updated_source: derived-from-git
 version: 1.2.2
-reviewed_digest: 29e2fce86bb8
+reviewed_digest: 7ad79d38a0d7
 authors: [Stuart Kerr, Codex]
 tags: [architecture, quality, corpus, lifecycle, release, traceability, smart, sparc]
 supersedes: []
@@ -392,6 +392,7 @@ integrity checks without granting semantic approval. Protected publication, exac
 identity, signed public verification, and whole-product completion gates are unchanged.
 
 ## Currency log
+| 2026-10-24 | Review `7ad79d38a0d7` (4.7.19): decision unchanged. `.github/workflows/protected-release.yml` and `plugin/scripts/nightly-scheduler.mjs` moved | `.github/workflows/protected-release.yml`: the publisher job's bound is 40 minutes (was 20; measured runs took 18-18.5 min and 4.7.18's was cancelled at 20:00 mid-publish, then resumed from its signed receipts). No gate, permission, environment or step changed. `plugin/scripts/nightly-scheduler.mjs`: a module refresh records the sets it replaced (`replacedUpdateModules`, last 48 h); a scheduled receipt bound to one of them still counts when it was launched before that set was replaced, so doctor no longer reports a succeeded night as failed after an update. Failed, dead-owner, stale and future-dated receipts are reported exactly as before. Source: `.github/workflows/protected-release.yml`, `plugin/scripts/nightly-scheduler.mjs`. |
 | 2026-10-24 | Review `29e2fce86bb8` (4.7.18): decision unchanged. `bin/install.mjs` moved | The 4.7.18 changes to it are Codex snapshot retry/repair during wiring, a recorded reason on every failed host sync, and an early refusal for a stale source checkout running `--update`. No conformance contract, receipt or verification lane changed. Source: `bin/install.mjs`. |
 | 2026-10-07 | Corrected automatic byte inventory evidence so it cannot imply semantic review. Receipt and trace schema 2 expose the exact structural scope and semantic UNKNOWN; current validators reject legacy schema 1 without changing publication or completion gates. | `scripts/source-scope-receipt.mjs`, `scripts/product-integrity-contract.mjs`; failed legacy and forged-review fixtures, byte-mutation checks, and the existing completion reducer suite. This scoped correction does not refresh the historical whole-ADR reviewed digest. |
 | 2026-10-01 | Currency review (4.5 retrieval): decision unchanged. `.github/workflows/ci.yml` adds the capability-selection battery on the exact sealed bundle in release-qe, which tightens conformance evidence. No integrity contract changed. reviewed_digest e4226a2ff390. | Reviewed `.github/workflows/ci.yml`; probe runs 36889499709 and 36889505309. |
